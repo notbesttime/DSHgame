@@ -1,0 +1,1523 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DSH · 地下机房</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #1a1410;
+    font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  #game { width: 100%; height: 100%; }
+  canvas { display: block; }
+
+  /* 手机横屏引导 */
+  #rotatePrompt {
+    position: fixed; inset: 0; z-index: 9999;
+    display: none; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(15, 10, 6, 0.96);
+    color: #ffd98a; font-family: inherit;
+    pointer-events: auto;
+  }
+  #rotatePrompt.show { display: flex; }
+  #rotatePrompt .rotate-phone {
+    width: 64px; height: 104px;
+    border: 3px solid #ffb35c; border-radius: 12px;
+    position: relative;
+    animation: rotateDevice 1.8s ease-in-out infinite;
+    margin-bottom: 20px;
+  }
+  #rotatePrompt .rotate-phone::after {
+    content: ""; position: absolute;
+    left: 50%; bottom: 7px;
+    transform: translateX(-50%);
+    width: 20px; height: 3px;
+    background: #ffb35c; border-radius: 2px;
+  }
+  #rotatePrompt .rotate-title {
+    color: #ffd98a; font-size: 1.1rem;
+    letter-spacing: 6px; font-weight: bold;
+    margin-bottom: 8px;
+  }
+  #rotatePrompt .rotate-sub {
+    color: #a89880; font-size: 0.78rem;
+    letter-spacing: 2px;
+  }
+  @keyframes rotateDevice {
+    0%, 38% { transform: rotate(0); }
+    62%, 100% { transform: rotate(-90deg); }
+  }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="rotatePrompt" aria-hidden="true">
+  <div class="rotate-phone"></div>
+  <div class="rotate-title">请横屏游玩</div>
+  <div class="rotate-sub">旋转设备以获得最佳体验</div>
+</div>
+<script>__PIXIES__</script>
+<script>__ASSETS__</script>
+<script>
+// ==================== 工具函数 ====================
+function rand(min, max) { return Math.random() * (max - min) + min; }
+
+function makeText(text, opts) {
+  const style = new PIXI.TextStyle({
+    fontFamily: '"PingFang SC", "Microsoft YaHei", sans-serif',
+    fontSize: opts.size || 16,
+    fill: opts.color || '#fff5e6',
+    fontWeight: opts.weight || 'normal',
+    align: opts.align || 'left',
+    lineHeight: opts.lineHeight || opts.size * 1.3,
+  });
+  const t = new PIXI.Text(text, style);
+  t.resolution = 2;
+  if (opts.anchor !== undefined) t.anchor.set(opts.anchor);
+  return t;
+}
+
+function roundRect(g, x, y, w, h, r, color, alpha) {
+  g.clear();
+  g.beginFill(color, alpha);
+  g.drawRoundedRect(x, y, w, h, r);
+  g.endFill();
+}
+
+// ==================== 补间动画 ====================
+const tweens = [];
+function tween(target, delta, duration, onComplete) {
+  const start = {};
+  for (const k in delta) start[k] = target[k];
+  tweens.push({ target, start, delta, duration, elapsed: 0, onComplete });
+}
+function updateTweens(dt) {
+  for (let i = tweens.length - 1; i >= 0; i--) {
+    const tw = tweens[i];
+    tw.elapsed += dt;
+    const p = Math.min(tw.elapsed / tw.duration, 1);
+    const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    for (const k in tw.delta) tw.target[k] = tw.start[k] + tw.delta[k] * e;
+    if (p >= 1) {
+      if (tw.onComplete) tw.onComplete();
+      tweens.splice(i, 1);
+    }
+  }
+}
+
+function addPressFeedback(obj, scale = 0.92) {
+  obj.eventMode = 'static';
+  obj.cursor = 'pointer';
+  obj.on('pointerdown', () => { obj.scale.set(scale); });
+  obj.on('pointerup', () => { obj.scale.set(1); });
+  obj.on('pointerupoutside', () => { obj.scale.set(1); });
+  obj.on('pointercancel', () => { obj.scale.set(1); });
+}
+
+// ==================== PIXI 初始化 ====================
+const app = new PIXI.Application({
+  resizeTo: window,
+  background: '#1a1410',
+  antialias: false, // 纯 sprite 渲染,MSAA 无收益且移动端费填充率
+});
+document.getElementById('game').appendChild(app.view);
+
+// ==================== 层级容器 ====================
+const layers = {
+  bg: new PIXI.Container(),
+  clickArea: new PIXI.Container(),
+  characters: new PIXI.Container(),
+  scene: new PIXI.Container(),
+  ui: new PIXI.Container(),
+  topbar: new PIXI.Container(),
+  fx: new PIXI.Container(),
+  settings: new PIXI.Container(),
+  nav: new PIXI.Container(), // 底部场景切换标签,置于最顶(切换场景时仍可见)
+};
+app.stage.addChild(layers.bg, layers.clickArea, layers.characters, layers.scene, layers.ui, layers.topbar, layers.fx, layers.settings, layers.nav);
+
+// ==================== 背景层（灯效） ====================
+const bgLight = PIXI.Sprite.from(ASSETS.bg_light);
+const bgDark = PIXI.Sprite.from(ASSETS.bg_dark);
+bgDark.visible = false; // 用 visible 而非 alpha=0,关灯层不参与渲染批次
+layers.bg.addChild(bgLight, bgDark);
+
+function fitBg(sprite) {
+  if (!sprite.texture || sprite.texture.width <= 0 || sprite.texture.height <= 0) return;
+  const s = Math.max(app.screen.width / sprite.texture.width, app.screen.height / sprite.texture.height);
+  if (!isFinite(s) || s <= 0) return;
+  sprite.scale.set(s);
+  sprite.x = (app.screen.width - sprite.texture.width * s) / 2;
+  sprite.y = (app.screen.height - sprite.texture.height * s) / 2;
+}
+function fitAllBgs() { fitBg(bgLight); fitBg(bgDark); }
+
+// 灯效控制：高频快速交替闪烁
+let lightState = 'on';
+let lightStateStart = performance.now();
+let nextFlickerIn = rand(6, 12);
+let nextLightOnIn = 2;
+let flickerSeq = [];
+let flickerStart = 0;
+let flickerNextState = 'off';
+
+function startFlicker(seq, nextState) {
+  lightState = 'flickering';
+  flickerSeq = seq;
+  flickerStart = performance.now();
+  flickerNextState = nextState;
+  bgDark.visible = seq[0].alpha > 0;
+}
+
+function updateLight() {
+  if (lightState === 'on') {
+    const elapsed = (performance.now() - lightStateStart) / 1000;
+    if (elapsed > nextFlickerIn) {
+      startFlicker([
+        {alpha: 0, dur: 0.07}, {alpha: 1, dur: 0.09},
+        {alpha: 0, dur: 0.06}, {alpha: 1, dur: 0.11},
+        {alpha: 0, dur: 0.05}, {alpha: 1, dur: 0.08},
+        {alpha: 0, dur: 0.04},
+      ], 'off');
+    }
+  } else if (lightState === 'off') {
+    const elapsed = (performance.now() - lightStateStart) / 1000;
+    if (elapsed > nextLightOnIn) {
+      startFlicker([
+        {alpha: 1, dur: 0.06}, {alpha: 0, dur: 0.08},
+        {alpha: 1, dur: 0.05}, {alpha: 0, dur: 0.1},
+        {alpha: 1, dur: 0.04},
+      ], 'on');
+    }
+  } else if (lightState === 'flickering') {
+    const fe = (performance.now() - flickerStart) / 1000;
+    let acc = 0;
+    for (let i = 0; i < flickerSeq.length; i++) {
+      acc += flickerSeq[i].dur;
+      if (fe < acc) { bgDark.visible = flickerSeq[i].alpha > 0; return; }
+    }
+    lightState = flickerNextState;
+    lightStateStart = performance.now();
+    if (flickerNextState === 'off') {
+      bgDark.visible = true;
+      nextLightOnIn = rand(1.5, 3);
+    } else {
+      bgDark.visible = false;
+      nextFlickerIn = rand(22, 38);
+    }
+  }
+}
+
+// ==================== 点击增量层 ====================
+const clickMask = new PIXI.Graphics();
+clickMask.beginFill(0x000000, 0.001);
+clickMask.drawRect(0, 0, app.screen.width, app.screen.height);
+clickMask.endFill();
+clickMask.eventMode = 'static';
+clickMask.cursor = 'pointer';
+layers.clickArea.addChild(clickMask);
+
+const floatTexts = new PIXI.Container();
+layers.fx.addChild(floatTexts);
+
+clickMask.on('pointerdown', (e) => {
+  if (state.paused) return;
+  const pos = e.global;
+  doClick(pos.x, pos.y);
+});
+
+function doClick(x, y) {
+  const isCrit = Math.random() < state.critChance;
+  let gain = state.tokensPerClick;
+  if (isCrit) gain = state.tokensPerClick * state.critMultiplier;
+  state.tokens += gain;
+  if (isCrit) {
+    spawnCritText('暴击! +' + formatNum(gain), x, y);
+  } else {
+    spawnFloatText('+' + formatNum(gain), x, y);
+  }
+  updateTokenDisplay();
+  triggerCharacterTalk();
+}
+
+// 浮字对象池:避免连点时反复创建/销毁 PIXI.Text
+const floatPool = [];
+const FLOAT_POOL_MAX = 40;
+const FLOAT_LIVE_MAX = 30; // 同时在屏上限,防连点刷屏
+let floatLiveCount = 0;
+
+function acquireFloatText(size, color, rotation) {
+  let t = floatPool.pop();
+  if (!t) t = makeText('', { size, color, weight: 'bold', anchor: 0.5 });
+  t.style.fontSize = size;
+  t.style.fill = color;
+  t.text = '';
+  t.alpha = 1;
+  t.rotation = rotation || 0;
+  t.scale.set(1);
+  return t;
+}
+
+function releaseFloatText(t) {
+  floatLiveCount--;
+  floatTexts.removeChild(t);
+  if (floatPool.length < FLOAT_POOL_MAX) floatPool.push(t);
+  else t.destroy();
+}
+
+function spawnFloatText(text, x, y) {
+  if (floatLiveCount >= FLOAT_LIVE_MAX) return;
+  floatLiveCount++;
+  const t = acquireFloatText(22, '#ffd98a');
+  t.text = text;
+  t.x = x; t.y = y;
+  floatTexts.addChild(t);
+  tween(t, { y: y - 60, alpha: 0 }, 0.9, () => { releaseFloatText(t); });
+}
+
+function spawnCritText(text, x, y) {
+  if (floatLiveCount >= FLOAT_LIVE_MAX) return;
+  floatLiveCount++;
+  const t = acquireFloatText(30, '#ff6b6b', -0.08);
+  t.text = text;
+  t.x = x; t.y = y;
+  floatTexts.addChild(t);
+  tween(t.scale, { x: 1.3, y: 1.3 }, 0.12);
+  tween(t, { y: y - 80, alpha: 0 }, 1.1, () => { releaseFloatText(t); });
+}
+
+// ==================== 角色层 ====================
+const charClosed = PIXI.Sprite.from(ASSETS.char2);
+const charOpen = PIXI.Sprite.from(ASSETS.char1);
+charClosed.visible = true;
+charOpen.visible = false;
+const speechBubble = PIXI.Sprite.from(ASSETS.speech_bubble);
+speechBubble.visible = false;
+layers.characters.addChild(charClosed, charOpen, speechBubble);
+
+let isTalking = false;
+let talkTimer = 0;
+
+function triggerCharacterTalk() {
+  if (isTalking) { talkTimer = 0.35; return; }
+  isTalking = true;
+  talkTimer = 0.35;
+  charClosed.visible = false;
+  charOpen.visible = true;
+}
+
+function updateCharacters(dt) {
+  if (isTalking) {
+    talkTimer -= dt;
+    if (talkTimer <= 0) {
+      isTalking = false;
+      charClosed.visible = true;
+      charOpen.visible = false;
+    }
+  }
+}
+
+function layoutCharacters() {
+  const targetH = Math.min(340, app.screen.height * 0.4);
+  const scale = targetH / 400;
+  for (const c of [charClosed, charOpen]) {
+    c.scale.set(scale);
+    c.x = app.screen.width - 400 * scale - 10;
+    c.y = app.screen.height - 400 * scale - 10;
+  }
+  // 说话气泡：人物左上角
+  const bubbleScale = Math.min(1, (app.screen.width * 0.15) / speechBubble.texture.width);
+  speechBubble.scale.set(bubbleScale);
+  const bw = speechBubble.texture.width * bubbleScale;
+  const bh = speechBubble.texture.height * bubbleScale;
+  speechBubble.x = charClosed.x - bw + 110;
+  speechBubble.y = charClosed.y - bh + 85;
+}
+
+// ==================== 场景层（机箱/占位图） ====================
+const pcCase = PIXI.Sprite.from(ASSETS.pc_case);
+const casePlaceholder = PIXI.Sprite.from(ASSETS.placeholder);
+const fanSprite = PIXI.Sprite.from(ASSETS.fan);
+layers.scene.addChild(pcCase, casePlaceholder, fanSprite);
+
+// ==================== 机箱物理交互系统 ====================
+const casePhysics = {
+  vx: 0, vy: 0,
+  isDragging: false,
+  isActive: false,
+  groundY: 0,
+  gravity: 0.7,
+  bounce: 0.45,
+  friction: 0.96,
+  dragHistory: [],
+  dragOffset: { x: 0, y: 0 },
+  userMoved: false,
+};
+let caseInitialized = false;
+
+function getCaseDisplayWidth() {
+  return pcCase.texture.width * pcCase.scale.x;
+}
+function getCaseDisplayHeight() {
+  return pcCase.texture.height * pcCase.scale.y;
+}
+
+function startCaseDrag(e) {
+  if (!pcCase.visible) return;
+  e.stopPropagation();
+  casePhysics.isDragging = true;
+  casePhysics.isActive = false;
+  casePhysics.vx = 0;
+  casePhysics.vy = 0;
+  casePhysics.dragHistory = [];
+  const pos = e.global;
+  casePhysics.dragOffset.x = pos.x - pcCase.x;
+  casePhysics.dragOffset.y = pos.y - pcCase.y;
+  pcCase.cursor = 'grabbing';
+}
+
+function updateCaseDrag(e) {
+  if (!casePhysics.isDragging) return;
+  const pos = e.global;
+  const now = performance.now();
+  pcCase.x = pos.x - casePhysics.dragOffset.x;
+  pcCase.y = pos.y - casePhysics.dragOffset.y;
+  casePhysics.dragHistory.push({ x: pcCase.x, y: pcCase.y, t: now });
+  if (casePhysics.dragHistory.length > 6) casePhysics.dragHistory.shift();
+}
+
+function endCaseDrag() {
+  if (!casePhysics.isDragging) return;
+  casePhysics.isDragging = false;
+  pcCase.cursor = 'pointer';
+  // 从拖动历史计算松开时的速度
+  const hist = casePhysics.dragHistory;
+  if (hist.length >= 2) {
+    const first = hist[Math.max(0, hist.length - 4)];
+    const last = hist[hist.length - 1];
+    const dt = Math.max(last.t - first.t, 1);
+    casePhysics.vx = (last.x - first.x) / dt * 16;
+    casePhysics.vy = (last.y - first.y) / dt * 16;
+  }
+  // 限制最大速度
+  const maxV = 30;
+  casePhysics.vx = Math.max(-maxV, Math.min(maxV, casePhysics.vx));
+  casePhysics.vy = Math.max(-maxV, Math.min(maxV, casePhysics.vy));
+  casePhysics.isActive = true;
+}
+
+function updateCasePhysics() {
+  if (!casePhysics.isActive || casePhysics.isDragging) return;
+  if (!pcCase.visible) return;
+
+  // 重力
+  casePhysics.vy += casePhysics.gravity;
+
+  // 更新位置
+  pcCase.x += casePhysics.vx;
+  pcCase.y += casePhysics.vy;
+
+  const cw = getCaseDisplayWidth();
+  const ch = getCaseDisplayHeight();
+  const sw = app.screen.width;
+  let settled = false;
+
+  // 地面碰撞
+  if (pcCase.y >= casePhysics.groundY) {
+    pcCase.y = casePhysics.groundY;
+    if (Math.abs(casePhysics.vy) > 2.5) {
+      casePhysics.vy = -casePhysics.vy * casePhysics.bounce;
+      casePhysics.vx *= casePhysics.friction;
+      // 奇迹算法：砸地面有概率获得额外token
+      if (state.scripts.miracle && Math.random() < 0.25) {
+        const bonus = Math.max(1, Math.floor(state.tokens * 0.03));
+        state.tokens += bonus;
+        spawnFloatText('奇迹! +' + formatNum(bonus), pcCase.x + 60, casePhysics.groundY - 20);
+        updateTokenDisplay();
+      }
+    } else {
+      casePhysics.vy = 0;
+      casePhysics.vx *= 0.85;
+      if (Math.abs(casePhysics.vx) < 0.15) {
+        casePhysics.vx = 0;
+        settled = true;
+      }
+    }
+  }
+
+  // 左墙碰撞
+  if (pcCase.x <= 0) {
+    pcCase.x = 0;
+    casePhysics.vx = -casePhysics.vx * casePhysics.bounce;
+  }
+  // 右墙碰撞
+  if (pcCase.x >= sw - cw) {
+    pcCase.x = sw - cw;
+    casePhysics.vx = -casePhysics.vx * casePhysics.bounce;
+  }
+  // 顶部碰撞
+  if (pcCase.y <= 0) {
+    pcCase.y = 0;
+    casePhysics.vy = -casePhysics.vy * casePhysics.bounce;
+  }
+
+  if (settled) casePhysics.isActive = false;
+}
+
+// 机箱拖动事件
+pcCase.eventMode = 'static';
+pcCase.cursor = 'pointer';
+pcCase.hitArea = new PIXI.Rectangle(0, 0, 1, 1); // 临时，layoutCase中更新
+pcCase.on('pointerdown', startCaseDrag);
+pcCase.on('pointermove', updateCaseDrag);
+pcCase.on('pointerup', endCaseDrag);
+pcCase.on('pointerupoutside', endCaseDrag);
+
+function layoutCase() {
+  // RTX3080数量>=9时切换为升级机箱贴图
+  const useUpgraded = state.machines.rtx3080.count >= 9;
+  const targetSource = useUpgraded ? ASSETS.pc_case_upgraded : ASSETS.pc_case;
+  const newTexture = PIXI.Texture.from(targetSource);
+  if (pcCase.texture !== newTexture) {
+    pcCase.texture = newTexture;
+  }
+  const maxCaseH = app.screen.height * 0.42;
+  const maxWByHeight = maxCaseH * pcCase.texture.width / pcCase.texture.height;
+  const targetW = Math.min(app.screen.width * 0.38, 420, maxWByHeight);
+  const s = targetW / pcCase.texture.width;
+  const caseH = pcCase.texture.height * s;
+  pcCase.scale.set(s);
+  const bottomMargin = Math.min(80, app.screen.height * 0.06);
+  const defaultX = app.screen.width * 0.28;
+  const defaultY = app.screen.height - caseH - bottomMargin - 65;
+  const hasFirstGpu = state.machines.rtx3080.count > 0;
+  // 只在机箱首次显示时设置默认位置，之后永远不主动改变x/y
+  if (hasFirstGpu && !caseInitialized) {
+    pcCase.x = defaultX;
+    pcCase.y = defaultY;
+    caseInitialized = true;
+  }
+  const ps = targetW * 0.82 / casePlaceholder.texture.width;
+  casePlaceholder.scale.set(ps);
+  casePlaceholder.x = defaultX;
+  casePlaceholder.y = defaultY + (caseH - casePlaceholder.texture.height * ps) / 2;
+  casePlaceholder.visible = !hasFirstGpu;
+  pcCase.visible = hasFirstGpu;
+
+  // 风扇：机箱镜像位置（右侧），竖长造型
+  const maxFanH = app.screen.height * 0.48;
+  const fanS = maxFanH / fanSprite.texture.height;
+  const fanW = fanSprite.texture.width * fanS;
+  fanSprite.scale.set(fanS);
+  // 镜像：机箱左边距28%，风扇右边距也28%
+  fanSprite.x = app.screen.width * 0.72 - fanW;
+  fanSprite.y = app.screen.height - maxFanH - bottomMargin - 65;
+  fanSprite.visible = state.cooling.fan.count > 0;
+
+  // 记录地面高度（物理系统用）
+  casePhysics.groundY = defaultY;
+  // 更新机箱hitArea为实际大小
+  pcCase.hitArea = new PIXI.Rectangle(0, 0, pcCase.texture.width, pcCase.texture.height);
+}
+
+// ==================== 购买面板 ====================
+const purchasePanel = new PIXI.Container();
+layers.ui.addChild(purchasePanel);
+
+const purchaseBtn = new PIXI.Container();
+const purchaseBtnBg = new PIXI.Graphics();
+const purchaseArrow = new PIXI.Graphics();
+const purchaseText = makeText('购\n买', { size: 15, color: '#fff5e6', weight: 'bold', align: 'center', anchor: 0.5, lineHeight: 18 });
+purchaseBtn.addChild(purchaseBtnBg, purchaseArrow, purchaseText);
+
+const panelContent = new PIXI.Container();
+const panelBg = new PIXI.Graphics();
+panelContent.addChild(panelBg);
+purchasePanel.addChild(panelContent, purchaseBtn);
+
+let panelExpanded = false;
+const panelW = 360;
+const panelH = 420;
+
+function drawPurchaseArrow(expanded) {
+  purchaseArrow.clear();
+  purchaseArrow.lineStyle(2.5, 0xfff5e6, 0.9);
+  const cx = 21, cy = 18;
+  if (expanded) {
+    purchaseArrow.moveTo(cx - 6, cy + 4);
+    purchaseArrow.lineTo(cx, cy - 4);
+    purchaseArrow.lineTo(cx + 6, cy + 4);
+  } else {
+    purchaseArrow.moveTo(cx - 4, cy - 6);
+    purchaseArrow.lineTo(cx + 4, cy);
+    purchaseArrow.lineTo(cx - 4, cy + 6);
+  }
+}
+
+function layoutPurchasePanel() {
+  const btnW = 48, btnH = 92;
+  const baseX = app.screen.width - btnW - 16;
+  const baseY = app.screen.height * 0.2;
+  purchaseBtn.x = baseX;
+  purchaseBtn.y = baseY;
+  roundRect(purchaseBtnBg, 0, 0, btnW, btnH, 10, 0xc4853a, 0.92);
+  purchaseText.x = btnW / 2;
+  purchaseText.y = btnH / 2 + 8;
+  drawPurchaseArrow(panelExpanded);
+  purchaseBtn.hitArea = new PIXI.Rectangle(0, 0, btnW, btnH);
+
+  panelContent.x = baseX - panelW - 8;
+  panelContent.y = baseY;
+  panelContent.visible = panelExpanded;
+  if (panelExpanded) {
+    roundRect(panelBg, 0, 0, panelW, panelH, 12, 0xfff8ee, 0.95);
+  }
+}
+
+function drawBuyButton(g, canAfford, color) {
+  g.clear();
+  const bgColor = canAfford ? color : 0x6b6b6b;
+  roundRect(g, 0, 0, 320, 68, 10, bgColor, 0.9);
+}
+
+const allBuyItems = [];
+
+// 只有"可负担/已拥有/数量"状态变化时才重绘 Graphics,每帧仅做几次比较
+function refreshBuyItem(item, force) {
+  const ownedNow = item.oneTime && item.owned();
+  const price = item.priceFn();
+  const afford = !ownedNow && state.tokens >= price;
+  const count = item.countFn ? item.countFn() : 0;
+  const key = (ownedNow ? 'o' : afford ? 'a' : 'p') + ':' + count;
+  if (!force && item._uiKey === key) return;
+  item._uiKey = key;
+  if (ownedNow) {
+    item.priceText.text = '已拥有';
+    item.countText.text = '';
+    drawBuyButton(item.bg, false, item.buyColor);
+  } else {
+    item.priceText.text = price + ' token';
+    if (item.countFn) {
+      item.countText.text = count > 0 ? 'x' + count : '';
+      item.countText.x = item.nameText.x + item.nameText.width + 6;
+    }
+    drawBuyButton(item.bg, afford, item.buyColor);
+  }
+}
+
+function updateAllBuyButtons(force) {
+  for (const item of allBuyItems) refreshBuyItem(item, force);
+}
+
+function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, onBuy, oneTime, owned, countFn) {
+  const bg = new PIXI.Graphics();
+  bg.x = 20; bg.y = y;
+  container.addChild(bg);
+
+  const icon = new PIXI.Graphics();
+  icon.x = 28; icon.y = y + 12;
+  iconDraw(icon);
+  container.addChild(icon);
+
+  const nameText = makeText(name, { size: 15, color: '#fff5e6', weight: 'bold' });
+  nameText.x = 80; nameText.y = y + 14;
+  container.addChild(nameText);
+
+  const countText = makeText('', { size: 13, color: '#ffd98a', weight: 'bold' });
+  countText.y = y + 14;
+  container.addChild(countText);
+
+  const descText = makeText(desc, { size: 11, color: '#d4c4a8' });
+  descText.x = 80; descText.y = y + 36;
+  container.addChild(descText);
+
+  const priceText = makeText('', { size: 14, color: '#ffd98a', weight: 'bold', anchor: 1 });
+  priceText.x = panelW - 24; priceText.y = y + 30;
+  container.addChild(priceText);
+
+  const item = { bg, nameText, countText, priceText, priceFn, oneTime, owned, countFn, buyColor, _uiKey: null };
+  refreshBuyItem(item, true);
+
+  bg.eventMode = 'static';
+  bg.cursor = 'pointer';
+  bg.hitArea = new PIXI.Rectangle(0, 0, 320, 68);
+  bg.on('pointerdown', () => {
+    if (oneTime && owned()) return;
+    const price = priceFn();
+    if (state.tokens >= price) {
+      state.tokens -= price;
+      onBuy();
+      refreshBuyItem(item, true);
+      updateAllBuyButtons();
+      updateTokenDisplay();
+      layoutCase();
+      updateRelayTabVisibility();
+      saveGame();
+    }
+  });
+
+  allBuyItems.push(item);
+  return item;
+}
+
+function initPurchasePanel() {
+  if (panelContent.children.length > 1) return;
+
+  // 三个标签
+  let currentTab = 'machine';
+  const tabs = {};
+  const tabNames = ['machine', 'cooling', 'script'];
+  const tabLabels = { machine: '机器', cooling: '散热', script: '脚本' };
+  const tabColors = { machine: '#c4853a', cooling: '#3a9a6a', script: '#ba8a3a' };
+
+  for (let i = 0; i < 3; i++) {
+    const key = tabNames[i];
+    const tab = makeText(tabLabels[key], { size: 15, color: i === 0 ? tabColors[key] : '#8a7a6a', weight: 'bold', anchor: 0.5 });
+    tab.x = panelW / 2 - 80 + i * 80;
+    tab.y = 26;
+    tab.eventMode = 'static';
+    tab.cursor = 'pointer';
+    tab.hitArea = new PIXI.Rectangle(-40, -16, 80, 32);
+    panelContent.addChild(tab);
+    tabs[key] = tab;
+  }
+
+  // 标签间竖线
+  for (let i = 1; i < 3; i++) {
+    const div = new PIXI.Graphics();
+    div.beginFill(0xd4c4a8, 0.3);
+    div.drawRect(panelW / 2 - 80 + i * 80 - 0.5, 16, 1, 20);
+    div.endFill();
+    panelContent.addChild(div);
+  }
+
+  const tabLine = new PIXI.Graphics();
+  panelContent.addChild(tabLine);
+
+  const contentDivider = new PIXI.Graphics();
+  panelContent.addChild(contentDivider);
+
+  const contents = {};
+  for (const key of tabNames) {
+    contents[key] = new PIXI.Container();
+    panelContent.addChild(contents[key]);
+    if (key !== 'machine') contents[key].visible = false;
+  }
+
+  function drawTabLine() {
+    tabLine.clear();
+    const idx = tabNames.indexOf(currentTab);
+    tabLine.beginFill(tabColors[currentTab], 0.8);
+    tabLine.drawRect(panelW / 2 - 80 + idx * 80 - 30, 46, 60, 2);
+    tabLine.endFill();
+    contentDivider.clear();
+    contentDivider.beginFill(0xd4c4a8, 0.2);
+    contentDivider.drawRect(20, 52, panelW - 40, 1);
+    contentDivider.endFill();
+  }
+  drawTabLine();
+
+  for (const key of tabNames) {
+    tabs[key].on('pointerdown', () => {
+      currentTab = key;
+      for (const k of tabNames) {
+        tabs[k].style.fill = k === key ? tabColors[k] : '#8a7a6a';
+        contents[k].visible = k === key;
+      }
+      drawTabLine();
+    });
+  }
+
+  // ========== 机器板块 ==========
+  const mc = contents.machine;
+
+  // RTX 3080
+  const rtx = createBuyItem(mc, 56, (icon) => {
+    icon.lineStyle(2, 0xffd98a, 0.9);
+    icon.beginFill(0x3a5a7a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 5);
+    icon.endFill();
+    icon.lineStyle(1.5, 0xffd98a, 0.7);
+    icon.beginFill(0x5a7a9a, 0.5);
+    icon.drawRoundedRect(9, 9, 20, 20, 3);
+    icon.endFill();
+  }, 'RTX 3080', 'token生成效率 +5/s', rtx3080Price, 0x4a7c59, () => {
+    state.machines.rtx3080.count++;
+    recalcProduction();
+    recalcCrit();
+  }, false, () => false, () => state.machines.rtx3080.count);
+
+  // A100 计算卡
+  const a100 = createBuyItem(mc, 134, (icon) => {
+    icon.lineStyle(2, 0xaabbff, 0.9);
+    icon.beginFill(0x2a3a6a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 5);
+    icon.endFill();
+    icon.lineStyle(1.5, 0xaabbff, 0.7);
+    icon.beginFill(0x4a5a8a, 0.5);
+    icon.drawRoundedRect(6, 6, 26, 26, 3);
+    icon.endFill();
+    icon.lineStyle(1, 0xaabbff, 0.6);
+    icon.beginFill(0x6a7aaa, 0.4);
+    icon.drawRect(12, 12, 14, 14);
+    icon.endFill();
+  }, 'A100 计算卡', '+50 token/s，暴击率 +0.5%', a100Price, 0x5a6a9a, () => {
+    state.machines.a100.count++;
+    recalcProduction();
+    recalcCrit();
+  }, false, () => false, () => state.machines.a100.count);
+
+  // 额外机柜
+  const rack = createBuyItem(mc, 212, (icon) => {
+    icon.lineStyle(2, 0xd4aaff, 0.9);
+    icon.beginFill(0x4a2a6a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 4);
+    icon.endFill();
+    icon.lineStyle(1, 0xd4aaff, 0.6);
+    for (let i = 0; i < 4; i++) {
+      icon.drawRect(5, 5 + i * 8, 28, 5);
+    }
+  }, '额外机柜', '暴击倍率 +1%', extraRackPrice, 0x8a5a9a, () => {
+    state.machines.extraRack.count++;
+    recalcCrit();
+  }, false, () => false, () => state.machines.extraRack.count);
+
+  // 服务器（解锁中转站）
+  const server = createBuyItem(mc, 290, (icon) => {
+    icon.lineStyle(2, 0xffaa6a, 0.9);
+    icon.beginFill(0x5a3a1a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 4);
+    icon.endFill();
+    icon.lineStyle(1.5, 0xffaa6a, 0.7);
+    for (let i = 0; i < 4; i++) {
+      icon.drawRect(4, 4 + i * 8, 30, 5);
+    }
+    icon.beginFill(0x6aff6a, 0.9);
+    icon.drawCircle(32, 8, 2);
+    icon.endFill();
+  }, '服务器', '购买后解锁"中转站"系统', serverPrice, 0xba6a3a, () => {
+    state.machines.server.count++;
+    updateRelayTabVisibility();
+  }, false, () => state.machines.server.count);
+
+  // ========== 散热板块 ==========
+  const cc = contents.cooling;
+
+  // 心静自然凉（风扇）
+  const fan = createBuyItem(cc, 56, (icon) => {
+    icon.lineStyle(2, 0x7ac8a0, 0.9);
+    icon.beginFill(0x2a5a4a, 0.6);
+    icon.drawCircle(19, 19, 19);
+    icon.endFill();
+    icon.lineStyle(1.5, 0x7ac8a0, 0.8);
+    icon.beginFill(0x5aaa8a, 0.5);
+    for (let i = 0; i < 3; i++) {
+      const angle = (i / 3) * Math.PI * 2;
+      icon.moveTo(19, 19);
+      icon.quadraticCurveTo(19 + Math.cos(angle - 0.4) * 14, 19 + Math.sin(angle - 0.4) * 14, 19 + Math.cos(angle) * 16, 19 + Math.sin(angle) * 16);
+      icon.quadraticCurveTo(19 + Math.cos(angle + 0.4) * 14, 19 + Math.sin(angle + 0.4) * 14, 19, 19);
+    }
+    icon.endFill();
+    icon.beginFill(0x7ac8a0, 0.9);
+    icon.drawCircle(19, 19, 4);
+    icon.endFill();
+  }, '心静自然凉', '每次点击获得的token数 ×1.1', fanPrice, 0x3a9a6a, () => {
+    state.cooling.fan.count++;
+    recalcClickPower();
+  }, false, () => false, () => state.cooling.fan.count);
+
+  // 水冷
+  const wc = createBuyItem(cc, 134, (icon) => {
+    icon.lineStyle(2, 0x6abaff, 0.9);
+    icon.beginFill(0x1a3a5a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 5);
+    icon.endFill();
+    icon.lineStyle(1.5, 0x6abaff, 0.7);
+    icon.beginFill(0x3a6a9a, 0.5);
+    icon.moveTo(19, 6);
+    icon.quadraticCurveTo(32, 14, 19, 22);
+    icon.quadraticCurveTo(6, 30, 19, 38);
+    icon.lineTo(19, 6);
+    icon.endFill();
+    icon.beginFill(0x6abaff, 0.8);
+    icon.drawCircle(19, 22, 3);
+    icon.endFill();
+  }, '水冷', '10s-2min触发，19%概率 token×1.2', waterCoolingPrice, 0x3a8aba, () => {
+    state.cooling.waterCooling.count++;
+    state.waterCoolingNextTrigger = 10 + Math.random() * 110;
+    state.waterCoolingTimer = 0;
+  }, false, () => false, () => state.cooling.waterCooling.count);
+
+  // ========== 脚本板块 ==========
+  const sc = contents.script;
+
+  // 自动点击脚本
+  const autoClick = createBuyItem(sc, 56, (icon) => {
+    icon.lineStyle(2, 0xffd98a, 0.9);
+    icon.beginFill(0x5a4a2a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 5);
+    icon.endFill();
+    icon.lineStyle(1.5, 0xffd98a, 0.8);
+    icon.moveTo(8, 14); icon.lineTo(30, 14);
+    icon.moveTo(8, 20); icon.lineTo(25, 20);
+    icon.moveTo(8, 26); icon.lineTo(28, 26);
+    icon.moveTo(8, 32); icon.lineTo(20, 32);
+  }, '自动点击', '每秒自动点击 3 次', () => 800, 0xba8a3a, () => {
+    state.scripts.autoClick = true;
+  }, true, () => state.scripts.autoClick, null);
+
+  // 奇迹算法
+  const miracle = createBuyItem(sc, 134, (icon) => {
+    icon.lineStyle(2, 0xff8acc, 0.9);
+    icon.beginFill(0x5a2a4a, 0.6);
+    icon.drawRoundedRect(0, 0, 38, 38, 5);
+    icon.endFill();
+    icon.lineStyle(1.5, 0xff8acc, 0.8);
+    icon.moveTo(19, 6);
+    icon.lineTo(22, 16);
+    icon.lineTo(32, 16);
+    icon.lineTo(24, 22);
+    icon.lineTo(27, 32);
+    icon.lineTo(19, 26);
+    icon.lineTo(11, 32);
+    icon.lineTo(14, 22);
+    icon.lineTo(6, 16);
+    icon.lineTo(16, 16);
+    icon.closePath();
+  }, '奇迹算法', '拖动服务器砸地面有概率获得token', () => 1500, 0xba5a8a, () => {
+    state.scripts.miracle = true;
+  }, true, () => state.scripts.miracle, null);
+
+  updateAllBuyButtons();
+}
+
+purchaseBtn.on('pointerdown', () => {
+  panelExpanded = !panelExpanded;
+  drawPurchaseArrow(panelExpanded);
+  layoutPurchasePanel();
+  if (panelExpanded) initPurchasePanel();
+});
+addPressFeedback(purchaseBtn);
+
+// ==================== 生产标签 ====================
+const productionTab = new PIXI.Container();
+const prodTabBg = new PIXI.Graphics();
+const prodTabText = makeText('生产', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+productionTab.addChild(prodTabBg, prodTabText);
+layers.nav.addChild(productionTab);
+addPressFeedback(productionTab);
+productionTab.eventMode = 'static';
+productionTab.cursor = 'pointer';
+productionTab.on('pointerdown', () => { switchScene('production'); });
+
+function layoutProductionTab() {
+  const w = 120, h = 44;
+  productionTab.x = app.screen.width * 0.38 - w / 2;
+  productionTab.y = app.screen.height - h - 14;
+  roundRect(prodTabBg, 0, 0, w, h, 10, 0x2a1f16, 0.85);
+  prodTabText.x = w / 2;
+  prodTabText.y = h / 2;
+}
+
+// ==================== 中转站：数据包货币体系 ====================
+// 解锁条件:购买服务器。数据包在暂存区按速率累积(有上限),进入中转站点"转运"领取,
+// 用于购买中转升级。注:排行榜/社交系统已移除,不在本作范围内。
+const relayTab = new PIXI.Container();
+const relayTabBg = new PIXI.Graphics();
+const relayTabText = makeText('中转站', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+relayTab.addChild(relayTabBg, relayTabText);
+layers.nav.addChild(relayTab);
+relayTab.visible = false; // 购买服务器后解锁
+addPressFeedback(relayTab);
+
+// ---- 场景切换:底部双标签,点击切换(去掉返回按钮/顶部提示文字) ----
+function switchScene(name) {
+  const relay = name === 'relay';
+  if (relay) {
+    if (!relayTab.visible) return; // 未解锁,无操作
+    if (!relaySceneOpen) openRelayScene();
+  } else {
+    if (relaySceneOpen) closeRelayScene();
+  }
+  // 高亮当前标签
+  roundRect(relayTabBg, 0, 0, 120, 44, 10, relay ? 0x9a5a3a : 0x6a3a2a, 0.85);
+  roundRect(prodTabBg, 0, 0, 120, 44, 10, relay ? 0x2a1f16 : 0x4a3a26, 0.85);
+}
+
+// ---- 中转站场景 ----
+const relayScene = new PIXI.Container();
+relayScene.visible = false;
+// 插到 nav 层之下:场景切换标签必须保持可见可点
+app.stage.addChildAt(relayScene, app.stage.getChildIndex(layers.nav));
+
+// 中转站背景
+const relayBg = PIXI.Sprite.from(ASSETS.transfer_bg);
+relayScene.addChild(relayBg);
+
+// 椅子（前置图层，方便后续叠加人物坐姿）
+const chairSprite = PIXI.Sprite.from(ASSETS.chair);
+relayScene.addChild(chairSprite);
+
+// 注:玩法(货币/升级/交互)后续安排,当前只放背景和椅子占位。
+let relaySceneOpen = false;
+
+function openRelayScene() {
+  relaySceneOpen = true;
+  relayScene.visible = true;
+  state.paused = true;
+  layoutRelayScene();
+}
+
+function closeRelayScene() {
+  relaySceneOpen = false;
+  relayScene.visible = false;
+  state.paused = false;
+}
+
+relayTab.on('pointerdown', () => { switchScene('relay'); });
+
+function layoutRelayScene() {
+  const w = app.screen.width;
+  const h = app.screen.height;
+  // 背景图铺满
+  const bgScale = Math.max(w / relayBg.texture.width, h / relayBg.texture.height);
+  relayBg.scale.set(bgScale);
+  relayBg.x = (w - relayBg.texture.width * bgScale) / 2;
+  relayBg.y = (h - relayBg.texture.height * bgScale) / 2;
+  // 椅子:办公桌前
+  const chairScale = Math.min(1, (w * 0.15) / chairSprite.texture.width);
+  chairSprite.scale.set(chairScale);
+  chairSprite.x = w / 2 - chairSprite.texture.width * chairScale / 2;
+  chairSprite.y = h * 0.55;
+}
+
+function layoutRelayTab() {
+  const w = 120, h = 44;
+  relayTab.x = app.screen.width * 0.62 - w / 2;
+  relayTab.y = app.screen.height - h - 14;
+  roundRect(relayTabBg, 0, 0, w, h, 10, 0x6a3a2a, 0.85);
+  relayTabText.x = w / 2;
+  relayTabText.y = h / 2;
+}
+
+function updateRelayTabVisibility() {
+  relayTab.visible = state.machines.server.count > 0;
+  if (!relayTab.visible && relaySceneOpen) closeRelayScene();
+}
+
+// ==================== 顶部信息栏 ====================
+const topbarBg = new PIXI.Graphics();
+layers.topbar.addChild(topbarBg);
+const tokenLabel = makeText('', { size: 18, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+const tpsLabel = makeText('', { size: 13, color: '#d4c4a8', anchor: 0.5 });
+layers.topbar.addChild(tokenLabel, tpsLabel);
+
+function layoutTopbar() {
+  const w = Math.min(260, app.screen.width * 0.5);
+  const h = 52;
+  const x = (app.screen.width - w) / 2;
+  const y = 12;
+  roundRect(topbarBg, x, y, w, h, 14, 0x2a1f16, 0.72);
+  tokenLabel.x = app.screen.width / 2;
+  tokenLabel.y = y + 18;
+  tpsLabel.x = app.screen.width / 2;
+  tpsLabel.y = y + 38;
+}
+
+function formatNum(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  // 一位小数，去掉末尾多余的0
+  const rounded = Math.round(n * 10) / 10;
+  return rounded.toString();
+}
+
+let lastTokenStr = '';
+let lastTpsStr = '';
+function updateTokenDisplay() {
+  const ts = formatNum(state.tokens) + ' tokens';
+  if (ts !== lastTokenStr) { lastTokenStr = ts; tokenLabel.text = ts; }
+  const ps = state.tokensPerSecond > 0 ? ('+ ' + formatNum(state.tokensPerSecond) + ' / 秒') : '点击屏幕获取 tokens';
+  if (ps !== lastTpsStr) { lastTpsStr = ps; tpsLabel.text = ps; }
+}
+
+// ==================== 设置按钮 ====================
+const settingsBtn = new PIXI.Container();
+const settingsBtnBg = new PIXI.Graphics();
+const gearIcon = new PIXI.Graphics();
+settingsBtn.addChild(settingsBtnBg, gearIcon);
+layers.topbar.addChild(settingsBtn);
+
+function drawGear(g, cx, cy, r) {
+  g.clear();
+  g.lineStyle(2.5, 0xfff5e6, 0.9);
+  g.beginFill(0xfff5e6, 0.1);
+  const teeth = 8;
+  g.moveTo(cx + r, cy);
+  for (let i = 0; i < teeth * 2; i++) {
+    const angle = (i / (teeth * 2)) * Math.PI * 2;
+    const rr = i % 2 === 0 ? r : r * 0.7;
+    g.lineTo(cx + Math.cos(angle) * rr, cy + Math.sin(angle) * rr);
+  }
+  g.closePath();
+  g.endFill();
+  g.drawCircle(cx, cy, r * 0.35);
+}
+
+function layoutSettingsBtn() {
+  const size = 48;
+  const x = 14, y = 14;
+  roundRect(settingsBtnBg, 0, 0, size, size, 12, 0x2a1f16, 0.72);
+  settingsBtn.x = x; settingsBtn.y = y;
+  settingsBtn.hitArea = new PIXI.Rectangle(0, 0, size, size);
+  drawGear(gearIcon, size / 2, size / 2, 14);
+}
+addPressFeedback(settingsBtn);
+settingsBtn.on('pointerdown', () => { openSettings(); });
+
+// ==================== 设置面板 ====================
+const settingsOverlay = new PIXI.Graphics();
+const settingsPanel = new PIXI.Container();
+layers.settings.addChild(settingsOverlay, settingsPanel);
+layers.settings.visible = false;
+
+let musicVolume = 0.7;
+let sfxVolume = 0.8;
+
+function openSettings() {
+  layers.settings.visible = true;
+  state.paused = true;
+  settingsOverlay.clear();
+  settingsOverlay.beginFill(0x000000, 0.55);
+  settingsOverlay.drawRect(0, 0, app.screen.width, app.screen.height);
+  settingsOverlay.endFill();
+  settingsOverlay.eventMode = 'static';
+  drawSettingsPanel();
+}
+
+function closeSettings() {
+  state.paused = false;
+  tween(settingsPanel, { alpha: 0 }, 0.15, () => { layers.settings.visible = false; });
+}
+
+settingsOverlay.on('pointerdown', () => { closeSettings(); });
+
+function drawSettingsPanel() {
+  settingsPanel.removeChildren();
+  const pw = 340, ph = 380;
+  const px = (app.screen.width - pw) / 2;
+  const py = (app.screen.height - ph) / 2;
+  settingsPanel.x = px; settingsPanel.y = py;
+  settingsPanel.alpha = 1;
+
+  const bg = new PIXI.Graphics();
+  roundRect(bg, 0, 0, pw, ph, 16, 0x2a1f16, 0.95);
+  settingsPanel.addChild(bg);
+
+  const title = makeText('设置', { size: 20, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
+  title.x = pw / 2; title.y = 28;
+  settingsPanel.addChild(title);
+
+  // 音乐音量
+  const musicLabel = makeText('音乐音量', { size: 14, color: '#d4c4a8' });
+  musicLabel.x = 30; musicLabel.y = 70;
+  settingsPanel.addChild(musicLabel);
+  const musicVal = makeText(Math.round(musicVolume * 100) + '%', { size: 14, color: '#ffd98a', anchor: 1 });
+  musicVal.x = pw - 30; musicVal.y = 70;
+  settingsPanel.addChild(musicVal);
+  const musicSlider = createSlider(30, 100, pw - 60, musicVolume, (v) => {
+    musicVolume = v; musicVal.text = Math.round(v * 100) + '%';
+  });
+  settingsPanel.addChild(musicSlider);
+
+  // 音效音量
+  const sfxLabel = makeText('音效音量', { size: 14, color: '#d4c4a8' });
+  sfxLabel.x = 30; sfxLabel.y = 150;
+  settingsPanel.addChild(sfxLabel);
+  const sfxVal = makeText(Math.round(sfxVolume * 100) + '%', { size: 14, color: '#ffd98a', anchor: 1 });
+  sfxVal.x = pw - 30; sfxVal.y = 150;
+  settingsPanel.addChild(sfxVal);
+  const sfxSlider = createSlider(30, 180, pw - 60, sfxVolume, (v) => {
+    sfxVolume = v; sfxVal.text = Math.round(v * 100) + '%';
+  });
+  settingsPanel.addChild(sfxSlider);
+
+  // 重置存档按钮
+  const resetBtn = new PIXI.Container();
+  const resetBg = new PIXI.Graphics();
+  const resetText = makeText('重置存档', { size: 14, color: '#ff8a8a', weight: 'bold', anchor: 0.5 });
+  resetBtn.addChild(resetBg, resetText);
+  roundRect(resetBg, 0, 0, pw - 60, 40, 8, 0x4a2a2a, 0.8);
+  resetText.x = (pw - 60) / 2; resetText.y = 20;
+  resetBtn.x = 30; resetBtn.y = ph - 125;
+  resetBtn.eventMode = 'static';
+  resetBtn.cursor = 'pointer';
+  resetBtn.hitArea = new PIXI.Rectangle(0, 0, pw - 60, 40);
+  resetBtn.on('pointerdown', () => {
+    if (confirm('确定要重置所有存档吗？此操作不可撤销！')) {
+      resetGame();
+      closeSettings();
+    }
+  });
+  addPressFeedback(resetBtn);
+  settingsPanel.addChild(resetBtn);
+
+  // 继续游戏按钮
+  const continueBtn = new PIXI.Container();
+  const continueBg = new PIXI.Graphics();
+  const continueText = makeText('继续游戏', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+  continueBtn.addChild(continueBg, continueText);
+  roundRect(continueBg, 0, 0, pw - 60, 48, 10, 0xc4853a, 0.9);
+  continueText.x = (pw - 60) / 2; continueText.y = 24;
+  continueBtn.x = 30; continueBtn.y = ph - 70;
+  continueBtn.eventMode = 'static';
+  continueBtn.cursor = 'pointer';
+  continueBtn.hitArea = new PIXI.Rectangle(0, 0, pw - 60, 48);
+  continueBtn.on('pointerdown', () => { closeSettings(); });
+  addPressFeedback(continueBtn);
+  settingsPanel.addChild(continueBtn);
+}
+
+function createSlider(x, y, w, value, onChange) {
+  const container = new PIXI.Container();
+  container.x = x; container.y = y;
+
+  const track = new PIXI.Graphics();
+  track.beginFill(0x4a3a2a, 0.8);
+  track.drawRoundedRect(0, 8, w, 6, 3);
+  track.endFill();
+  container.addChild(track);
+
+  const fill = new PIXI.Graphics();
+  container.addChild(fill);
+
+  const handle = new PIXI.Graphics();
+  container.addChild(handle);
+
+  function update() {
+    fill.clear();
+    fill.beginFill(0xffd98a, 0.9);
+    fill.drawRoundedRect(0, 8, w * value, 6, 3);
+    fill.endFill();
+    handle.clear();
+    handle.beginFill(0xffd98a, 1);
+    handle.drawCircle(w * value, 11, 9);
+    handle.endFill();
+  }
+  update();
+
+  container.eventMode = 'static';
+  container.cursor = 'pointer';
+  container.hitArea = new PIXI.Rectangle(0, 0, w, 22);
+  container.on('pointerdown', (e) => {
+    const localX = e.global.x - container.getGlobalPosition().x;
+    value = Math.max(0, Math.min(1, localX / w));
+    update();
+    if (onChange) onChange(value);
+  });
+  container.on('pointermove', (e) => {
+    if (e.buttons === 1) {
+      const localX = e.global.x - container.getGlobalPosition().x;
+      value = Math.max(0, Math.min(1, localX / w));
+      update();
+      if (onChange) onChange(value);
+    }
+  });
+
+  return container;
+}
+
+// ESC 打开设置
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (layers.settings.visible) closeSettings();
+    else openSettings();
+  }
+});
+
+// ==================== 游戏状态 ====================
+const state = {
+  tokens: 0,
+  tokensPerClick: 1,
+  tokensPerSecond: 0,
+  paused: false,
+  critChance: 0.005,
+  critMultiplier: 1.5,
+  machines: {
+    rtx3080: { count: 0 },
+    a100: { count: 0 },
+    extraRack: { count: 0 },
+    server: { count: 0 },
+  },
+  cooling: {
+    fan: { count: 0 },
+    waterCooling: { count: 0 },
+  },
+  scripts: {
+    autoClick: false,
+    miracle: false,
+  },
+  relay: {
+    // 中转站玩法占位:具体经济体系后续安排
+  },
+  waterCoolingTimer: 0,
+  waterCoolingNextTrigger: 10,
+  autoClickAccum: 0,
+};
+
+function rtx3080Price() {
+  return Math.floor(50 * Math.pow(1.5, state.machines.rtx3080.count));
+}
+function fanPrice() {
+  return Math.floor(80 * Math.pow(1.5, state.cooling.fan.count));
+}
+function a100Price() {
+  return Math.floor(2000 * Math.pow(1.5, state.machines.a100.count));
+}
+function extraRackPrice() {
+  return Math.floor(5000 * Math.pow(2, state.machines.extraRack.count));
+}
+function serverPrice() {
+  return Math.floor(10000 * Math.pow(2, state.machines.server.count));
+}
+function waterCoolingPrice() {
+  return Math.floor(3000 * Math.pow(1.8, state.cooling.waterCooling.count));
+}
+function recalcClickPower() {
+  state.tokensPerClick = Math.pow(1.1, state.cooling.fan.count);
+}
+function recalcCrit() {
+  state.critChance = 0.005 + state.machines.a100.count * 0.005;
+  state.critMultiplier = 1.5 + state.machines.extraRack.count * 0.01;
+}
+function recalcProduction() {
+  state.tokensPerSecond = state.machines.rtx3080.count * 5 + state.machines.a100.count * 50;
+}
+
+// ==================== 本地存档 ====================
+const SAVE_KEY = 'dshgame_save_v1';
+let saveAccum = 0;
+
+function saveGame() {
+  try {
+    const data = {
+      tokens: state.tokens,
+      rtx3080: state.machines.rtx3080.count,
+      a100: state.machines.a100.count,
+      extraRack: state.machines.extraRack.count,
+      server: state.machines.server.count,
+      fan: state.cooling.fan.count,
+      waterCooling: state.cooling.waterCooling.count,
+      autoClick: state.scripts.autoClick,
+      miracle: state.scripts.miracle,
+      savedAt: Date.now()
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    return true;
+  } catch(e) { return false; }
+}
+
+function loadGame() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    state.tokens = data.tokens || 0;
+    state.machines.rtx3080.count = data.rtx3080 || 0;
+    state.machines.a100.count = data.a100 || 0;
+    state.machines.extraRack.count = data.extraRack || 0;
+    state.machines.server.count = data.server || 0;
+    state.cooling.fan.count = data.fan || 0;
+    state.cooling.waterCooling.count = data.waterCooling || 0;
+    state.scripts.autoClick = !!(data.autoClick || data.niger); // 兼容旧存档的 niger 字段
+    state.scripts.miracle = data.miracle || false;
+    recalcProduction();
+    recalcClickPower();
+    recalcCrit();
+    return true;
+  } catch(e) { return false; }
+}
+
+function resetGame() {
+  try { localStorage.removeItem(SAVE_KEY); } catch(e) {}
+  state.tokens = 0;
+  state.machines.rtx3080.count = 0;
+  state.machines.a100.count = 0;
+  state.machines.extraRack.count = 0;
+  state.machines.server.count = 0;
+  state.cooling.fan.count = 0;
+  state.cooling.waterCooling.count = 0;
+  state.scripts.autoClick = false;
+  state.scripts.miracle = false;
+  state.relay = { // 中转站玩法占位:具体经济体系后续安排
+  };
+  recalcProduction();
+  recalcClickPower();
+  recalcCrit();
+  caseInitialized = false;
+  casePhysics.userMoved = false;
+  updateTokenDisplay();
+  layoutCase();
+  updateRelayTabVisibility();
+}
+
+// ==================== 统一布局 ====================
+function layoutAll() {
+  fitAllBgs();
+  clickMask.clear();
+  clickMask.beginFill(0x000000, 0.001);
+  clickMask.drawRect(0, 0, app.screen.width, app.screen.height);
+  clickMask.endFill();
+  layoutCharacters();
+  layoutTopbar();
+  layoutSettingsBtn();
+  layoutCase();
+  initPurchasePanel();
+  layoutPurchasePanel();
+  layoutProductionTab();
+  layoutRelayTab();
+  if (relaySceneOpen) layoutRelayScene();
+  updateTokenDisplay();
+}
+
+// resize 高频触发(拖拽窗口/旋转手机),rAF 节流到每帧最多一次全量布局
+let resizePending = false;
+window.addEventListener('resize', () => {
+  if (resizePending) return;
+  resizePending = true;
+  requestAnimationFrame(() => { resizePending = false; layoutAll(); });
+});
+
+// ==================== 手机横屏引导 ====================
+function isTouchDevice() {
+  const coarse = !!(window.matchMedia && window.matchMedia('(pointer:coarse)').matches);
+  const touches = Number(navigator.maxTouchPoints || 0) > 0;
+  return coarse || touches;
+}
+function isPortraitViewport() { return window.innerHeight > window.innerWidth; }
+function updateOrientationGate() {
+  const el = document.getElementById('rotatePrompt');
+  if (!el) return;
+  const show = isTouchDevice() && isPortraitViewport();
+  el.classList.toggle('show', show);
+  el.setAttribute('aria-hidden', String(!show));
+}
+updateOrientationGate();
+window.addEventListener('resize', updateOrientationGate);
+window.addEventListener('orientationchange', () => { setTimeout(updateOrientationGate, 300); });
+
+// ==================== 主循环 ====================
+let secondAccum = 0;
+let lastFrameTime = performance.now();
+
+app.ticker.add(() => {
+  const now = performance.now();
+  const dt = Math.min((now - lastFrameTime) / 1000, 0.5);
+  lastFrameTime = now;
+  updateTweens(dt);
+  if (!state.paused) {
+    updateLight();
+    updateCharacters(dt);
+    updateAllBuyButtons();
+    updateCasePhysics();
+    // 说话气泡：拖动或物理运动时显示，静止时隐藏
+    const caseMoving = casePhysics.isDragging || (casePhysics.isActive && (Math.abs(casePhysics.vx) > 0.2 || Math.abs(casePhysics.vy) > 0.2));
+    speechBubble.visible = caseMoving;
+
+    // 自动点击脚本：每秒3次
+    if (state.scripts.autoClick) {
+      state.autoClickAccum += dt * 3;
+      while (state.autoClickAccum >= 1) {
+        state.autoClickAccum -= 1;
+        const cx = pcCase.x + pcCase.texture.width * pcCase.scale.x / 2;
+        const cy = pcCase.y + 20;
+        doClick(cx, cy);
+      }
+    }
+
+    // 水冷随机事件
+    if (state.cooling.waterCooling.count > 0) {
+      state.waterCoolingTimer += dt;
+      if (state.waterCoolingTimer >= state.waterCoolingNextTrigger) {
+        state.waterCoolingTimer = 0;
+        state.waterCoolingNextTrigger = 10 + Math.random() * 110;
+        if (Math.random() < 0.19) {
+          const bonus = state.tokens * 0.2;
+          state.tokens += bonus;
+          spawnFloatText('水冷! +' + formatNum(bonus), app.screen.width / 2, app.screen.height / 3);
+          updateTokenDisplay();
+        }
+      }
+    }
+
+    secondAccum += dt;
+    if (secondAccum >= 1) {
+      const add = state.tokensPerSecond * Math.floor(secondAccum);
+      if (add > 0) {
+        state.tokens += add;
+        updateTokenDisplay();
+      }
+      if (state.cooling.fan.count > 0) recalcClickPower();
+      secondAccum = secondAccum % 1;
+    }
+    // 自动存档：每30秒
+    saveAccum += dt;
+    if (saveAccum >= 30) {
+      saveAccum = 0;
+      saveGame();
+    }
+  }
+});
+
+// ==================== 启动（多重布局保险） ====================
+// 加载本地存档
+const hasSave = loadGame();
+layoutAll();
+if (hasSave) {
+  updateTokenDisplay();
+  layoutCase();
+  updateRelayTabVisibility();
+}
+
+let relayoutPending = false;
+function safeRelayout() {
+  const texturesReady = bgLight.texture.width > 0 && bgDark.texture.width > 0 &&
+    charClosed.texture.width > 0 && charOpen.texture.width > 0 &&
+    pcCase.texture.width > 0;
+  if (!texturesReady) return false;
+  if (relayoutPending) return true;
+  relayoutPending = true;
+  requestAnimationFrame(() => { relayoutPending = false; layoutAll(); });
+  return true;
+}
+
+bgLight.texture.on('update', () => { safeRelayout(); });
+bgDark.texture.on('update', () => { safeRelayout(); });
+charClosed.texture.on('update', () => { safeRelayout(); });
+charOpen.texture.on('update', () => { safeRelayout(); });
+pcCase.texture.on('update', () => { safeRelayout(); });
+
+window.addEventListener('load', () => { setTimeout(safeRelayout, 0); });
+
+// ticker 一次性布局修正：前60帧检查背景图是否覆盖全屏
+let layoutFixFrames = 0;
+const layoutFixTicker = () => {
+  layoutFixFrames++;
+  if (layoutFixFrames > 60) { app.ticker.remove(layoutFixTicker); return; }
+  const bl = bgLight;
+  const coversFull = bl.texture.width > 0 && isFinite(bl.scale.x) && bl.scale.x > 0 &&
+    bl.texture.width * bl.scale.x >= app.screen.width - 1 &&
+    bl.texture.height * bl.scale.y >= app.screen.height - 1;
+  if (!coversFull) { safeRelayout(); }
+  else { app.ticker.remove(layoutFixTicker); }
+};
+app.ticker.add(layoutFixTicker);
+</script>
+</body>
+</html>

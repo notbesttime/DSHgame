@@ -1,0 +1,9 @@
+# 构建产物(index.html 可由 build.py 重新生成)
+index.html
+
+# 临时/交换文件
+_tmp_*
+_*.js
+*.log
+Thumbs.db
+Desktop.ini
