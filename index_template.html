@@ -991,11 +991,14 @@ function layoutRelayScene() {
   relayBg.scale.set(bgScale);
   relayBg.x = (w - relayBg.texture.width * bgScale) / 2;
   relayBg.y = (h - relayBg.texture.height * bgScale) / 2;
-  // 椅子:办公桌前,底部中心锚点,坐垫落在桌前地面
-  const chairScale = h * 0.42 / chairSprite.texture.height;
-  chairSprite.scale.set(chairScale);
-  chairSprite.x = w / 2;
-  chairSprite.y = h * 0.88;
+  // 椅子:与背景同一坐标系,位置/大小对齐原始带椅子背景
+  // (在 1672x941 原图坐标系中:顶 0.3996 / 底 0.9277 / 水平中心 0.508)
+  const bw = relayBg.texture.width;
+  const bh = relayBg.texture.height;
+  const chH = (0.9277 - 0.3996) * bh * bgScale;
+  chairSprite.scale.set(chH / chairSprite.texture.height);
+  chairSprite.x = relayBg.x + 0.508 * bw * bgScale;
+  chairSprite.y = relayBg.y + 0.9277 * bh * bgScale; // anchor (0.5, 1):底部中心
 }
 
 function layoutRelayTab() {
