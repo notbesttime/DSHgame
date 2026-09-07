@@ -16,7 +16,7 @@ ASSET_FILES = {
     "speech_bubble": ("assets/compressed_webp/speech_bubble.webp", "image/webp"),
     "pc_case_upgraded": ("assets/compressed_webp/pc_case_upgraded.webp", "image/webp"),
     "transfer_bg": ("assets/compressed/transfer_bg.jpg", "image/jpeg"),
-    "chair": ("assets/compressed_webp/chair.webp", "image/webp"),
+    "chair": ("assets/compressed_webp/chair_hi.webp", "image/webp"),
 }
 
 with open("index_template.html", "r", encoding="utf-8") as f:

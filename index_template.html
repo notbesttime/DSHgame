@@ -960,8 +960,9 @@ app.stage.addChildAt(relayScene, app.stage.getChildIndex(layers.nav));
 const relayBg = PIXI.Sprite.from(ASSETS.transfer_bg);
 relayScene.addChild(relayBg);
 
-// 椅子（前置图层，方便后续叠加人物坐姿）
+// 椅子(高清素材,锚点底部中心,方便按地面线摆放)
 const chairSprite = PIXI.Sprite.from(ASSETS.chair);
+chairSprite.anchor.set(0.5, 1);
 relayScene.addChild(chairSprite);
 
 // 注:玩法(货币/升级/交互)后续安排,当前只放背景和椅子占位。
@@ -990,11 +991,11 @@ function layoutRelayScene() {
   relayBg.scale.set(bgScale);
   relayBg.x = (w - relayBg.texture.width * bgScale) / 2;
   relayBg.y = (h - relayBg.texture.height * bgScale) / 2;
-  // 椅子:办公桌前
-  const chairScale = Math.min(1, (w * 0.15) / chairSprite.texture.width);
+  // 椅子:办公桌前,底部中心锚点,坐垫落在桌前地面
+  const chairScale = h * 0.42 / chairSprite.texture.height;
   chairSprite.scale.set(chairScale);
-  chairSprite.x = w / 2 - chairSprite.texture.width * chairScale / 2;
-  chairSprite.y = h * 0.55;
+  chairSprite.x = w / 2;
+  chairSprite.y = h * 0.88;
 }
 
 function layoutRelayTab() {

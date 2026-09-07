@@ -19,7 +19,6 @@ TARGETS = {
     'char1.png': (None, 88),           # 400x400
     'char2.png': (None, 88),
     'speech_bubble.png': (None, 88),
-    'chair.png': (None, 88),
 }
 
 for name, (max_edge, q) in TARGETS.items():

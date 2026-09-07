@@ -11,6 +11,7 @@ DSHgame/
 ├── index.html               构建产物(勿手改,重新生成)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护)
 ├── recompress_assets.py   ★ 资产重压缩:compressed/*.png → compressed_webp/*.webp
+├── cut_chair.py             椅子专用:从 raw 高清原图裁剪 → compressed_webp/chair_hi.webp
 ├── lib/pixi.min.js          PixiJS v7.4.0(构建时内联)
 ├── assets/
 │   ├── raw/                 原始素材(来源,不参与构建)
