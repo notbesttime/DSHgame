@@ -932,49 +932,52 @@ purchaseBtn.on('pointerdown', () => {
 });
 addPressFeedback(purchaseBtn);
 
-// ==================== 生产标签 ====================
-const productionTab = new PIXI.Container();
-const prodTabBg = new PIXI.Graphics();
-const prodTabText = makeText('生产', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
-productionTab.addChild(prodTabBg, prodTabText);
-layers.nav.addChild(productionTab);
-addPressFeedback(productionTab);
-productionTab.eventMode = 'static';
-productionTab.cursor = 'pointer';
-productionTab.on('pointerdown', () => { switchScene('production'); });
+// ==================== 底部标签栏(生产 / 中转站 / 调教) ====================
+// 三个标签**均匀分布**:layoutNavTabs() 只对「当前可见」的标签算位置,
+// 所以中转站没解锁时不会在中间留一个空位。
+const TABS = [
+  { key: 'production', label: '生产', on: 0x6a3a2a, off: 0x2a1f16 },
+  { key: 'relay', label: '中转站', on: 0x9a5a3a, off: 0x6a3a2a },
+  { key: 'tune', label: '调教', on: 0x9a5a3a, off: 0x6a3a2a },
+];
+let navScene = 'production';
+for (const t of TABS) {
+  t.container = new PIXI.Container();
+  t.bg = new PIXI.Graphics();
+  t.text = makeText(t.label, { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+  t.container.addChild(t.bg, t.text);
+  t.container.eventMode = 'static';
+  t.container.cursor = 'pointer';
+  layers.nav.addChild(t.container);
+  addPressFeedback(t.container);
+  t.container.on('pointerdown', () => switchScene(t.key));
+}
+const tabOf = (key) => TABS.find(t => t.key === key);
+// 中转站:购买服务器后解锁;调教:一直显示(训练系统设计中,见 中转站设计.md 第10节)
+tabOf('relay').container.visible = false;
 
-function layoutProductionTab() {
+function layoutNavTabs() {
   const w = 120, h = 44;
-  productionTab.x = app.screen.width * 0.38 - w / 2;
-  productionTab.y = app.screen.height - h - 14;
-  roundRect(prodTabBg, 0, 0, w, h, 10, 0x2a1f16, 0.85);
-  prodTabText.x = w / 2;
-  prodTabText.y = h / 2;
+  const vis = TABS.filter(t => t.container.visible);
+  vis.forEach((t, i) => {
+    t.container.x = app.screen.width * ((i + 0.5) / vis.length) - w / 2;
+    t.container.y = app.screen.height - h - 14;
+    // 高亮当前场景:这里统一画,避免"布局函数画一种颜色、切换函数再覆盖另一种"的两处不同步
+    roundRect(t.bg, 0, 0, w, h, 10, navScene === t.key ? t.on : t.off, 0.85);
+    t.text.x = w / 2;
+    t.text.y = h / 2;
+  });
 }
 
-// ==================== 中转站：数据包货币体系 ====================
-// 解锁条件:购买服务器。数据包在暂存区按速率累积(有上限),进入中转站点"转运"领取,
-// 用于购买中转升级。注:排行榜/社交系统已移除,不在本作范围内。
-const relayTab = new PIXI.Container();
-const relayTabBg = new PIXI.Graphics();
-const relayTabText = makeText('中转站', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
-relayTab.addChild(relayTabBg, relayTabText);
-layers.nav.addChild(relayTab);
-relayTab.visible = false; // 购买服务器后解锁
-addPressFeedback(relayTab);
-
-// ---- 场景切换:底部双标签,点击切换(去掉返回按钮/顶部提示文字) ----
+// ---- 场景切换:底部标签,点击切换 ----
 function switchScene(name) {
-  const relay = name === 'relay';
-  if (relay) {
-    if (!relayTab.visible) return; // 未解锁,无操作
-    if (!relaySceneOpen) openRelayScene();
-  } else {
-    if (relaySceneOpen) closeRelayScene();
-  }
-  // 高亮当前标签
-  roundRect(relayTabBg, 0, 0, 120, 44, 10, relay ? 0x9a5a3a : 0x6a3a2a, 0.85);
-  roundRect(prodTabBg, 0, 0, 120, 44, 10, relay ? 0x2a1f16 : 0x4a3a26, 0.85);
+  if (name === 'relay' && !tabOf('relay').container.visible) return; // 未解锁,无操作
+  if (name !== 'relay' && relaySceneOpen) closeRelayScene();
+  if (name !== 'tune' && tuneSceneOpen) closeTuneScene();
+  if (name === 'relay' && !relaySceneOpen) openRelayScene();
+  if (name === 'tune' && !tuneSceneOpen) openTuneScene();
+  navScene = name;
+  layoutNavTabs();
 }
 
 // ---- 中转站场景 ----
@@ -1018,6 +1021,107 @@ screenGlowHit.on('pointerout', () => {
   screenGlowHover = false;
 });
 
+// ============================================================
+// 中转站 · 模型养成数据与公式
+// 设计草案与全部数值依据见 中转站设计.md(属性含义/公式推导/真实模型库来源/待商讨项)。
+// 这里只落**可运行的最小集合**:真实模型锚点 + 派生量公式 + 最接近模型匹配。
+// ⚠️ 数值尚未定稿;JSON 不能写注释,字段含义一律以设计文档为准,改数值只改这张表。
+// ============================================================
+
+// 属性顺序固定:雷达图轴序、下面所有数组都按这个顺序对齐。
+const ATTR_KEYS = ['reasoning', 'knowledge', 'longCtx', 'speed', 'multimodal', 'instruct', 'toolCall'];
+const ATTR_NAMES = { reasoning: '推理', knowledge: '知识', longCtx: '长上下文', speed: '速度', multimodal: '多模态', instruct: '指令遵循', toolCall: '工具调用', fit: '拟合', params: '参数' };
+
+// 能力公式权重(设计文档 2.1):capability = (推理*0.55 + 指令*0.25 + 工具*0.20) * 知识乘区 * 拟合乘区 / 1.25
+const CAP_W = { reasoning: 0.55, instruct: 0.25, toolCall: 0.20 };
+const CAP_KNOW_RANGE = 0.25;   // 知识乘区 ±25% → 0.75~1.25
+const CAP_FIT_OPT = 70;        // 拟合最优点
+const CAP_FIT_PENALTY = 0.35;  // 两端最大扣 35%
+const CAP_FIT_EXP = 1.2;
+const CAP_NORM = 1.25;         // 归一化:满配正好 100
+
+const SIM_W = { reasoning: 0.30, knowledge: 0.15, instruct: 0.15, toolCall: 0.15, multimodal: 0.10, longCtx: 0.08, speed: 0.07 };
+const SIM_SAT = 0.6;           // 加权距离 ≥ 0.6 → 相似度 0
+
+// 真实模型锚点。字段含义(顺序不可改):
+//   n 名称 / v 厂商 / t 档位 / k 知识截止(YYYY-MM) / c 上下文(k tokens) / pi 输入价 / po 输出价($/M)
+//   m 多模态档位(0文本 1图 2视频 3PDF) / tools 工具调用 / cap 能力(设计文档 3.1 表)
+const REAL_MODELS = [
+  { n: 'GPT-6 Astra',      v: 'OpenAI',    t: '旗舰', k: '2026-04', c: 1050, pi: 10,   po: 50,  m: 3, tools: 1, cap: 87 },
+  { n: 'Claude Fable 5.1', v: 'Anthropic', t: '旗舰', k: '2026-03', c: 1000, pi: 10,   po: 50,  m: 1, tools: 1, cap: 85 },
+  { n: 'Claude Opus 5',    v: 'Anthropic', t: '旗舰', k: '2025-12', c: 1000, pi: 5,    po: 25,  m: 1, tools: 1, cap: 80 },
+  { n: 'GPT-5.6 Sol',      v: 'OpenAI',    t: '旗舰', k: '2026-01', c: 1000, pi: 4,    po: 20,  m: 1, tools: 1, cap: 78 },
+  { n: 'Muse Spark 1.3',   v: 'Meta',      t: '旗舰', k: '2026-01', c: 1000, pi: 1.25, po: 4.25, m: 2, tools: 1, cap: 74 },
+  { n: 'GLM 5.3',          v: '智谱',      t: '旗舰', k: '2025-11', c: 1050, pi: 1.40, po: 4.40, m: 0, tools: 1, cap: 68 },
+  { n: 'Gemini 3.1 Pro',   v: 'Google',    t: '中端', k: '2026-01', c: 1000, pi: 2,    po: 12,  m: 3, tools: 1, cap: 66 },
+  { n: 'Qwen3.8 Max',      v: '阿里',      t: '中端', k: '2026-02', c: 1000, pi: 2,    po: 6,   m: 2, tools: 1, cap: 63 },
+  { n: 'Kimi K3',          v: '月之暗面',  t: '中端', k: '2025-12', c: 1000, pi: 2.8,  po: 14,  m: 0, tools: 1, cap: 63 },
+  { n: 'Gemini 3.8 Flash', v: 'Google',    t: '中端', k: '2026-03', c: 1050, pi: 0.75, po: 3.75, m: 3, tools: 1, cap: 61 },
+  { n: 'Grok 4.6',         v: 'xAI',       t: '中端', k: '2025-11', c: 500,  pi: 2,    po: 6,   m: 1, tools: 1, cap: 60 },
+  { n: 'DeepSeek V4.1',    v: 'DeepSeek',  t: '中端', k: '2025-10', c: 1000, pi: 0.15, po: 0.60, m: 0, tools: 1, cap: 53 },
+  { n: 'MiniMax M3',       v: 'MiniMax',   t: '中端', k: '2025-11', c: 1000, pi: 0.30, po: 1.20, m: 2, tools: 1, cap: 51 },
+  { n: 'DeepSeek V3/R1',   v: 'DeepSeek',  t: '中端', k: '2024-07', c: 128,  pi: 0.27, po: 1.10, m: 0, tools: 1, cap: 44, legacy: 1 },
+  { n: 'Qwen3.8 Flash',    v: '阿里',      t: '轻量', k: '2026-01', c: 1000, pi: 0.15, po: 0.47, m: 2, tools: 1, cap: 44 },
+  { n: 'GPT-4o',           v: 'OpenAI',    t: '中端', k: '2024-06', c: 128,  pi: 2.5,  po: 10,  m: 1, tools: 1, cap: 41, legacy: 1 },
+  { n: 'Seed 2.1 Turbo',   v: '字节',      t: '轻量', k: '2025-10', c: 262,  pi: 0.50, po: 2.50, m: 0, tools: 1, cap: 39 },
+  { n: 'GLM 5.3 Flash',    v: '智谱',      t: '轻量', k: '2025-11', c: 1050, pi: 0.15, po: 0.50, m: 0, tools: 1, cap: 38 },
+  { n: '轻量小模型',       v: '—',         t: '廉价', k: '2024-09', c: 32,   pi: 0.05, po: 0.20, m: 0, tools: 1, cap: 14 },
+  { n: '玩具模型',         v: '—',         t: '廉价', k: '2024-03', c: 8,    pi: 0.02, po: 0.05, m: 0, tools: 0, cap: 9 },
+];
+
+// 属性 → 派生量。三处互逆:ctxK() ↔ 长上下文属性、cutoffMonths() ↔ 知识属性。
+const CTX_MIN_K = 20, CTX_MAX_K = 1000, CTX_RATIO = 50;
+const KNOW_M0 = 2024 * 12 + 8;    // 知识=5   → 2024-08
+const KNOW_M1 = 2026 * 12 + 9;    // 知识=100 → 2026-09
+const TOK_PER_SPEED_POINT = 2;
+
+function ctxK(longCtx)      { return CTX_MIN_K * Math.pow(CTX_RATIO, longCtx / 100); }
+function tokPerSec(speed)   { return speed * TOK_PER_SPEED_POINT; }
+function cutoffMonths(know) { return KNOW_M0 + (know - 5) * (KNOW_M1 - KNOW_M0) / 95; }
+function monthsStr(m)       { const y = Math.floor(m / 12), mo = Math.round(m % 12) + 1; return y + '-' + (mo < 10 ? '0' : '') + mo; }
+function modelCapability(a) {
+  const core = a.reasoning * CAP_W.reasoning + a.instruct * CAP_W.instruct + a.toolCall * CAP_W.toolCall;
+  const knowMul = 1 + (a.knowledge - 50) / 200;
+  const fitMul = 1 - CAP_FIT_PENALTY * Math.pow(Math.abs(a.fit - CAP_FIT_OPT) / 70, CAP_FIT_EXP);
+  return Math.max(0, Math.min(100, core * knowMul * fitMul / CAP_NORM));
+}
+// 真实模型的能力反推成"等效属性",用于雷达图叠影与加权距离(与 modelCapability 同一套公式反解)
+function modelToAttrs(m) {
+  const ao = Math.log(m.c / CTX_MIN_K) / Math.log(CTX_RATIO) * 100;
+  return {
+    longCtx: Math.max(0, Math.min(100, ao)),
+    speed: Math.max(0, Math.min(100, (m.cap - 5) * 1.6 + 15)),
+    knowledge: Math.max(0, Math.min(100, 5 + (m.k ? 5 : 0))),
+    multimodal: [10, 45, 55, 65][m.m] || 10,
+    toolCall: m.tools ? 75 : 12,
+    instruct: Math.max(0, Math.min(100, m.cap * 0.95 + 4)),
+    reasoning: Math.max(0, Math.min(100, m.cap * 1.02 + 3)),
+    // 拟合/参数是内部量,真实模型无从反推,按「训练良好的成品」给锚点:
+    // 拟合贴近最优点(略偏高,量产模型通常轻微过拟合),参数随能力规模走。
+    // 只用于雷达图对照;相似度距离(SIM_W)不含这两个键,所以不影响 closestModel。
+    fit: Math.min(100, CAP_FIT_OPT + m.cap * 0.10),
+    params: Math.min(100, m.cap * 0.90 + 5),
+  };
+}
+function modelCapabilityOf(m) { return modelCapability(modelToAttrs(m)); }
+
+// "最接近的模型"(设计文档第 4 节):7 维加权距离 + 两个硬门槛,取最小距离者
+function closestModel(a) {
+  const cutoff = cutoffMonths(a.knowledge);
+  let best = null, bestD = Infinity;
+  for (const m of REAL_MODELS) {
+    const ma = modelToAttrs(m);
+    let d = 0;
+    for (const k of ATTR_KEYS) d += SIM_W[k] * Math.abs(a[k] - ma[k]) / 100;
+    const mCut = monthsFromStr(m.k);
+    if (cutoff < mCut - 3) d += 0.35;                                  // 知识不如它新 → 细节问题上会露馅
+    if (a.multimodal < ma.multimodal) d += 0.30;                       // 模态档位不够 → 差距太大
+    if (d < bestD) { bestD = d; best = m; }
+  }
+  return { model: best, distance: bestD, similarity: Math.max(0, Math.round(100 * (1 - bestD / SIM_SAT))) };
+}
+function monthsFromStr(s) { const p = String(s).split('-'); return (+p[0]) * 12 + (+p[1]); }
+
 // ========== 电脑屏幕面板(点击描边打开) ==========
 const screenPanel = new PIXI.Container();
 screenPanel.visible = false;
@@ -1056,6 +1160,19 @@ screenPanel.addChild(panelTopBar);
 // 左侧栏
 const panelSideBar = new PIXI.Graphics();
 screenPanel.addChild(panelSideBar);
+
+// 内容区容器(画在左侧栏之上、占位/标签之下)
+// 子元素全部使用**绝对屏幕坐标**——该容器自身位移为 0,所以不需要被父容器坐标换算干扰。
+const panelContentArea = new PIXI.Container();
+screenPanel.addChild(panelContentArea);
+
+// 左侧栏标签页。内容与数值设计见 中转站设计.md 第 11 节;当前只做到"能切、有占位图"。
+const PANEL_TABS = [
+  { key: 'model', label: '模型' },
+  { key: 'community', label: '社区' },
+  { key: 'backend', label: '后台' },
+];
+let panelTab = 'model';
 
 // 占位容器(顶部栏和左侧栏的占位UI元素)
 const panelPlaceholders = new PIXI.Container();
@@ -1119,8 +1236,8 @@ function layoutScreenPanel() {
   panelTopBar.drawRect(px, py + topH - radius, pw, radius);
   panelTopBar.endFill();
 
-  // 左侧栏(稍深米色,宽度200px)
-  const sideW = 200;
+  // 左侧栏(稍深米色)。窄屏(竖屏手机)按比例收窄,否则固定的 200px 会把内容区挤没
+  const sideW = Math.min(200, w * 0.24);
   panelSideBar.clear();
   panelSideBar.beginFill(0xe8e0d4, 1);
   panelSideBar.drawRoundedRect(px, py + topH, sideW, ph - topH, radius);
@@ -1137,8 +1254,9 @@ function layoutScreenPanel() {
   panelSideBar.moveTo(px, py + topH);
   panelSideBar.lineTo(px + pw, py + topH);
 
-  // 清空旧占位
+  // 清空旧占位与旧内容
   panelPlaceholders.removeChildren();
+  panelContentArea.removeChildren();
 
   // ===== 顶部栏占位 =====
   // 左侧网站logo(大肥鱼站,新版横排,米色背景和顶部栏融合)
@@ -1149,17 +1267,7 @@ function layoutScreenPanel() {
   panelLogo.y = py + topH / 2;
   panelLogo.visible = true;
 
-  // 右侧导航标签占位(4个)
-  for (let i = 0; i < 4; i++) {
-    const tab = new PIXI.Graphics();
-    const tx = px + pw - 280 + i * 65;
-    tab.beginFill(0xc4b8a8, i === 1 ? 0.7 : 0.35); // 第二个高亮(模拟选中)
-    tab.drawRoundedRect(tx, py + topH / 2 - 8, 50, 16, 4);
-    tab.endFill();
-    panelPlaceholders.addChild(tab);
-  }
-
-  // 搜索框占位
+  // 搜索框占位(保留;搜索不是当前重点,只是一个视觉锚点)
   const searchBox = new PIXI.Graphics();
   searchBox.lineStyle(1, 0xc4b8a8, 0.5);
   searchBox.beginFill(0xf5f0e8, 0.8);
@@ -1167,85 +1275,235 @@ function layoutScreenPanel() {
   searchBox.endFill();
   panelPlaceholders.addChild(searchBox);
 
-  // ===== 左侧栏占位 =====
+  // ===== 左侧栏:可点击的分类标签(模型 / 社区 / 后台) =====
+  // 内容全部画进 panelContentArea(用绝对屏幕坐标;它是容器子节点、自身位移为 0,
+  // 所以子元素直接用绝对坐标即可,不需要换算局部坐标)。
   const sideX = px + 16;
-  let sideY = py + topH + 20;
-
-  // 分组1标题
-  const group1Title = new PIXI.Graphics();
-  group1Title.beginFill(0xb8a898, 0.5);
-  group1Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
-  group1Title.endFill();
-  panelPlaceholders.addChild(group1Title);
-  sideY += 22;
-
-  // 分组1菜单项(3个,第1个选中高亮)
-  for (let i = 0; i < 3; i++) {
+  let sideY = py + topH + 20;   // 与旧占位一致:分组标题占位后接菜单项的位置
+  for (const tab of PANEL_TABS) {
+    const active = tab.key === panelTab;
     const item = new PIXI.Graphics();
-    if (i === 0) {
+    if (active) {
       item.beginFill(0xd4a574, 0.5); // 选中项暖橙高亮
       item.drawRoundedRect(sideX - 4, sideY - 4, sideW - 24, 32, 6);
       item.endFill();
     }
-    // 图标占位
-    item.beginFill(i === 0 ? 0xd4a574 : 0xc4b8a8, 0.8);
-    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
+    item.beginFill(active ? 0xd4a574 : 0xc4b8a8, 0.8);
+    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);   // 图标占位
     item.endFill();
-    // 文字占位
-    item.beginFill(i === 0 ? 0xb8956a : 0xc4b8a8, 0.6);
-    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
+    item.beginFill(active ? 0xb8956a : 0xc4b8a8, 0.6);
+    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3); // 文字占位(未做文字渲染)
     item.endFill();
+    item.eventMode = 'static';   // 可点击(见 panelBody 的注释:auto 不参与命中测试)
+    item.cursor = 'pointer';
+    item.hitArea = new PIXI.Rectangle(sideX - 4, sideY - 4, sideW - 24, 32);
+    item.on('pointerdown', () => { panelTab = tab.key; layoutScreenPanel(); });
     panelPlaceholders.addChild(item);
+
+    // 标签名(用真文字,方便辨认;占位阶段够用)
+    const label = makeText(tab.label, { size: 13, color: active ? '#7a4a22' : '#8a7a68', weight: active ? 'bold' : 'normal' });
+    label.x = sideX + 28;
+    label.y = sideY + 7;
+    panelPlaceholders.addChild(label);
+
     sideY += 36;
   }
+  // 预留一行提示:标签页是全新内容,旧的三组占位菜单已移除
+  const sideHint = makeText('训练 / 调教见底部「调教」标签', { size: 11, color: '#b0a294' });
+  sideHint.x = sideX;
+  sideHint.y = sideY + 10;
+  panelPlaceholders.addChild(sideHint);
 
-  sideY += 16;
+  // ===== 内容区:按当前标签渲染 =====
+  const cx0 = px + sideW, cy0 = py + topH;
+  const cw = pw - sideW, ch = ph - topH;
+  if (panelTab === 'model')      drawModelPage(cx0, cy0, cw, ch);
+  else if (panelTab === 'community') drawCommunityPage(cx0, cy0, cw, ch);
+  else                            drawBackendPage(cx0, cy0, cw, ch);
+}
 
-  // 分组2标题
-  const group2Title = new PIXI.Graphics();
-  group2Title.beginFill(0xb8a898, 0.5);
-  group2Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
-  group2Title.endFill();
-  panelPlaceholders.addChild(group2Title);
-  sideY += 22;
+// 面板内容重绘(存档载入/属性变化后调用)
+function refreshRelayPanel() {
+  if (screenPanelOpen) layoutScreenPanel();
+}
 
-  // 分组2菜单项(4个)
-  for (let i = 0; i < 4; i++) {
-    const item = new PIXI.Graphics();
-    item.beginFill(0xc4b8a8, 0.8);
-    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
-    item.endFill();
-    item.beginFill(0xc4b8a8, 0.6);
-    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
-    item.endFill();
-    panelPlaceholders.addChild(item);
-    sideY += 36;
+// ---------- 内容页:模型(雷达图 + 最接近的模型) ----------
+// 布局参考用户给的 "YOUR MODEL TWIN" 图:左上标题/副标题,左下评分块,右侧七轴雷达图。
+function drawModelPage(x, y, w, h) {
+  const a = state.relay.ability;
+  const tw = closestModel(a);
+  const cap = modelCapability(a);
+  const ctx = ctxK(a.longCtx);
+
+  // 标题:最接近的真实模型名(玩家一眼就能"代入"某个真实模型)
+  const title = makeText(tw.model ? tw.model.n : '—', { size: Math.min(40, w * 0.075), color: '#2a2118', weight: 'bold' });
+  title.x = x + w * 0.06;
+  title.y = y + h * 0.05;
+  panelContentArea.addChild(title);
+
+  const sub = makeText('你最接近的模型 · 相似度 ' + tw.similarity + '%', { size: 13, color: '#8a7a68' });
+  sub.x = x + w * 0.06;
+  sub.y = title.y + title.height + 6;
+  panelContentArea.addChild(sub);
+
+  // 左下:评分块(参考图的荧光绿块,这里用暖橙,和面板色调一致)
+  const bw = w * 0.30, bh = h * 0.28;
+  const bx = x + w * 0.05, by = y + h * 0.58;
+  const block = new PIXI.Graphics();
+  block.beginFill(0xd4a574, 1);
+  block.drawRoundedRect(bx, by, bw, bh, 6);
+  block.endFill();
+  panelContentArea.addChild(block);
+
+  const scoreLabel = makeText('综合评分', { size: 12, color: '#6a4a24', weight: 'bold' });
+  scoreLabel.x = bx + 16; scoreLabel.y = by + 12;
+  panelContentArea.addChild(scoreLabel);
+
+  const scoreVal = makeText(String(Math.round(cap * 10)), { size: Math.min(52, bh * 0.42), color: '#3a2a14', weight: 'bold' });
+  scoreVal.x = bx + 16; scoreVal.y = by + bh * 0.30;
+  panelContentArea.addChild(scoreVal);
+
+  const scoreMeta = makeText(tokPerSec(a.speed).toFixed(1) + ' tok/s · 上下文 ' + Math.round(ctx) + 'k',
+    { size: 12, color: '#6a4a24' });
+  scoreMeta.x = bx + 16; scoreMeta.y = by + bh - 26;
+  panelContentArea.addChild(scoreMeta);
+
+  // 右侧:九轴雷达图(全部基础属性,一个都不少)
+  drawRadar(x + w * 0.64, y + h * 0.42, Math.min(w * 0.24, h * 0.34), a, tw.model ? modelToAttrs(tw.model) : null);
+
+  // 底部图例 + 两个"非单调属性"的读法说明(不解释的话玩家会把拟合当成越高越好)
+  const notes = [
+    '灰 = 最接近的真实模型   橙 = 你的模型',
+    '拟合最优 ' + CAP_FIT_OPT + '(过高过拟合 / 过低欠拟合,都会掉能力) · 参数不直接加能力,只放大训练收益',
+  ];
+  notes.forEach((s, i) => {
+    const t = makeText(s, { size: 11, color: '#8a7a68' });
+    t.x = x + w * 0.05;
+    t.y = y + h * 0.90 + i * 17;
+    panelContentArea.addChild(t);
+  });
+}
+
+// 雷达图轴序 = 用户定义的全部 9 项基础属性(推理/知识/长上下文/速度/指令遵循/工具调用/多模态/拟合/参数)。
+// 前 7 项是"越高越好"的能力维度(与相似度算法 ATTR_KEYS 同集合,只是显示顺序更靠前);
+// 「拟合」「参数」不是单调属性,放最后并单独处理:
+//   拟合 —— 在轴上额外标出最优点 CAP_FIT_OPT,玩家一眼能看出自己欠拟合还是过拟合;
+//   参数 —— 值本身有意义(放大训练收益),照常画。
+// 轴序变化不影响算法:相似度与叠影对照都是按 key 取值的。
+const RADAR_KEYS = ['reasoning', 'knowledge', 'longCtx', 'speed', 'instruct', 'toolCall', 'multimodal', 'fit', 'params'];
+function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
+  const n = RADAR_KEYS.length;
+  const angle = (i) => -Math.PI / 2 + i * 2 * Math.PI / n;   // 第一条轴朝正上
+  const at = (i, v) => {
+    const rr = r * Math.max(0, Math.min(100, v)) / 100;
+    return [cx + Math.cos(angle(i)) * rr, cy + Math.sin(angle(i)) * rr];
+  };
+
+  const grid = new PIXI.Graphics();
+  // 5 层同心多边形网格
+  for (let lv = 1; lv <= 5; lv++) {
+    const rr = r * lv / 5;
+    grid.lineStyle(1, 0xc4b8a8, lv === 5 ? 0.9 : 0.35);
+    for (let i = 0; i <= n; i++) {
+      const a = angle(i % n);
+      const px = cx + Math.cos(a) * rr, py = cy + Math.sin(a) * rr;
+      if (i === 0) grid.moveTo(px, py); else grid.lineTo(px, py);
+    }
   }
-
-  sideY += 16;
-
-  // 分组3标题
-  const group3Title = new PIXI.Graphics();
-  group3Title.beginFill(0xb8a898, 0.5);
-  group3Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
-  group3Title.endFill();
-  panelPlaceholders.addChild(group3Title);
-  sideY += 22;
-
-  // 分组3菜单项(2个)
-  for (let i = 0; i < 2; i++) {
-    const item = new PIXI.Graphics();
-    item.beginFill(0xc4b8a8, 0.8);
-    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
-    item.endFill();
-    item.beginFill(0xc4b8a8, 0.6);
-    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
-    item.endFill();
-    panelPlaceholders.addChild(item);
-    sideY += 36;
+  // 轴线
+  for (let i = 0; i < n; i++) {
+    grid.lineStyle(1, 0xc4b8a8, 0.35);
+    grid.moveTo(cx, cy);
+    const [ex, ey] = at(i, 100);
+    grid.lineTo(ex, ey);
   }
+  panelContentArea.addChild(grid);
 
-  // 中间内容区留空(不画任何东西,之后填充)
+  // 单个多边形(叠影对照 / 我的模型共用)
+  const polyOf = (attrs, color, alpha, lineW) => {
+    const g = new PIXI.Graphics();
+    if (lineW) g.lineStyle(lineW, color, 1);
+    g.beginFill(color, alpha);
+    for (let i = 0; i < n; i++) {
+      const [px, py] = at(i, attrs[RADAR_KEYS[i]]);
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    }
+    g.closePath();
+    g.endFill();
+    panelContentArea.addChild(g);
+  };
+  if (theirAttrs) polyOf(theirAttrs, 0x8a8a8a, 0.16, 1);   // 对照:最接近的真实模型(灰)
+  polyOf(myAttrs, 0xe86a3a, 0.22, 2);                       // 我的模型(暖橙)
+
+  // 拟合轴上的"最优点"刻度:拟合不是越高越好,单看多边形大小会读反
+  const fi = RADAR_KEYS.indexOf('fit');
+  const [ox, oy] = at(fi, CAP_FIT_OPT);
+  const perp = angle(fi) + Math.PI / 2;
+  const mk = new PIXI.Graphics();
+  mk.lineStyle(2, 0x3a8a4a, 1);
+  mk.moveTo(ox + Math.cos(perp) * 7, oy + Math.sin(perp) * 7);
+  mk.lineTo(ox - Math.cos(perp) * 7, oy - Math.sin(perp) * 7);
+  panelContentArea.addChild(mk);
+  const optT = makeText('最优 ' + CAP_FIT_OPT, { size: 10, color: '#3a8a4a', weight: 'bold', anchor: 0.5 });
+  optT.x = ox + Math.cos(perp) * 26;
+  optT.y = oy + Math.sin(perp) * 26;
+  panelContentArea.addChild(optT);
+
+  // 轴标签 + 数值(9 条轴,全部属性都要能看到值)
+  for (let i = 0; i < n; i++) {
+    const k = RADAR_KEYS[i];
+    const a = angle(i);
+    const t = makeText(ATTR_NAMES[k] + ' ' + Math.round(myAttrs[k]),
+      { size: 12, color: '#2a2118', weight: 'bold' });
+    // 左右两侧的标签贴圆外缘对齐(anchor 0/1),避免 9 轴下标签互相压字或压到左侧评分块
+    t.anchor.set(Math.cos(a) > 0.2 ? 0 : (Math.cos(a) < -0.2 ? 1 : 0.5), 0.5);
+    t.x = cx + Math.cos(a) * (r + 12);
+    t.y = cy + Math.sin(a) * (r + 20);
+    panelContentArea.addChild(t);
+  }
+}
+
+// ---------- 内容页:社区(热点报道 + 公告) 占位 ----------
+// 机制设计见 中转站设计.md 第 7、8 节;此处只放静态说明文字,未接任何逻辑。
+function drawCommunityPage(x, y, w, h) {
+  const title = makeText('社区', { size: Math.min(32, w * 0.06), color: '#2a2118', weight: 'bold' });
+  title.x = x + w * 0.06; title.y = y + h * 0.05;
+  panelContentArea.addChild(title);
+
+  const lines = [
+    '热点报道:类别(推理 / 多模态 / 长上下文 / Agent / 廉价快模型)× 热度档位(大热~冰),3~10 天',
+    '热度直接乘进顾客量,并把该类别的市场价最高抬 +40%',
+    '公告(公关):诡辩 / 道歉 / 补贴,概率成功;声誉越高越容易成功',
+    '',
+    '—— 待实现,设计见 中转站设计.md 第 7、8 节 ——',
+  ];
+  lines.forEach((s, i) => {
+    const t = makeText(s, { size: 14, color: i >= 3 ? '#b0a294' : '#4a3c2c' });
+    t.x = x + w * 0.06; t.y = y + h * 0.18 + i * 28;
+    panelContentArea.addChild(t);
+  });
+}
+
+// ---------- 内容页:后台(号池 + 定价) 占位 ----------
+// 机制设计见 中转站设计.md 第 6 节;此处只放静态说明文字,未接任何逻辑。
+function drawBackendPage(x, y, w, h) {
+  const title = makeText('后台', { size: Math.min(32, w * 0.06), color: '#2a2118', weight: 'bold' });
+  title.x = x + w * 0.06; title.y = y + h * 0.05;
+  panelContentArea.addChild(title);
+
+  const lines = [
+    '号池:廉价池(官价×0.25,掉线率高)/ 标准池(×0.45)/ 优质池(×0.80)',
+    '定价三条线:官方价 · 市场价(官价×折扣)· 我的价',
+    '顾客量 = 基础流量 × 能力吸引力(指数1.6) × 价格吸引力(指数0.7) × 声誉因子 × 热点',
+    '人数上限由「工具调用」决定(工具100 → 120 人/天)',
+    '',
+    '—— 待实现,设计见 中转站设计.md 第 6 节 ——',
+  ];
+  lines.forEach((s, i) => {
+    const t = makeText(s, { size: 14, color: i >= 4 ? '#b0a294' : '#4a3c2c' });
+    t.x = x + w * 0.06; t.y = y + h * 0.18 + i * 28;
+    panelContentArea.addChild(t);
+  });
 }
 
 // 行走人物(在椅子之前添加,这样椅子在人物上层,有前后层次感)
@@ -1536,21 +1794,24 @@ walkerContainer.on('pointerupoutside', endWalkerDrag);
 // 注:玩法(货币/升级/交互)后续安排,当前只放背景和椅子占位。
 let relaySceneOpen = false;
 
+// 生产场景渲染元素的统一开关。中转站/调教场景打开时隐藏它们,让 PixiJS 跳过这些批次。
+// ⚠️ 只隐藏**渲染**,不暂停生产逻辑:token 增长 / 自动点击 / 水冷照常运行。
+function setProductionLayersVisible(v) {
+  layers.bg.visible = v;
+  layers.clickArea.visible = v;
+  layers.characters.visible = v;
+  layers.scene.visible = v;
+  layers.ui.visible = v;
+  layers.fx.visible = v;
+  topbarBg.visible = v;   // 只藏 token 显示;设置按钮在 layers.topbar 里,始终保留
+  tokenLabel.visible = v;
+  tpsLabel.visible = v;
+}
+
 function openRelayScene() {
   relaySceneOpen = true;
   relayScene.visible = true;
-  // 不暂停生产逻辑(token增加/自动点击/水冷等继续运行)
-  // 隐藏生产场景渲染元素,减少渲染开销
-  layers.bg.visible = false;
-  layers.clickArea.visible = false;
-  layers.characters.visible = false;
-  layers.scene.visible = false;
-  layers.ui.visible = false;
-  layers.fx.visible = false;
-  // 隐藏顶部tokens显示,但保留设置按钮
-  topbarBg.visible = false;
-  tokenLabel.visible = false;
-  tpsLabel.visible = false;
+  setProductionLayersVisible(false);
   layoutRelayScene();
   if (screenPanelOpen) layoutScreenPanel();
 }
@@ -1559,22 +1820,46 @@ function closeRelayScene() {
   relaySceneOpen = false;
   relayScene.visible = false;
   if (screenPanelOpen) closeScreenPanel(); // 切回生产时自动关闭电脑面板
-  // 恢复生产场景渲染元素
-  layers.bg.visible = true;
-  layers.clickArea.visible = true;
-  layers.characters.visible = true;
-  layers.scene.visible = true;
-  layers.ui.visible = true;
-  layers.fx.visible = true;
-  // 恢复顶部tokens显示
-  topbarBg.visible = true;
-  tokenLabel.visible = true;
-  tpsLabel.visible = true;
+  setProductionLayersVisible(true);
   // 立即刷新购买面板(中转站期间token可能增加,按钮状态需同步)
   updateAllBuyButtons();
 }
 
-relayTab.on('pointerdown', () => { switchScene('relay'); });
+// ---- 调教场景(训练系统,UI 占位;设计与接口见 中转站设计.md 第 10 节) ----
+// 训练系统本身尚未实现,这里只把"第三个场景"的位置占住,保证底部标签是均匀三个。
+const tuneScene = new PIXI.Container();
+tuneScene.visible = false;
+app.stage.addChildAt(tuneScene, app.stage.getChildIndex(layers.topbar));
+let tuneSceneOpen = false;
+const tuneBg = new PIXI.Graphics();
+const tuneTitle = makeText('调教', { size: 28, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
+const tuneHint1 = makeText('训练系统 · 施工中', { size: 18, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+const tuneHint2 = makeText('设计草案见 中转站设计.md 第 10 节;属性与雷达图见中转站→电脑屏幕→模型', { size: 13, color: '#d4c4a8', anchor: 0.5 });
+tuneScene.addChild(tuneBg, tuneTitle, tuneHint1, tuneHint2);
+
+function layoutTuneScene() {
+  const w = app.screen.width, h = app.screen.height;
+  tuneBg.clear();
+  tuneBg.beginFill(0x14100c, 1);
+  tuneBg.drawRect(0, 0, w, h);
+  tuneBg.endFill();
+  tuneTitle.x = w / 2; tuneTitle.y = h * 0.30;
+  tuneHint1.x = w / 2; tuneHint1.y = h * 0.44;
+  tuneHint2.x = w / 2; tuneHint2.y = h * 0.52;
+}
+
+function openTuneScene() {
+  tuneSceneOpen = true;
+  tuneScene.visible = true;
+  setProductionLayersVisible(false);
+  layoutTuneScene();
+}
+
+function closeTuneScene() {
+  tuneSceneOpen = false;
+  tuneScene.visible = false;
+  setProductionLayersVisible(true);
+}
 
 function layoutRelayScene() {
   const w = app.screen.width;
@@ -1664,18 +1949,13 @@ function layoutRelayScene() {
   }
 }
 
-function layoutRelayTab() {
-  const w = 120, h = 44;
-  relayTab.x = app.screen.width * 0.62 - w / 2;
-  relayTab.y = app.screen.height - h - 14;
-  roundRect(relayTabBg, 0, 0, w, h, 10, 0x6a3a2a, 0.85);
-  relayTabText.x = w / 2;
-  relayTabText.y = h / 2;
-}
-
 function updateRelayTabVisibility() {
-  relayTab.visible = state.machines.server.count > 0;
-  if (!relayTab.visible && relaySceneOpen) closeRelayScene();
+  tabOf('relay').container.visible = state.machines.server.count > 0;
+  if (!tabOf('relay').container.visible && relaySceneOpen) {
+    closeRelayScene();
+    navScene = 'production';
+  }
+  layoutNavTabs(); // 可见标签数量变了,重新均匀分布(位置只在 layoutNavTabs 里算)
 }
 
 // ==================== 顶部信息栏 ====================
@@ -1913,7 +2193,13 @@ const state = {
     miracle: false,
   },
   relay: {
-    // 中转站玩法占位:具体经济体系后续安排
+    // 中转站:模型养成玩法。属性和数值全部待定稿,见 中转站设计.md;
+    // 这里先落一份初值,便于雷达图/最接近模型立刻有东西可显示。
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    listedModel: null,   // 标榜的真实模型名(未上架 = null)
+    price: 0,            // 自定售价(token / 百万 token)
+    pool: 'standard',    // 号池档位
+    reputation: 50,      // 站信誉 0~100
   },
   waterCoolingTimer: 0,
   waterCoolingNextTrigger: 10,
@@ -1959,6 +2245,7 @@ function saveGame() {
       waterCooling: state.cooling.waterCooling.count,
       autoClick: state.scripts.autoClick,
       miracle: state.scripts.miracle,
+      relay: state.relay,
       savedAt: Date.now()
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -1980,6 +2267,12 @@ function loadGame() {
     state.cooling.waterCooling.count = data.waterCooling || 0;
     state.scripts.autoClick = !!(data.autoClick || data.niger); // 兼容旧存档的 niger 字段
     state.scripts.miracle = data.miracle || false;
+    // 中转站:旧存档没有该字段 → 保持初始值(data.relay 为 undefined 时不覆盖)
+    if (data.relay && typeof data.relay === 'object') {
+      Object.assign(state.relay, data.relay);
+      Object.assign(state.relay.ability, data.relay.ability || {});
+    }
+    refreshRelayPanel(); // 属性可能变了,刷新雷达图/最接近模型
     recalcProduction();
     recalcClickPower();
     recalcCrit();
@@ -1998,7 +2291,13 @@ function resetGame() {
   state.cooling.waterCooling.count = 0;
   state.scripts.autoClick = false;
   state.scripts.miracle = false;
-  state.relay = { // 中转站玩法占位:具体经济体系后续安排
+  state.relay = {
+    // 中转站:模型养成玩法。属性和数值全部待定稿,见 中转站设计.md
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    listedModel: null,
+    price: 0,
+    pool: 'standard',
+    reputation: 50,
   };
   recalcProduction();
   recalcClickPower();
@@ -2023,9 +2322,9 @@ function layoutAll() {
   layoutCase();
   initPurchasePanel();
   layoutPurchasePanel();
-  layoutProductionTab();
-  layoutRelayTab();
+  layoutNavTabs();
   if (relaySceneOpen) layoutRelayScene();
+  if (tuneSceneOpen) layoutTuneScene();
   updateTokenDisplay();
 }
 
