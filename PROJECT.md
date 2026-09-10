@@ -1,25 +1,26 @@
 # DSH · 地下机房
 
-PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散热/脚本升级 → 机箱可拖拽抛掷(带物理反弹)。单文件构建,可直接离线打开 `index.html`,或用 `server.js` 起本地服务。
+PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散热/脚本升级 → 机箱可拖拽抛掷(带物理反弹)。两种构建产物:**单文件 `index.html`**(可离线直接打开,塞「本体」用)与 **`dist/`**(`python build.py --dist`,代码与哈希资源分离,发布 VibeHub 用;需 http 服务)。两者共用同一份 `index_template.html`。
 
 ## 项目结构
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,约2100行 JS + 少量 CSS/HTML,共2184行)
-├── build.py               ★ 构建脚本:把 PixiJS + 素材 base64 内联进模板 → index.html
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,约2100行 JS + 少量 CSS/HTML,共2191行)
+├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
-├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护)
+├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
+├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
-├── recompress_assets.py   ★ 资产重压缩:compressed/*.png → compressed_webp/*.webp
+├── recompress_assets.py   ★ 资产重压缩:compressed/* → compressed_webp/*.webp(PNG 与背景大图都走这里)
 ├── cut_chair.py             椅子专用:从 raw 高清原图裁剪 → compressed_webp/chair_hi.webp
 ├── process_assets.py        早期资产批量处理(仍在用的活脚本之一)
-├── lib/pixi.min.js          PixiJS v7.4.0(构建时内联)
+├── lib/pixi.min.js          PixiJS v7.4.0(构建时内联/拆出)
 ├── assets/
 │   ├── raw/                 原始素材(来源,不参与构建)。⚠️ 已加进 .gitignore,但其中 16 个文件
 │   │                        在早期被跟踪过、仍在版本库里(walk_video.mp4 等关键原始素材已入库)
-│   ├── compressed/          第一代压缩(png/jpg,build.py 仅引用其中 4 张:bg_dark/bg_light/placeholder/transfer_bg)
-│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用其中 14 张)
+│   ├── compressed/          第一代压缩(png/jpg)。**build.py 已不引用**;仍是 recompress_assets.py 的输入
+│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用的全部 18 张都在这里)
 ```
 
 ★ = 当前有效流水线 = 根目录只有这 6 个脚本是活的:
@@ -30,16 +31,30 @@ DSHgame/
 ## 常用命令
 
 ```bash
-python build.py            # 重新构建 index.html(改模板/素材后必跑)
+python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
+python build.py --dist     # 网页托管模式:代码与哈希资源分离 → dist/(发布 VibeHub 用)
 node check_syntax.js       # 构建自检:语法 + ASSETS key + 素材文件存在性(退出码非0即出错)
 python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
-node server.js             # http://localhost:8765
+node server.js             # http://localhost:8765(根目录自动补 index.html,可直接预览 /dist/)
 ```
+
+**两种构建模式(2026-09-10 新增,共用同一份 `index_template.html` 与 `ASSET_FILES`)**：
+
+| | `python build.py` | `python build.py --dist` |
+|---|---|---|
+| 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
+| 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
+| 体积 | **1956KB**(整个文件) | 首访 **1597KB**;回访只需重下 75KB 的 index.html |
+| 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
+| 能否离线 | 能 | 不能(需要 http 服务) |
+
+改游戏永远只改 `index_template.html`;发布前记得跑 `--dist`,本地看效果跑 `python server.js` 后开 `/dist/`。
 
 ## 素材流水线
 
 - `build.py` 顶部 `ASSET_FILES` 字典是**资产唯一数据源**:新增素材加一行即可(旧版清单写两遍的坑已修)。
-- PNG 素材走 `recompress_assets.py` 转 WebP(按游戏内显示尺寸×2 出图,质量 85-88)。目前 `bg_dark/bg_light/placeholder/transfer_bg` 四张仍用 compressed/ 的 JPG(全屏大图 WebP 收益低,未迁移)。
+- 素材走 `recompress_assets.py` 转 WebP(PNG 按游戏内显示尺寸×2 出图,质量 85-88;大背景保持 1920 宽,质量 82-85)。
+- 18 个内联素材**已全部是 WebP**(2026-09-10 完成背景迁移,不再有 JPG)。
 - 修改 compressed/ 原图后必须重跑 recompress 才会影响构建。
 
 ## 当前进度(2026-09-10)
@@ -60,26 +75,28 @@ node server.js             # http://localhost:8765
   - 电脑屏幕描边(screenGlow):人物坐下时,左边主屏幕显示草绿色描边(3px,#7cba3f)。位置经多次微调最终确定:背景图坐标系 x=42.1%, y=29.8%, w=17.4%, h=16.0%。图层在背景之上、人物/椅子之下,不遮挡。起身/拖拽时隐藏。
   - **呼吸动画+悬停常驻**:描边不是常亮,而是4秒周期呼吸(0.4s渐变出现→1.2s保持→0.4s渐变消失→2s等待)。鼠标悬停在描边矩形范围内时 alpha=1 常驻显示,且 timer 停止累积(避免移出时刚好撞上渐变阶段导致跳变被误以为卡顿);移出时用 lerp 平滑过渡(dt*8,约0.125s)恢复呼吸循环。通过 hitArea 设置整个矩形区域响应悬停,不只是边框线。
 - **关键参数**:WALK_FRAME_W=158, WALK_FRAME_H=220, WALK_FRAMES=6, animationSpeed=0.25, walkerPhysics.gravity=0.25, chairSeat.sitY=chair底部往上40%。
-- **相关代码**(2026-09-10 重构后行号,模板共 2184 行):makeWalkFrames() 第1243行、showWalker() 第1289行(贴图切换唯一入口)、updateWalkerAI() 第1342行(自由落体物理+坐姿锁定)、startWalkerDrag/updateWalkerDrag/endWalkerDrag 第1461行起、layoutRelayScene() 第1565行(椅子描边+屏幕描边绘制)。注:行号会随改动漂移,以函数名搜索为准。
+- **相关代码**(2026-09-10 重构后行号,模板共 2191 行):makeWalkFrames() 第1243行、showWalker() 第1289行(贴图切换唯一入口)、updateWalkerAI() 第1342行(自由落体物理+坐姿锁定)、startWalkerDrag/updateWalkerDrag/endWalkerDrag 第1461行起、layoutRelayScene() 第1565行(椅子描边+屏幕描边绘制)。注:行号会随改动漂移,以函数名搜索为准。
 
 ### 性能优化(已完成并实测)
-- **索引文件体积(2026-09-10 实测基线)**:`index.html` 2.13MB(2230937 字节)= PixiJS 445KB + 素材 base64 约 1.61MB(18 个素材原始共 1243KB,base64 膨胀 33%)+ HTML/CSS/JS 骨架约 86KB;服务端 gzip 后 1398KB(压缩率 64%)。**注意:这个数字已经是 WebP + 行走动画之后的实际值,比早期"1.56MB/943KB"大**——新增的行走/面板素材约占 500KB base64,且 WebP 本身已压缩、gzip 对它基本无效(gzip 主要压的是 PixiJS 和 base64 头部)。**判断后续优化时用 2.13MB 作基线,不要再引用旧的 1.56MB**。
-- PNG→WebP(当前实测):`compressed_webp/` 15 个文件共 740KB,build.py 实际内联其中 14 个共 732KB;素材原始尺寸从 1.9MB 量级压到 0.7MB 量级(pc_case 816KB→44KB、fan 456KB→119KB、角色 150KB→28KB/22KB)。
-- **背景大图 WebP 迁移(2026-09-10 实测评估,尚未执行)**。现状:`bg_dark/bg_light/placeholder/transfer_bg`
-  仍是 JPG(build.py 直接内联),共 510KB。实测结果:
-  - 同尺寸转 WebP(q82-85):510KB → 343KB(省 167KB;base64 后省约 222KB)。
-  - 其中 `transfer_bg` 收益最大:191KB → 93KB(省 98KB)。`bg_dark` 106→81KB。
-  - **但发现了更大的机会**:`compressed/` 里这几张是**从 raw 放大来的**(raw `bg_light`/`transfer_bg` 是
-    1672×941,`bg_dark` 是 1280×720,却被放大成 1920×1080)。放大不增加细节、只增加字节。
-    回到原生尺寸转 WebP:`transfer_bg` 191→73KB、`bg_light` 180→133KB、`bg_dark` 106→52KB,
-    合计 477KB → 258KB(**省 219KB,base64 后约 292KB**)。
-  - ⚠️ 用原生尺寸的前提:`fitBg()` 是按 `max(屏宽/图宽, 屏高/图高)` 铺满,任何尺寸都能铺满,不会露边;
-    但 1672 宽的图在 1920/2560 屏上会被放大 → **清晰度下降**。若在意大屏观感,应改成"原始 1920 转 WebP"
-    (省 167KB),或从更高质量的源重新出图。
-  - **不建议无损 WebP**:实测无损后反而暴涨(`bg_light` 180→953KB、`transfer_bg` 191→842KB),
-    因为源 JPG 已有损,无损会忠实地把压缩噪声也存下来。用 q82-85 有损即可。
-  - **收益量级对比**:这 167~292KB 相对 2.13MB 只有 8~13%,**优先级低于"拆分成 dist/ 利用内容哈希长缓存"**
-    (后者把回访从 2178KB 降到 75KB)。建议:迁移顺手做,但别把它当发布前的主要优化。
+- **索引文件体积(2026-09-10 最新基线)**:`index.html` **1956KB(2003327 字节)**。构成 = PixiJS 445KB + 18 个素材 base64 约 1.36MB(素材原始共 1075KB,base64 膨胀 33%)+ HTML/CSS/JS 骨架约 86KB。
+  - 演进:早期 1.56MB → 加行走/面板素材后 2.13MB → 背景迁 WebP 后 **1956KB**(省 222KB)。
+  - ⚠️ **WebP 本身已压缩,gzip 对它基本无效**(gzip 主要压 PixiJS 和 base64 头部,整文件 gzip 后约 1398KB → 现在约 1.3MB 量级)。
+  - **判断优化时用 1956KB 作基线,不要再引用 1.56MB / 2.13MB**。
+- PNG→WebP(当前实测):`compressed_webp/` 19 个文件共 1075KB,`build.py` 全部内联;素材原始尺寸从 1.9MB 量级压到 1.0MB 量级(pc_case 816KB→44KB、fan 456KB→119KB、角色 150KB→28KB/22KB)。
+- **背景大图 WebP 迁移(2026-09-10 已执行)**。`bg_dark/bg_light/placeholder/transfer_bg` 4 张 JPG 全部转为同尺寸(1920 宽)有损 WebP,实测 523KB → 352KB:
+
+  | 素材 | JPG | WebP | 省 |
+  |---|---|---|---|
+  | transfer_bg | 196KB | 93KB | -103KB(51%) |
+  | bg_light | 184KB | 141KB | -43KB(22%) |
+  | bg_dark | 109KB | 82KB | -27KB(23%) |
+  | placeholder | 33KB | 27KB | -6KB(14%) |
+
+  - 单文件 `index.html`:2178KB → **1956KB**(省 222KB,含 base64 的 33% 放大效应)。dist 首访:1764KB → 1597KB。
+  - **保留 1920 宽,没有回原生尺寸**。原因:`compressed/` 这几张是从 raw 放大来的(raw `bg_light`/`transfer_bg` 是 1672×941、`bg_dark` 是 1280×720),回原生尺寸能再多省 219KB,但 1672 宽的图在 1920/2560 屏上会被 `fitBg()` 放大 → **大屏清晰度下降**。
+    (权衡依据:本轮刚决定全局提高渲染分辨率来改善清晰度,不能同时把背景底图降清晰度;这 219KB 相对 1956KB 只占 11%。若哪天在意流量,把 `recompress_assets.py` 的 `BACKGROUNDS` 尺寸改回原生即可。)
+  - **不用无损 WebP**:实测无损后暴涨(`bg_light` 180→953KB、`transfer_bg` 191→842KB),因为源 JPG 已有损,无损会把压缩噪声也忠实存下来。q82-85 有损即可。
+  - 背景迁移只省 11%,**优先级仍低于 dist/ 拆分**(后者把回访从 1956KB 降到 75KB)。
 - **图片体积账**:base64 内联会给二进制加 33% 体积;若走 `dist/` 拆分方案,这部分膨胀直接消失。
 - server.js:内存缓存 + gzip(level 8)+ If-None-Match/304 + Cache-Control + `path.normalize` 越界防护。
 - 购买按钮改为脏标记重绘(原先每帧对最多 8 个 Graphics 执行 clear+重画,是最大每帧开销)。
@@ -114,6 +131,10 @@ node server.js             # http://localhost:8765
 - **透明点击区域**:screenGlowHit 独立 Graphics(alpha=0.001填充+hitArea双保险),覆盖整个屏幕矩形(描边+内部),比 Graphics 只画边框时的 hitArea 更可靠。移到 relayScene 最上层避免被 walkerContainer/chairSprite 遮挡。
 
 ### 其他本轮改动
+- **新增 `--dist` 构建模式**(见上方「常用命令」表):代码与内容哈希资源分离,首访 1597KB / 回访 76KB。
+- **移动端清晰度(方案 A)**:`RENDER_RESOLUTION = Math.min(devicePixelRatio || 1, 2)` 单一常量 +
+  `autoDensity: true`;canvas 加 `touch-action: none`(详见「移动端适配」节)。
+- **背景大图迁 WebP**:`bg_dark/bg_light/placeholder/transfer_bg` 4 张 JPG → 同尺寸有损 WebP,省 222KB(详见「性能优化」节)。
 - 服务器改为**一次性购买**(固定价格10000,买完即止,oneTime=true)。
 - 脚本商品显示名从"自动点击"改回 **"niger"**(用户要求);存档字段仍为 autoClick,兼容旧 niger 字段:`loadGame` 里 `data.autoClick || data.niger`。
 - **A100 购买限制**:每购买3台RTX3080才能购买1台A100(锁定条件:`a100.count >= floor(rtx3080.count / 3)`)。未解锁时价格位置显示进度提示(如"需3台3080(1/3)"),按钮灰色不可点击。通过 createBuyItem 新增的 `lockedFn`(锁定条件)和 `lockHintFn`(锁定提示)两个可选参数实现,后续其他物品可复用。
@@ -152,6 +173,7 @@ node server.js             # http://localhost:8765
 - 设置面板的音乐/音效滑条目前是摆设(无音频消费方),接入音频前别让玩家误会。
 - 手机竖屏会显示"请横屏游玩"遮罩(`#rotatePrompt`,触屏+竖屏才触发)。
 - 启动时序:base64 纹理异步解码,靠 7 个 `texture.on('update')`(bgLight/bgDark/charClosed/charOpen/pcCase/**relayBg/chairSprite**) + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。**新增纹理必须加 update 监听**,否则 layoutRelayScene 等函数会在纹理未就绪时计算,除以0导致 NaN 边界(已踩过坑:中转站行走边界完全失效)。
+  - `dist/` 模式下纹理是真·异步 URL 加载(时序比 base64 更晚),**已实测这套兜底仍然够用**(2026-09-10 真实浏览器验证 18 个素材全部就绪、纹理尺寸正确、布局一致)。但以后若新增依赖纹理尺寸的布局,dist 模式要再验一次。
 - layoutRelayScene 中有纹理未加载时的默认尺寸保护(rbgW=1672,rbgH=941),避免除以0。新增依赖纹理尺寸的布局函数时建议同样保护。
 - **构建自检用 `check_syntax.js`**(旧名 `_check_syntax.js` 已废弃——以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则吃掉)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
   ⚠️ **不要再把这个文件名写进 `.gitignore`**。2026-09-10 曾这么干过一次,结果它既进不了版本库、又被随后的清理脚本一起删掉,构建自检整个消失(见坑36)。
@@ -160,7 +182,8 @@ node server.js             # http://localhost:8765
 
 1. **中转站玩法设计**(用户亲自安排——等需求,勿抢先实现)
 2. 设置面板音频接入(音乐/音效滑条已就位;若不做音频,应把滑条隐藏,别挂着当摆设)
-3. 发布 VibeHub 前的适配(见下节「VibeHub 发布」)——体积/缓存模型、移动端适配
+3. ~~发布 VibeHub 前的适配~~ **已完成**:体积/缓存模型已落地(`--dist` 模式)、移动端适配已做(方案 A + `touch-action:none`)。
+   剩下真正发布时的动作见「发布前检查清单」(字体子集化可选、封面截图待备)。
 4. 离线收益(存档已有 savedAt,用户说放到后面考虑)
 
 ## VibeHub 发布(目标平台调研,2026-09-10)
@@ -178,8 +201,8 @@ node server.js             # http://localhost:8765
   - **HTML 和普通资源:60 秒缓存。**
   - **文件名带十六进制内容哈希的资源:1 年 immutable。**
   - 平台明说:「大资源用内容哈希命名以长期缓存,**HTML 保持稳定文件名**」。
-  - 👉 当前"单文件 index.html 内联一切"的方案在这个模型下是**最差解**:2.13MB 的 HTML 只有 60 秒缓存,
-    老玩家每次回来都要重下。详见「构建产物形态」一节。
+  - 👉 "单文件 `index.html` 内联一切"在这个模型下是**最差解**(HTML 只有 60 秒缓存,老玩家每次回来都要重下近 2MB)。
+    已用 `build.py --dist` 解决,详见「构建产物形态」一节。
 - **部署目录**:静态根目录**顶层必须有 `index.html`**。要排除源码、`node_modules`、`.git`、zip 压缩包。
   → 我们不能直接部署项目根目录(里面有 `.git`、`assets/raw` 28.9MB、`index_template.html`、`*.py`),
   **必须产出独立的 `dist/`**。
@@ -200,28 +223,29 @@ node server.js             # http://localhost:8765
 
 之前文档写"不要拆单文件"——那个结论是**为本地/离线分发(塞进「本体」)服务的**,在那种场景下成立。
 **但面向 VibeHub 网页托管时结论相反**:平台对 HTML 只给 60 秒缓存,对内容哈希命名的资源给 1 年强缓存。
-把一切内联进 `index.html` 等于让 2.13MB 每次访问都重新下载。
+把一切内联进 `index.html` 等于让近 2MB 每次访问都重新下载。
 
-实测对比(基于当前 18 个内联素材 = webp 732KB + jpg 511KB):
+**已实现(2026-09-10)**:`build.py --dist`,两种模式共存,共用同一份模板与 `ASSET_FILES`。
+
+实测对比(基于当前 18 个素材 = WebP 共 1075KB):
 
 | 方案 | 首访 | 回访(60 秒后) |
 |---|---|---|
-| 现状:单文件 index.html | 2178KB | **2178KB** |
-| 拆分:`index.html`(仅代码,75KB)+ `pixi.<hash>.js`(445KB)+ `素材 <hash>.*`(1243KB) | 1764KB | **75KB** |
+| 单文件 `index.html`(`python build.py`) | 1956KB | **1956KB** |
+| 拆分(`python build.py --dist`):`index.html` 76KB + `pixi.<hash>.js` 446KB + `assets/` 1075KB | 1597KB | **76KB** |
 
-拆分还顺带省掉 base64 的 33% 膨胀(1243KB 的素材,base64 后是 1657KB)。
+拆分还顺带省掉 base64 的 33% 膨胀(1075KB 素材,base64 后是 1433KB;单文件整个 1956KB,拆分首访只有 1597KB)。
 
-**建议做法(不冲突,两者可共存)**:`build.py` 增加一个输出模式,不要二选一。
-- 默认(现状):单文件 `index.html` → 保留给离线/本体分发。
-- `--dist`:输出 `dist/index.html`(代码)+ `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>`(哈希命名)。
-  代码里 `ASSETS` 从 base64 常量改成路径表。两种模式共用同一份 `index_template.html` 与同一张 `ASSET_FILES` 清单。
-- ⚠️ 这会让"贴图/字体就绪"的时序变复杂:目前 base64 是同步可得,拆成 URL 后变成真正的异步加载,
-  现有那套 `texture.on('update')` + `layoutFixTicker` 兜底要重新验证(见「已知事项」里那条 NaN 坑)。
-  **拆分必须单独验证一遍,不能假定旧保险够用。**
+- `dist/index.html` 里 `ASSETS` 从 base64 常量换成路径表,`__PIXIES__` 占位替换成 `<script src="pixi.<hash>.js">`。
+- **异步加载已单独验证过**:在真实浏览器(Playwright)里实测 dist 版,18 个素材全部加载成功、
+  纹理尺寸正确(`bgLight 1920x1081`、`bgDark 1920x1080`、`transfer 1920x1080`)、`bgScaleCover=true`、
+  百分比布局与单文件版一致、无控件碰撞。所以「已知事项」里那条 NaN 兜底在拆分下仍然够用。
+- `server.js` 已支持目录请求补 `index.html`,本地 `python server.js` 后直接访问 `/dist/` 即可预览构建产物。
+- ⚠️ dist 产物不能离线双击打开(需要 http 服务);要塞「本体」仍用单文件模式。
 
-### 移动端适配
+### 移动端适配(2026-09-10 已按方案 A 实现)
 
-**现状**:`PIXI.Application` 没传 `resolution`,即**默认 1**;只有 `makeText()` 里给每个 Text 设了 `t.resolution = 2`
+**改之前的现状**:`PIXI.Application` 没传 `resolution`,即**默认 1**;只有 `makeText()` 里给每个 Text 设了 `t.resolution = 2`
 (所以文字清晰、贴图糊)。`antialias: false`(对纯 sprite 是正确的,别改)。
 
 **问题**:手机 dpr 普遍 2~3。canvas 后备缓冲 = CSS 尺寸 × 1,再由浏览器放大 → 全屏贴图发虚。
@@ -231,16 +255,24 @@ node server.js             # http://localhost:8765
 
 | 方案 | 做法 | 优点 | 缺点 |
 |---|---|---|---|
-| A. 全局提高分辨率 | `resolution: Math.min(dpr, 2)` + `autoDensity: true` | 一行改动,全屏贴图立刻变清晰;`app.screen` 仍是 CSS 像素,**现有百分比布局全部不受影响** | 填充率按分辨率²增长,dpr=2 时是 4 倍像素。低端安卓可能掉帧;`makeText` 里的 `resolution=2` 会变成冗余(可留可删) |
+| **A. 全局提高分辨率(已采用)** | `resolution: Math.min(dpr, 2)` + `autoDensity: true` | 一行改动,全屏贴图立刻变清晰;`app.screen` 仍是 CSS 像素,**现有百分比布局全部不受影响** | 填充率按分辨率²增长,dpr=2 时是 4 倍像素。低端安卓可能掉帧 |
 | B. 自适应降级 | 启动用 A,测前 2~3 秒 FPS,低于阈值自动降到 1 | 高端机清晰、低端机不卡,兼顾 | 多约 20 行代码;切换瞬间可能有一次重排/闪动 |
 | C. 折中固定值 | `resolution: Math.min(dpr, 1.5)` | 清晰度与性能的中间点,比 A 稳 | 仍非整数倍,dpr=3 的设备上会有轻微非整数缩放;治标不治本 |
 
-**建议 A 或 B**:优先 A(改动最小、布局零风险),上线后若收到低端机掉帧反馈再升级到 B。
+**用户拍板用 A**(理由:放置游戏本身不吃性能)。实现要点:
+- 新增单一常量 `const RENDER_RESOLUTION = Math.min(window.devicePixelRatio || 1, 2);`
+  `PIXI.Application` 传 `autoDensity: true, resolution: RENDER_RESOLUTION`;`makeText()` 里也用它
+  (原先硬编码的 `t.resolution = 2` 已改为引用同一常量,避免两处各写一份而不同步)。
+  **以后要调分辨率只改这一个常量。**
+- 上限 2 是性能与清晰度的折中(dpr=3 的手机也用 2,填充率不再翻倍)。
+- **实测验证**(注入 `devicePixelRatio=2` 后真实浏览器):canvas 后备缓冲 `1280×720`,CSS 尺寸 `640×360`
+  —— 正是 `autoDensity` 的正确行为,说明 `app.screen` 仍是 CSS 像素、百分比布局不受影响。
+- `antialias: false` 保持不动。
 
-**移动端还需要补的(与分辨率无关,但同样影响手感)**:
-- **canvas 缺 `touch-action: none`**。当前 CSS 只有 `user-select:none`,拖拽人物/机箱时,
-  移动端浏览器可能把手势抢去做滚动或下拉刷新。应在 `canvas` 上加 `touch-action: none`(成本一行,收益明确)。
-- 竖屏遮罩(`#rotatePrompt`)已有,触发条件是"触屏 + 竖屏",这个逻辑可以不动。
+**同时补上的**:
+- **`canvas { touch-action: none; }`**。原先 CSS 只有 `user-select:none`,拖拽人物/机箱时移动端浏览器会把
+  手势抢去做滚动/下拉刷新。现已加(成本一行,收益明确)。
+- 竖屏遮罩(`#rotatePrompt`)已有,触发条件是"触屏 + 竖屏",逻辑未动。
 - `viewport` 已设 `maximum-scale=1.0, user-scalable=no`,iOS 上能防双指缩放,保留。
 - **中文文字依赖系统字体**(`"PingFang SC" / "Microsoft YaHei"`):Windows/macOS/iOS 没问题,
   但部分安卓和 Linux 没有这些字体,会回退到别的字体 → **字形宽度变化 → 按像素调过的布局会错位**
@@ -261,15 +293,17 @@ node server.js             # http://localhost:8765
 8. 发布成功后回传 CLI 输出的作品链接。
 
 
-## 仓库状态与提交(2026-09-10 已执行 + 复核)
+## 仓库状态与提交(2026-09-10)
 
-### 已完成
-- **提交 `5d9bfc7`**:7 个新 webp(walk_*/walker_lift/walker_sit/chair_outline/panel_logo,347.6KB)、
-  `index_template.html`(showWalker 重构)、`PROJECT.md`、本坑文档,全部入库;`assets/compressed/` 下的
-  walk 中间产物(PNG+JSON)已清掉。
-- 复核后的当前工作区**尚未提交**,有 6 项改动待入库:`.gitignore`(删掉误加的 `check_syntax.js` 行并补警告)、
-  `PROJECT.md`、坑文档,加上恢复的 3 个活脚本(已 staged)+ 重建的 `check_syntax.js`(未跟踪)。
-  `python build.py` + `node check_syntax.js` 均通过。**提交时务必带上 `check_syntax.js`**。
+### 已完成(按时间顺序)
+- `5d9bfc7`:新版大肥鱼站 logo + 面板关闭逻辑优化 + 清理临时脚本(**本次失误见下节**)。
+- `dc2a079`:修复 `5d9bfc7` 误删的三个活脚本(`recompress_assets.py`/`cut_chair.py`/`process_assets.py`),
+  重建 `check_syntax.js`,并从 `.gitignore` 移除误加的那行。
+- `418e33a`:清理 3 个真死素材(`compressed/chair.png`、`compressed/relay_bg.jpg`、`compressed_webp/chair.webp`);
+  修 `process_assets.py` 写死的绝对路径与 ffmpeg 路径。
+- `c8a2275`:补 VibeHub 发布调研 + 背景 WebP 迁移实测数据进文档。
+- **本轮(未提交)**:`build.py --dist` 双模式、`index_template.html` 方案 A 分辨率 + `touch-action:none`、
+  `recompress_assets.py` 增加背景 WebP、`server.js` 目录补 `index.html`、4 张新背景 WebP、文档更新。
 
 ### ⚠️ 这次清理出过一次事故(已修复,详见坑36)——以后做同类清理务必先读这节
 提交 `5d9bfc7` 声称"清理一次性临时脚本、仅保留 build.py",实际误删了流水线里的**三个活脚本**
@@ -288,8 +322,8 @@ node server.js             # http://localhost:8765
 
 | 文件 | 谁在用 | 能否删 |
 |---|---|---|
-| `compressed/bg_dark.jpg` `bg_light.jpg` `placeholder.jpg` `transfer_bg.jpg` | build.py 直接内联 | ❌ |
-| `compressed/char1.png` `char2.png` `fan.png` `pc_case.png` `pc_case_upgraded.png` `speech_bubble.png` | recompress_assets.py 的输入(删了就无法重新生成对应 webp) | ❌ |
+| `compressed/bg_dark.jpg` `bg_light.jpg` `placeholder.jpg` `transfer_bg.jpg` | `recompress_assets.py` 的 `BACKGROUNDS` 输入(生成对应 webp 的源) | ❌ |
+| `compressed/char1.png` `char2.png` `fan.png` `pc_case.png` `pc_case_upgraded.png` `speech_bubble.png` | `recompress_assets.py` 的输入(删了就无法重新生成对应 webp) | ❌ |
 | `compressed/chair.png` `relay_bg.jpg` | 无人引用(已被 `raw/chair.png`→`chair_hi.webp`、`transfer_bg` 取代) | ✅ 已删 |
 | `compressed_webp/chair.webp` | 无人引用(被 `chair_hi.webp` 取代) | ✅ 已删 |
 
@@ -305,9 +339,10 @@ node server.js             # http://localhost:8765
   不再写死绝对路径;但这条流水线整体是"从 raw 重建 compressed"的一次性上游,平时不用跑。
 
 ### 不要做
-- **不要**改 `index.html`(构建产物,由 `build.py` 生成)。
-- **不要**把 2200 行单文件 HTML 拆成模块。单文件离线可打开是本项目的分发前提(要塞进「本体」),
-  拆分要引打包器,成本和风险远超收益。
+- **不要**改 `index.html` / `dist/` 里的任何东西(都是构建产物,由 `build.py` 生成)。
+- **不要**把 `index_template.html` 拆成 ES 模块。它是构建的**唯一源码**,单文件形态是「本体」离线分发的前提;
+  `--dist` 只是在**构建输出**层面拆资源,不改源码结构。真要拆源码就得上打包器,成本和风险远超收益。
 - **不要**实现中转站玩法(用户明确要亲自安排)。
 - **不要**删 ★ 那 6 个活脚本,也不要再把它们写进 `.gitignore`。
+- **不要**把背景 `BACKGROUNDS` 改回原生尺寸(1672 宽)来省那 219KB —— 会让大屏清晰度下降,和本轮提分辨率的决定相矛盾。
 

@@ -14,7 +14,7 @@
     user-select: none;
   }
   #game { width: 100%; height: 100%; }
-  canvas { display: block; }
+  canvas { display: block; touch-action: none; }
 
   /* 手机横屏引导 */
   #rotatePrompt {
@@ -66,6 +66,11 @@
 <script>__ASSETS__</script>
 <script>
 // ==================== 工具函数 ====================
+// 渲染分辨率唯一来源:canvas 后备缓冲与文字栅格化都用它,避免两处各写一份而不同步。
+// 上限 2 是性能与清晰度的折中(填充率按平方增长):dpr=3 的手机也用 2。
+// 注:autoDensity 下 app.screen 仍是 CSS 像素,所有百分比布局不受影响。
+const RENDER_RESOLUTION = Math.min(window.devicePixelRatio || 1, 2);
+
 function rand(min, max) { return Math.random() * (max - min) + min; }
 
 function makeText(text, opts) {
@@ -78,7 +83,7 @@ function makeText(text, opts) {
     lineHeight: opts.lineHeight || opts.size * 1.3,
   });
   const t = new PIXI.Text(text, style);
-  t.resolution = 2;
+  t.resolution = RENDER_RESOLUTION;
   if (opts.anchor !== undefined) t.anchor.set(opts.anchor);
   return t;
 }
@@ -125,6 +130,8 @@ const app = new PIXI.Application({
   resizeTo: window,
   background: '#1a1410',
   antialias: false, // 纯 sprite 渲染,MSAA 无收益且移动端费填充率
+  autoDensity: true, // canvas CSS 尺寸不变、后备缓冲按 resolution 放大 → app.screen 仍是 CSS 像素
+  resolution: RENDER_RESOLUTION, // 手机 dpr 2~3,原来只有 1,全屏贴图会糊
 });
 document.getElementById('game').appendChild(app.view);
 

@@ -1,5 +1,6 @@
 ﻿# 构建产物(index.html 可由 build.py 重新生成)
 index.html
+dist/
 
 # 临时/交换文件
 _tmp_*

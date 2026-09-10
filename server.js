@@ -50,10 +50,15 @@ http.createServer((req, res) => {
   if (urlPath === '/' || urlPath === '') urlPath = '/index.html';
 
   // 路径越界防护:规范化后必须仍在项目目录内
-  const filePath = path.normalize(path.join(ROOT, urlPath));
+  let filePath = path.normalize(path.join(ROOT, urlPath));
   if (!filePath.startsWith(ROOT + path.sep) && filePath !== ROOT) {
     res.writeHead(403); res.end('Forbidden'); return;
   }
+
+  // 目录请求补 index.html(方便本地预览 dist/ 构建产物)
+  try {
+    if (fs.statSync(filePath).isDirectory()) filePath = path.join(filePath, 'index.html');
+  } catch (e) { /* 交给下面的 getEntry 统一报 404 */ }
 
   let entry;
   try {
