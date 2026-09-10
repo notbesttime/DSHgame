@@ -2,13 +2,19 @@ import subprocess
 import os
 from PIL import Image
 
-os.chdir(r"D:\Doubao_benti\集合\DSHgame")
-FFMPEG = r"D:\Chat_GPT5.5Projects\FollowCreate\ffmpeg\ffmpeg.exe"
+# 必须从这里推导项目根目录:曾写死绝对路径,项目一搬家就会去处理旧位置的旧文件(还静默成功)。
+BASE = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE)
+
+# ffmpeg 路径优先级:环境变量 FFMPEG > 默认位置。找不到就明确报错,不要静默产出空文件。
+FFMPEG = os.environ.get('FFMPEG', r"D:\Chat_GPT5.5Projects\FollowCreate\ffmpeg\ffmpeg.exe")
+if not os.path.exists(FFMPEG):
+    raise SystemExit(f'找不到 ffmpeg: {FFMPEG}\n请设置环境变量 FFMPEG 指向 ffmpeg.exe')
 
 # ========== 1. 压缩背景图和占位图为JPEG ==========
 def compress_jpg(input_path, output_path, width):
     cmd = [FFMPEG, "-y", "-i", input_path, "-vf", f"scale={width}:-1", "-q:v", "5", output_path]
-    subprocess.run(cmd, capture_output=True)
+    subprocess.run(cmd, capture_output=True, check=True)
     print(f"  compressed: {os.path.basename(output_path)} ({os.path.getsize(output_path)//1024}KB)")
 
 print("=== 压缩背景图 ===")

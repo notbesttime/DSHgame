@@ -8,6 +8,8 @@ _*.py
 *.log
 Thumbs.db
 Desktop.ini
+__pycache__/
+*.pyc
 
 # ⚠️ 不要把活脚本写进这里!
 # 2026-09-10 曾把 check_syntax.js 显式加到下边,结果它既进不了版本库、又被清理脚本一起删掉,

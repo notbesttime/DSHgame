@@ -167,15 +167,27 @@ node server.js             # http://localhost:8765
 2. `.gitignore` 不是清理工具。要删就删,不要用"忽略"把文件藏起来——藏起来的文件照样占磁盘、照样会被误删。
 3. 任何清理动作之后,必须跑一遍 `python build.py && node check_syntax.js`。这次只要跑一次就会立刻发现工具没了。
 
-### 剩余可选项(用户未要求,低优先)
-- `assets/compressed/` 里仍有 8 个 build.py 未引用的死文件(`chair.png`、`char1.png`、`char2.png`、
-  `fan.png`、`pc_case.png`、`pc_case_upgraded.png`、`relay_bg.jpg`、`speech_bubble.png`),
-  `assets/compressed_webp/chair.webp`(8KB,已被 `chair_hi.webp` 取代)同样是死文件。
-  删之前先跑自检,删完重跑构建。
+### 死素材判定(2026-09-10 已核实并清理)
+**判定"死素材"不能只看 build.py 有没有引用**——`assets/compressed/` 里大部分 PNG 不是给 build 直接用的,
+而是 `recompress_assets.py` 的**输入**(它是生成 `compressed_webp/` 的源头)。按引用来源分三类:
+
+| 文件 | 谁在用 | 能否删 |
+|---|---|---|
+| `compressed/bg_dark.jpg` `bg_light.jpg` `placeholder.jpg` `transfer_bg.jpg` | build.py 直接内联 | ❌ |
+| `compressed/char1.png` `char2.png` `fan.png` `pc_case.png` `pc_case_upgraded.png` `speech_bubble.png` | recompress_assets.py 的输入(删了就无法重新生成对应 webp) | ❌ |
+| `compressed/chair.png` `relay_bg.jpg` | 无人引用(已被 `raw/chair.png`→`chair_hi.webp`、`transfer_bg` 取代) | ✅ 已删 |
+| `compressed_webp/chair.webp` | 无人引用(被 `chair_hi.webp` 取代) | ✅ 已删 |
+
+已删 3 个文件,删前跑过自检、删后重跑 `build.py` + `check_syntax.js` 均通过。若日后误删,
+`git checkout <commit>~1 -- <file>` 可恢复。
+
+### 已知遗留(不打算处理)
 - `assets/raw/` 的 28.9MB 中 16 个文件已进 git;`walk_video.mp4`(1.15MB)与 `walk_frame_*.png` 是
   行走动画的**唯一原始来源**,本机没有第二份副本(用户备份目录里只有 `walk_spritesheet.png`)。
   若要瘦身请先自行备份,不要直接删。
 - 删除已跟踪文件涉及历史重写,风险大于收益,**不要做 `git filter-branch`**。
+- `process_assets.py` 依赖外部 ffmpeg(可用环境变量 `FFMPEG` 覆盖路径)。路径推导已改为从脚本位置出发,
+  不再写死绝对路径;但这条流水线整体是"从 raw 重建 compressed"的一次性上游,平时不用跑。
 
 ### 不要做
 - **不要**改 `index.html`(构建产物,由 `build.py` 生成)。
