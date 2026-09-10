@@ -16,16 +16,16 @@ DSHgame/
 ├── process_assets.py        早期资产批量处理(仍在用的活脚本之一)
 ├── lib/pixi.min.js          PixiJS v7.4.0(构建时内联)
 ├── assets/
-│   ├── raw/                 原始素材(来源,不参与构建;28.9MB,已进版本库)
+│   ├── raw/                 原始素材(来源,不参与构建)。⚠️ 已加进 .gitignore,但其中 16 个文件
+│   │                        在早期被跟踪过、仍在版本库里(walk_video.mp4 等关键原始素材已入库)
 │   ├── compressed/          第一代压缩(png/jpg,build.py 仅引用其中 4 张:bg_dark/bg_light/placeholder/transfer_bg)
 │   └── compressed_webp/     ★ 第二代 WebP(build.py 引用其中 14 张)
-└── add_*.py / fix_*.py / rewrite_*.py / check_*.py / make_*.py / process_*.py(旧) / ...
-                              ⚠️ 33 个历史一次性补丁脚本,不要在新流程中使用。其中 15 个会直接
-                              重写 index_template.html,误跑一次会静默改坏源码。
-                              有效脚本只有 6 个,见上方 ★。清理任务见文末交接章节。
 ```
 
-★ = 当前有效流水线。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
+★ = 当前有效流水线 = 根目录只有这 6 个脚本是活的:
+`build.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
+其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
+已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
 
 ## 常用命令
 
@@ -137,7 +137,8 @@ node server.js             # http://localhost:8765
 - 手机竖屏会显示"请横屏游玩"遮罩(`#rotatePrompt`,触屏+竖屏才触发)。
 - 启动时序:base64 纹理异步解码,靠 7 个 `texture.on('update')`(bgLight/bgDark/charClosed/charOpen/pcCase/**relayBg/chairSprite**) + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。**新增纹理必须加 update 监听**,否则 layoutRelayScene 等函数会在纹理未就绪时计算,除以0导致 NaN 边界(已踩过坑:中转站行走边界完全失效)。
 - layoutRelayScene 中有纹理未加载时的默认尺寸保护(rbgW=1672,rbgH=941),避免除以0。新增依赖纹理尺寸的布局函数时建议同样保护。
-- **构建自检用 `check_syntax.js`**(不是已删的 `_check_syntax.js`;旧名以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则忽略,所以改了名)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
+- **构建自检用 `check_syntax.js`**(旧名 `_check_syntax.js` 已废弃——以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则吃掉)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
+  ⚠️ **不要再把这个文件名写进 `.gitignore`**。2026-09-10 曾这么干过一次,结果它既进不了版本库、又被随后的清理脚本一起删掉,构建自检整个消失(见坑36)。
 
 ## 后续待办(用户规划)
 
@@ -145,60 +146,41 @@ node server.js             # http://localhost:8765
 2. 设置面板音频接入(音乐/音效滑条已就位)
 3. 低优先:背景大图 WebP 迁移、offline 收益(存档已有 savedAt 可算离线时长)
 
-## 交给下一个 AI 的任务:仓库卫生 + 提交最新成果(2026-09-10 交接)
+## 仓库状态与提交(2026-09-10 已执行 + 复核)
 
-> 用户明确指定:这份工作由下一个 AI 执行,不是"待用户决定"。以下是完成它所需的全部事实,
-> 不要重新调研,直接照做。**做之前先读本节末尾的"不要做"清单。**
+### 已完成
+- **提交 `5d9bfc7`**:7 个新 webp(walk_*/walker_lift/walker_sit/chair_outline/panel_logo,347.6KB)、
+  `index_template.html`(showWalker 重构)、`PROJECT.md`、本坑文档,全部入库;`assets/compressed/` 下的
+  walk 中间产物(PNG+JSON)已清掉。
+- 复核后的当前工作区**尚未提交**,有 6 项改动待入库:`.gitignore`(删掉误加的 `check_syntax.js` 行并补警告)、
+  `PROJECT.md`、坑文档,加上恢复的 3 个活脚本(已 staged)+ 重建的 `check_syntax.js`(未跟踪)。
+  `python build.py` + `node check_syntax.js` 均通过。**提交时务必带上 `check_syntax.js`**。
 
-### A. 先提交(有数据丢失风险,优先)
+### ⚠️ 这次清理出过一次事故(已修复,详见坑36)——以后做同类清理务必先读这节
+提交 `5d9bfc7` 声称"清理一次性临时脚本、仅保留 build.py",实际误删了流水线里的**三个活脚本**
+(`recompress_assets.py` / `cut_chair.py` / `process_assets.py`),并把 `check_syntax.js` 写进
+`.gitignore` 后连文件一起删掉。**复核时发现,已从 `git checkout 5d9bfc7~1 --` 恢复三个脚本、
+重建自检工具、并从 `.gitignore` 移除那行。** 三个脚本能救回来是因为它们在 HEAD~1 里被跟踪过。
 
-现状:`git status` 有 3 个已修改、37 个未跟踪。**未跟踪里包含中转站行走动画和面板的全部素材**,
-而 `.gitignore` 忽略了 `index.html`(合理:它能由 `build.py` 重新生成)——但前提是"模板+素材"都在库里。
-也就是说**现在克隆这个仓库,`python build.py` 会直接报文件不存在**,最新成果只存在于本机硬盘。
+**教训固化进流程**:
+1. 清理前先建立"保留清单",再对剩余项删,不要反过来凭印象删。保留清单就是上面 ★ 那 6 个。
+2. `.gitignore` 不是清理工具。要删就删,不要用"忽略"把文件藏起来——藏起来的文件照样占磁盘、照样会被误删。
+3. 任何清理动作之后,必须跑一遍 `python build.py && node check_syntax.js`。这次只要跑一次就会立刻发现工具没了。
 
-已修改(3 个,直接 add):
-`PROJECT.md`、`build.py`、`index_template.html`
+### 剩余可选项(用户未要求,低优先)
+- `assets/compressed/` 里仍有 8 个 build.py 未引用的死文件(`chair.png`、`char1.png`、`char2.png`、
+  `fan.png`、`pc_case.png`、`pc_case_upgraded.png`、`relay_bg.jpg`、`speech_bubble.png`),
+  `assets/compressed_webp/chair.webp`(8KB,已被 `chair_hi.webp` 取代)同样是死文件。
+  删之前先跑自检,删完重跑构建。
+- `assets/raw/` 的 28.9MB 中 16 个文件已进 git;`walk_video.mp4`(1.15MB)与 `walk_frame_*.png` 是
+  行走动画的**唯一原始来源**,本机没有第二份副本(用户备份目录里只有 `walk_spritesheet.png`)。
+  若要瘦身请先自行备份,不要直接删。
+- 删除已跟踪文件涉及历史重写,风险大于收益,**不要做 `git filter-branch`**。
 
-必须提交的素材与工具(消失就无法重新构建):
-- `assets/compressed_webp/` 7 个新 webp:`walk_left` / `walk_right` / `walk_idle` / `walker_lift` / `walker_sit` / `chair_outline` / `panel_logo`(共 347.6KB)
-- `check_syntax.js`(注意:名字不能再带 `_` 前缀,否则被 `.gitignore` 的 `_*.js` 吃掉)
-- `assets/raw/walk_video.mp4`(1.15MB,行走动画的唯一原始来源)、`walk_frame_0[1-6].png`、`walk_spritesheet_raw.png`、`walker_lift_new.png`、`panel_reference.png`、`screen_position*.png`、`walk_area_ref.png`
-- 用户自己创建的素材备份/、踩过的坑(人看的).docx
-
-提交前验证(必做,防止提交一个构建不了的版本):
-```bash
-python build.py && node check_syntax.js    # 两个都要过,退出码 0
-```
-提交信息建议:说明"补交行走/面板素材 + check_syntax.js + showWalker 重构",别写成一坨。
-
-### B. 仓库卫生(用户已同意清理,但**要求交给下一个 AI 执行**)
-
-1. **归档一次性补丁脚本**。根目录 39 个脚本(`.py` 37 + `.js` 2)里,**只有 6 个是活的**:
-   `build.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
-   其余 **33 个**是历史补丁痕迹,已被 git 历史取代:
-   `add_*.py`(9)、`fix_*.py`(4)、`rewrite_*.py`(3)、`check_*.py`(4)、`make_*.py`(2)、
-   `process_*.py`(7)、`compress_fan.py`、`simplify_fan.py`、`adjust_ui.py`、`align_walk_frames.py`、
-   `download.py`、`download_new_chars.py`、`rename_relay.py`、`remove_walk.py`。
-   ⚠️ **其中 15 个会直接重写 `index_template.html`**(用字符串替换覆盖模板,如 `rewrite_panel.py`、
-   `add_walker_ai.py`、`fix_all.py`、`rewrite_relay_v2.py` 等),**误跑一次会静默改坏源码**。
-   建议移到 `attic/`(或直接删,git 历史里都有)。
-   ⚠️ 它们目前都未被 git 跟踪,删除只在工作区生效,git 历史里仍可找回。
-
-2. **删死素材**(经实测确认 build.py 未引用):
-   - `assets/compressed/`(17 个里只有 4 个在用):死文件 `chair.png`、`char1.png`、`char2.png`、`fan.png`、
-     `pc_case.png`、`pc_case_upgraded.png`、`relay_bg.jpg`、`speech_bubble.png`、`walk_left.png`、
-     `walk_right.png`、`walk_left_aligned.png`(1977KB!)、`walk_right_aligned.png`(1977KB!)、`walk_spritesheet.json`
-   - `assets/compressed_webp/chair.webp`(8KB,已被 `chair_hi.webp` 取代)
-   ⚠️ 删之前先跑 `node check_syntax.js` 确认当前构建是好的;删完**必须重跑 `python build.py` + `check_syntax.js`**。
-
-3. **`assets/raw/` 的 28.9MB 已进 git**——这是可选的长期优化(用 `git lfs` 或改为不入库),
-   **本轮不要动**:已跟踪文件的删除涉及历史重写,风险大于收益,且用户没要求。
-
-### C. 不要做
-
-- **不要**改 `index.html`(它是构建产物,由 `build.py` 生成)。
-- **不要**为了"整洁"把 2200 行单文件 HTML 拆成模块。单文件离线可打开是这个项目的分发前提,拆分要引打包器,成本和风险远超收益。
+### 不要做
+- **不要**改 `index.html`(构建产物,由 `build.py` 生成)。
+- **不要**把 2200 行单文件 HTML 拆成模块。单文件离线可打开是本项目的分发前提(要塞进「本体」),
+  拆分要引打包器,成本和风险远超收益。
 - **不要**实现中转站玩法(用户明确要亲自安排)。
-- **不要**把 `assets/raw/` 已跟踪的文件删掉或做 `git filter-branch`。
-- **不要**只删素材不重跑构建——`build.py` 找不到文件会抛异常,`check_syntax.js` 第 ③ 项也会报"素材文件不存在"。
+- **不要**删 ★ 那 6 个活脚本,也不要再把它们写进 `.gitignore`。
 

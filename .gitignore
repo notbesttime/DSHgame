@@ -8,7 +8,12 @@ _*.py
 *.log
 Thumbs.db
 Desktop.ini
-check_syntax.js
+
+# ⚠️ 不要把活脚本写进这里!
+# 2026-09-10 曾把 check_syntax.js 显式加到下边,结果它既进不了版本库、又被清理脚本一起删掉,
+# 构建自检整个消失。判断一个文件该不该忽略,标准是「能不能从仓库里已有的东西重新生成」,
+# 不是「名字像不像临时的」。build.py / server.js / check_syntax.js / recompress_assets.py /
+# cut_chair.py / process_assets.py 这 6 个是活的,任何时候都不要忽略或删除。
 
 # 编辑器/系统
 .vscode/
@@ -19,5 +24,8 @@ check_syntax.js
 # 用户素材备份目录(原始素材备份,不入库)
 用户自己创建的素材备份/
 
-# raw 原始素材/中间产物(最终webp在 compressed_webp/ 中,原始素材在备份目录)
+# raw 原始素材/中间产物:不入库(最终成品在 compressed_webp/,已入库)
+# 注意:assets/raw/ 里已有 16 个文件在早期被跟踪过,仍在版本库里;下面这条只对**新增**文件生效。
+# 已知单点风险:assets/raw/walk_video.mp4 与 walk_frame_*.png 是行走动画的唯一原始来源,
+# 且本机没有第二份副本(用户备份目录里只有 walk_spritesheet.png)。删这两个文件前先自己备份。
 assets/raw/
