@@ -1023,12 +1023,13 @@ const screenPanel = new PIXI.Container();
 screenPanel.visible = false;
 layers.panel.addChild(screenPanel); // 独立面板层(不受设置面板开关影响)
 
-// 背景遮罩(点击关闭,但电脑屏幕区域不关闭)
+// 背景遮罩:只在「点击落在面板之外」时关闭(面板主体会先一步接住点击,见 panelBody)
 const panelMask = new PIXI.Graphics();
 panelMask.eventMode = 'static';
 panelMask.cursor = 'pointer';
 panelMask.on('pointerdown', (e) => {
-  // 如果点击位置在电脑屏幕区域内,不关闭面板(避免点击触发区误关)
+  // 兜底:面板占屏 88%×85%,极端宽高比下电脑屏幕区域可能露在面板之外,那种情况下点它也不该关面板
+  // (主防线是 panelBody 接住面板内的点击,见其定义处)
   if (screenGlowHit.visible) {
     const b = screenGlowHit.getBounds();
     const p = e.global;
@@ -1040,8 +1041,12 @@ panelMask.on('pointerdown', (e) => {
 });
 screenPanel.addChild(panelMask);
 
-// 面板主体
+// 面板主体。**这里必须是 eventMode='static'**:Pixi 命中测试会跳过「eventMode='auto' 且没有任何监听器」
+// 的对象(auto 的语义是「有监听器才参与交互」)。若留默认值,点击面板内部时命中目标会直接落到下层遮罩,
+// 遮罩的 pointerdown 一触发就把面板关了——表现就是「点面板里面也返回」。
+// 设成 static 后,遮罩(b 的兄弟节点,不在事件的父链上)在面板范围内永远不会成为命中目标。
 const panelBody = new PIXI.Graphics();
+panelBody.eventMode = 'static';
 screenPanel.addChild(panelBody);
 
 // 顶部栏
@@ -1100,6 +1105,8 @@ function layoutScreenPanel() {
   panelBody.beginFill(0xf5f0e8, 1);
   panelBody.drawRoundedRect(px, py, pw, ph, radius);
   panelBody.endFill();
+  // 显式 hitArea:比依赖 Graphics 的填充几何做命中判定更可靠,且随布局一起更新
+  panelBody.hitArea = new PIXI.Rectangle(px, py, pw, ph);
 
   // 顶部栏(稍深米色,高度48px)
   const topH = 48;

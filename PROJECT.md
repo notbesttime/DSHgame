@@ -123,7 +123,15 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **触发**:人物坐下后,电脑屏幕显示草绿色描边(呼吸动画:4s周期,0.4s出现+1.2s保持+0.4s消失+2s等待;悬停时常驻显示,timer暂停,移出时lerp平滑过渡)。点击描边及内部区域打开面板。
 - **面板结构**:背景遮罩(alpha=0.72半透明深色,点击关闭,但电脑屏幕区域不关闭)+ 面板主体(米白色#f5f0e8,占屏幕88%×85%,圆角14px)+ 顶部栏(浅米色48px,**大肥鱼站logo**+导航标签占位+搜索框占位)+ 左侧栏(浅米色200px,3组菜单项占位,选中项暖橙高亮)+ 中间内容区(留空,后续填充)。参考 Liminality 面板设计,简约暖色调,不用黑色。
 - **面板左上角logo**:大肥鱼站(透明背景PNG,浅蓝色卡通字体+鲸鱼,白色描边)。压缩为WebP(177×48,4.7KB,保留透明通道,质量85),内嵌到单文件HTML。位置:左边距14px,垂直居中,高度=顶部栏高度(48px)。透明背景和顶部栏浅米色自然融合,无需圆角蒙版/模糊滤镜。资产key:`panel_logo`,文件:`assets/compressed_webp/panel_logo.webp`。
-- **面板关闭逻辑优化**:背景遮罩(panelMask)在电脑屏幕点击区(screenGlowHit)之上,点击电脑屏幕区域时实际点击的是遮罩,会误关面板。优化:遮罩的 pointerdown 事件中判断点击位置是否在 screenGlowHit.getBounds() 内,是则不关闭面板,否则正常关闭。
+- **面板关闭逻辑**:点击面板**外**的遮罩关闭;点击面板**内部**不关闭。实现靠 `panelBody.eventMode = 'static'`——
+  Pixi 的命中测试会跳过「`eventMode='auto'` 且没有任何监听器」的对象(auto 的语义是「有监听器才参与交互」),
+  所以 panelBody 一旦留默认值,点面板内部时命中目标会直接落到下层遮罩,遮罩一触发就把面板关了(表现为「点面板里面也返回」)。
+  设成 `static` 后 panelBody 自己成为命中目标,而遮罩是它的**兄弟节点、不在事件父链上**,面板范围内永远不会命中遮罩。
+  另外给 panelBody 设了显式 `hitArea`(随 `layoutScreenPanel()` 更新),比依赖 Graphics 填充几何做命中判定更可靠。
+  ⚠️ **`screenPanel` 的子节点里,凡是挡住遮罩的都必须自己 eventMode='static'**,否则点击会穿透到遮罩触发关闭。
+- **遮罩的屏幕区域豁免**:`panelMask` 里保留了「点击落在电脑屏幕矩形内则不关闭」的判断,作为兜底
+  (面板占屏 88%×85%,极端宽高比下电脑屏幕可能露在面板之外)。主防线是上面的 panelBody。
+  (历史:该判断原先是为了绕开「命中目标落在遮罩上」的问题;根因修复后它退化为兜底,代码保留。)
 - **层级设计**:`layers.panel` 独立层,用 `addChildAt(layers.panel, getChildIndex(layers.topbar))` 插到 relayScene 之上、topbar 之下。最终层级:bg→...→ui→relayScene→**panel**→topbar→fx→settings→nav。面板盖住中转站场景,但设置按钮(topbar)和底部场景切换标签(nav)保持在面板之上可见可点。
 - **关键坑**:面板最初放在 `layers.settings` 层,但设置面板关闭时执行 `layers.settings.visible=false`,导致整个层被隐藏,面板 visible=true 也看不到。**父容器 visible=false 会隐藏所有子元素,即使子元素 visible=true**。解决方案:独立 panel 层,不受设置面板开关影响。
 - **场景切换**:切回生产(closeRelayScene)时自动调用 closeScreenPanel(),面板只在中转站存在。
