@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -138,9 +138,10 @@ const layers = {
   topbar: new PIXI.Container(),
   fx: new PIXI.Container(),
   settings: new PIXI.Container(),
+  panel: new PIXI.Container(), // 独立面板层(不受设置面板visible影响)
   nav: new PIXI.Container(), // 底部场景切换标签,置于最顶(切换场景时仍可见)
 };
-app.stage.addChild(layers.bg, layers.clickArea, layers.characters, layers.scene, layers.ui, layers.topbar, layers.fx, layers.settings, layers.nav);
+app.stage.addChild(layers.bg, layers.clickArea, layers.characters, layers.scene, layers.ui, layers.topbar, layers.fx, layers.settings, layers.panel, layers.nav);
 
 // ==================== 背景层（灯效） ====================
 const bgLight = PIXI.Sprite.from(ASSETS.bg_light);
@@ -227,6 +228,7 @@ const floatTexts = new PIXI.Container();
 layers.fx.addChild(floatTexts);
 
 clickMask.on('pointerdown', (e) => {
+  if (relaySceneOpen) return; // 中转站时不触发生产点击
   if (state.paused) return;
   const pos = e.global;
   doClick(pos.x, pos.y);
@@ -591,15 +593,24 @@ const allBuyItems = [];
 // 只有"可负担/已拥有/数量"状态变化时才重绘 Graphics,每帧仅做几次比较
 function refreshBuyItem(item, force) {
   const ownedNow = item.oneTime && item.owned();
+  const lockedNow = item.lockedFn && item.lockedFn();
   const price = item.priceFn();
-  const afford = !ownedNow && state.tokens >= price;
+  const afford = !ownedNow && !lockedNow && state.tokens >= price;
   const count = item.countFn ? item.countFn() : 0;
-  const key = (ownedNow ? 'o' : afford ? 'a' : 'p') + ':' + count;
+  const key = (ownedNow ? 'o' : lockedNow ? 'l' : afford ? 'a' : 'p') + ':' + count;
   if (!force && item._uiKey === key) return;
   item._uiKey = key;
   if (ownedNow) {
     item.priceText.text = '已拥有';
     item.countText.text = '';
+    drawBuyButton(item.bg, false, item.buyColor);
+  } else if (lockedNow) {
+    // 锁定状态:显示提示文字,按钮灰色不可点击
+    item.priceText.text = item.lockHintFn ? item.lockHintFn() : '未解锁';
+    if (item.countFn) {
+      item.countText.text = count > 0 ? 'x' + count : '';
+      item.countText.x = item.nameText.x + item.nameText.width + 6;
+    }
     drawBuyButton(item.bg, false, item.buyColor);
   } else {
     item.priceText.text = price + ' token';
@@ -615,7 +626,7 @@ function updateAllBuyButtons(force) {
   for (const item of allBuyItems) refreshBuyItem(item, force);
 }
 
-function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, onBuy, oneTime, owned, countFn) {
+function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, onBuy, oneTime, owned, countFn, lockedFn, lockHintFn) {
   const bg = new PIXI.Graphics();
   bg.x = 20; bg.y = y;
   container.addChild(bg);
@@ -641,7 +652,7 @@ function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, on
   priceText.x = panelW - 24; priceText.y = y + 30;
   container.addChild(priceText);
 
-  const item = { bg, nameText, countText, priceText, priceFn, oneTime, owned, countFn, buyColor, _uiKey: null };
+  const item = { bg, nameText, countText, priceText, priceFn, oneTime, owned, countFn, buyColor, lockedFn, lockHintFn, _uiKey: null };
   refreshBuyItem(item, true);
 
   bg.eventMode = 'static';
@@ -649,6 +660,7 @@ function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, on
   bg.hitArea = new PIXI.Rectangle(0, 0, 320, 68);
   bg.on('pointerdown', () => {
     if (oneTime && owned()) return;
+    if (lockedFn && lockedFn()) return; // 锁定状态不可购买
     const price = priceFn();
     if (state.tokens >= price) {
       state.tokens -= price;
@@ -771,7 +783,15 @@ function initPurchasePanel() {
     state.machines.a100.count++;
     recalcProduction();
     recalcCrit();
-  }, false, () => false, () => state.machines.a100.count);
+  }, false, () => false, () => state.machines.a100.count,
+  // 锁定条件:每3台3080才能买1台A100
+  () => state.machines.a100.count >= Math.floor(state.machines.rtx3080.count / 3),
+  // 锁定提示:显示还需要多少台3080
+  () => {
+    const need = (state.machines.a100.count + 1) * 3;
+    const have = state.machines.rtx3080.count;
+    return '需' + need + '台3080(' + have + '/' + need + ')';
+  });
 
   // 额外机柜
   const rack = createBuyItem(mc, 212, (icon) => {
@@ -801,10 +821,10 @@ function initPurchasePanel() {
     icon.beginFill(0x6aff6a, 0.9);
     icon.drawCircle(32, 8, 2);
     icon.endFill();
-  }, '服务器', '购买后解锁"中转站"系统', serverPrice, 0xba6a3a, () => {
-    state.machines.server.count++;
+  }, '服务器', '购买后解锁"中转站"系统', () => 10000, 0xba6a3a, () => {
+    state.machines.server.count = 1;
     updateRelayTabVisibility();
-  }, false, () => state.machines.server.count);
+  }, true, () => state.machines.server.count > 0, null);
 
   // ========== 散热板块 ==========
   const cc = contents.cooling;
@@ -827,7 +847,7 @@ function initPurchasePanel() {
     icon.beginFill(0x7ac8a0, 0.9);
     icon.drawCircle(19, 19, 4);
     icon.endFill();
-  }, '心静自然凉', '每次点击获得的token数 ×1.1', fanPrice, 0x3a9a6a, () => {
+  }, '心静自然凉', '每次点击获得的token数 ×1.25', fanPrice, 0x3a9a6a, () => {
     state.cooling.fan.count++;
     recalcClickPower();
   }, false, () => false, () => state.cooling.fan.count);
@@ -848,11 +868,11 @@ function initPurchasePanel() {
     icon.beginFill(0x6abaff, 0.8);
     icon.drawCircle(19, 22, 3);
     icon.endFill();
-  }, '水冷', '10s-2min触发，19%概率 token×1.2', waterCoolingPrice, 0x3a8aba, () => {
-    state.cooling.waterCooling.count++;
+  }, '水冷', '10s-2min触发，19%概率 token×1.2', () => 3000, 0x3a8aba, () => {
+    state.cooling.waterCooling.count = 1;
     state.waterCoolingNextTrigger = 10 + Math.random() * 110;
     state.waterCoolingTimer = 0;
-  }, false, () => false, () => state.cooling.waterCooling.count);
+  }, true, () => state.cooling.waterCooling.count > 0, null);
 
   // ========== 脚本板块 ==========
   const sc = contents.script;
@@ -868,7 +888,7 @@ function initPurchasePanel() {
     icon.moveTo(8, 20); icon.lineTo(25, 20);
     icon.moveTo(8, 26); icon.lineTo(28, 26);
     icon.moveTo(8, 32); icon.lineTo(20, 32);
-  }, '自动点击', '每秒自动点击 3 次', () => 800, 0xba8a3a, () => {
+  }, 'niger', '每秒自动点击 3 次', () => 800, 0xba8a3a, () => {
     state.scripts.autoClick = true;
   }, true, () => state.scripts.autoClick, null);
 
@@ -953,17 +973,551 @@ function switchScene(name) {
 // ---- 中转站场景 ----
 const relayScene = new PIXI.Container();
 relayScene.visible = false;
-// 插到 nav 层之下:场景切换标签必须保持可见可点
-app.stage.addChildAt(relayScene, app.stage.getChildIndex(layers.nav));
+// 插到 topbar 层之下:设置按钮/顶部栏必须始终可见,场景切换标签在最上层
+app.stage.addChildAt(relayScene, app.stage.getChildIndex(layers.topbar));
+// panel层插到relayScene之上、topbar之下:面板盖住中转站场景,但设置按钮/底部UI仍在面板之上
+app.stage.addChildAt(layers.panel, app.stage.getChildIndex(layers.topbar));
 
 // 中转站背景
 const relayBg = PIXI.Sprite.from(ASSETS.transfer_bg);
 relayScene.addChild(relayBg);
 
+// 电脑屏幕草绿色描边(人物坐下后显示,在背景之上、人物/椅子之下,不遮挡)
+const screenGlow = new PIXI.Graphics();
+screenGlow.visible = false;
+screenGlow.alpha = 0;
+relayScene.addChild(screenGlow);
+// 屏幕描边呼吸动画状态(4s周期,悬停常驻)
+let screenGlowTimer = 0;
+let screenGlowHover = false;
+screenGlow.eventMode = 'static';
+screenGlow.cursor = 'pointer';
+screenGlow.on('pointerover', () => { screenGlowHover = true; });
+screenGlow.on('pointerout', () => { screenGlowHover = false; });
+
+// 独立透明点击区域(覆盖整个矩形:描边+内部,比hitArea更可靠)
+const screenGlowHit = new PIXI.Graphics();
+screenGlowHit.visible = false;
+screenGlowHit.eventMode = 'static';
+screenGlowHit.cursor = 'pointer';
+relayScene.addChild(screenGlowHit);
+screenGlowHit.on('pointerdown', () => {
+  if (screenGlowHit.visible) openScreenPanel();
+});
+screenGlowHit.on('pointerover', () => {
+  screenGlowHover = true;
+});
+screenGlowHit.on('pointerout', () => {
+  screenGlowHover = false;
+});
+
+// ========== 电脑屏幕面板(点击描边打开) ==========
+const screenPanel = new PIXI.Container();
+screenPanel.visible = false;
+layers.panel.addChild(screenPanel); // 独立面板层(不受设置面板开关影响)
+
+// 背景遮罩(点击关闭,但电脑屏幕区域不关闭)
+const panelMask = new PIXI.Graphics();
+panelMask.eventMode = 'static';
+panelMask.cursor = 'pointer';
+panelMask.on('pointerdown', (e) => {
+  // 如果点击位置在电脑屏幕区域内,不关闭面板(避免点击触发区误关)
+  if (screenGlowHit.visible) {
+    const b = screenGlowHit.getBounds();
+    const p = e.global;
+    if (p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height) {
+      return;
+    }
+  }
+  closeScreenPanel();
+});
+screenPanel.addChild(panelMask);
+
+// 面板主体
+const panelBody = new PIXI.Graphics();
+screenPanel.addChild(panelBody);
+
+// 顶部栏
+const panelTopBar = new PIXI.Graphics();
+screenPanel.addChild(panelTopBar);
+
+// 左侧栏
+const panelSideBar = new PIXI.Graphics();
+screenPanel.addChild(panelSideBar);
+
+// 占位容器(顶部栏和左侧栏的占位UI元素)
+const panelPlaceholders = new PIXI.Container();
+screenPanel.addChild(panelPlaceholders);
+
+// 面板左上角网站logo(大肥鱼站,新版横排)
+const panelLogo = PIXI.Sprite.from(ASSETS.panel_logo);
+panelLogo.anchor.set(0, 0.5);
+screenPanel.addChild(panelLogo);
+
+let screenPanelOpen = false;
+
+function openScreenPanel() {
+  if (screenPanelOpen) return; // 防止重复打开
+  screenPanelOpen = true;
+  screenPanel.visible = true;
+  screenGlowHit.eventMode = 'none'; // 打开后禁用屏幕点击,避免重复触发
+  layoutScreenPanel();
+}
+
+function closeScreenPanel() {
+  screenPanelOpen = false;
+  screenPanel.visible = false;
+  screenGlowHit.eventMode = 'static'; // 恢复屏幕点击
+}
+
+function layoutScreenPanel() {
+  const w = app.screen.width;
+  const h = app.screen.height;
+
+  // 背景遮罩(半透明深色模拟虚化,加深)
+  panelMask.clear();
+  panelMask.beginFill(0x1a1208, 0.72);
+  panelMask.drawRect(0, 0, w, h);
+  panelMask.endFill();
+
+  // 面板尺寸(占绝大部分,留有边距)
+  const pw = w * 0.88;
+  const ph = h * 0.85;
+  const px = (w - pw) / 2;
+  const py = (h - ph) / 2;
+  const radius = 14;
+
+  // 面板主体(米白色,简约风格)
+  panelBody.clear();
+  panelBody.lineStyle(1, 0xc4b8a8, 0.6);
+  panelBody.beginFill(0xf5f0e8, 1);
+  panelBody.drawRoundedRect(px, py, pw, ph, radius);
+  panelBody.endFill();
+
+  // 顶部栏(稍深米色,高度48px)
+  const topH = 48;
+  panelTopBar.clear();
+  panelTopBar.beginFill(0xe8e0d4, 1);
+  panelTopBar.drawRoundedRect(px, py, pw, topH, radius);
+  panelTopBar.endFill();
+  // 遮盖底部圆角(让顶部栏和面板主体无缝衔接)
+  panelTopBar.beginFill(0xe8e0d4, 1);
+  panelTopBar.drawRect(px, py + topH - radius, pw, radius);
+  panelTopBar.endFill();
+
+  // 左侧栏(稍深米色,宽度200px)
+  const sideW = 200;
+  panelSideBar.clear();
+  panelSideBar.beginFill(0xe8e0d4, 1);
+  panelSideBar.drawRoundedRect(px, py + topH, sideW, ph - topH, radius);
+  panelSideBar.endFill();
+  // 遮盖右侧圆角
+  panelSideBar.beginFill(0xe8e0d4, 1);
+  panelSideBar.drawRect(px + sideW - radius, py + topH, radius, ph - topH - radius);
+  panelSideBar.endFill();
+  // 左侧栏和顶部栏之间的分隔线
+  panelSideBar.lineStyle(1, 0xc4b8a8, 0.4);
+  panelSideBar.moveTo(px + sideW, py + topH);
+  panelSideBar.lineTo(px + sideW, py + ph);
+  // 顶部栏和内容区分隔线
+  panelSideBar.moveTo(px, py + topH);
+  panelSideBar.lineTo(px + pw, py + topH);
+
+  // 清空旧占位
+  panelPlaceholders.removeChildren();
+
+  // ===== 顶部栏占位 =====
+  // 左侧网站logo(大肥鱼站,新版横排,米色背景和顶部栏融合)
+  const logoH = topH * 1.0; // 顶部栏高度(48px)
+  const logoScale = logoH / panelLogo.texture.height;
+  panelLogo.scale.set(logoScale);
+  panelLogo.x = px + 14;
+  panelLogo.y = py + topH / 2;
+  panelLogo.visible = true;
+
+  // 右侧导航标签占位(4个)
+  for (let i = 0; i < 4; i++) {
+    const tab = new PIXI.Graphics();
+    const tx = px + pw - 280 + i * 65;
+    tab.beginFill(0xc4b8a8, i === 1 ? 0.7 : 0.35); // 第二个高亮(模拟选中)
+    tab.drawRoundedRect(tx, py + topH / 2 - 8, 50, 16, 4);
+    tab.endFill();
+    panelPlaceholders.addChild(tab);
+  }
+
+  // 搜索框占位
+  const searchBox = new PIXI.Graphics();
+  searchBox.lineStyle(1, 0xc4b8a8, 0.5);
+  searchBox.beginFill(0xf5f0e8, 0.8);
+  searchBox.drawRoundedRect(px + pw - 130, py + topH / 2 - 12, 100, 24, 6);
+  searchBox.endFill();
+  panelPlaceholders.addChild(searchBox);
+
+  // ===== 左侧栏占位 =====
+  const sideX = px + 16;
+  let sideY = py + topH + 20;
+
+  // 分组1标题
+  const group1Title = new PIXI.Graphics();
+  group1Title.beginFill(0xb8a898, 0.5);
+  group1Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
+  group1Title.endFill();
+  panelPlaceholders.addChild(group1Title);
+  sideY += 22;
+
+  // 分组1菜单项(3个,第1个选中高亮)
+  for (let i = 0; i < 3; i++) {
+    const item = new PIXI.Graphics();
+    if (i === 0) {
+      item.beginFill(0xd4a574, 0.5); // 选中项暖橙高亮
+      item.drawRoundedRect(sideX - 4, sideY - 4, sideW - 24, 32, 6);
+      item.endFill();
+    }
+    // 图标占位
+    item.beginFill(i === 0 ? 0xd4a574 : 0xc4b8a8, 0.8);
+    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
+    item.endFill();
+    // 文字占位
+    item.beginFill(i === 0 ? 0xb8956a : 0xc4b8a8, 0.6);
+    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
+    item.endFill();
+    panelPlaceholders.addChild(item);
+    sideY += 36;
+  }
+
+  sideY += 16;
+
+  // 分组2标题
+  const group2Title = new PIXI.Graphics();
+  group2Title.beginFill(0xb8a898, 0.5);
+  group2Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
+  group2Title.endFill();
+  panelPlaceholders.addChild(group2Title);
+  sideY += 22;
+
+  // 分组2菜单项(4个)
+  for (let i = 0; i < 4; i++) {
+    const item = new PIXI.Graphics();
+    item.beginFill(0xc4b8a8, 0.8);
+    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
+    item.endFill();
+    item.beginFill(0xc4b8a8, 0.6);
+    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
+    item.endFill();
+    panelPlaceholders.addChild(item);
+    sideY += 36;
+  }
+
+  sideY += 16;
+
+  // 分组3标题
+  const group3Title = new PIXI.Graphics();
+  group3Title.beginFill(0xb8a898, 0.5);
+  group3Title.drawRoundedRect(sideX, sideY, 50, 10, 3);
+  group3Title.endFill();
+  panelPlaceholders.addChild(group3Title);
+  sideY += 22;
+
+  // 分组3菜单项(2个)
+  for (let i = 0; i < 2; i++) {
+    const item = new PIXI.Graphics();
+    item.beginFill(0xc4b8a8, 0.8);
+    item.drawRoundedRect(sideX + 4, sideY + 4, 16, 16, 3);
+    item.endFill();
+    item.beginFill(0xc4b8a8, 0.6);
+    item.drawRoundedRect(sideX + 28, sideY + 6, sideW - 60, 12, 3);
+    item.endFill();
+    panelPlaceholders.addChild(item);
+    sideY += 36;
+  }
+
+  // 中间内容区留空(不画任何东西,之后填充)
+}
+
+// 行走人物(在椅子之前添加,这样椅子在人物上层,有前后层次感)
+const WALK_FRAME_W = 158;
+const WALK_FRAME_H = 220;
+const WALK_FRAMES = 6;
+
+// 从精灵图提取6帧纹理(向左/向右各一套)
+function makeWalkFrames(assetKey) {
+  const baseTex = PIXI.Texture.from(ASSETS[assetKey]);
+  const frames = [];
+  for (let i = 0; i < WALK_FRAMES; i++) {
+    frames.push(new PIXI.Texture(baseTex.baseTexture,
+      new PIXI.Rectangle(i * WALK_FRAME_W, 0, WALK_FRAME_W, WALK_FRAME_H)));
+  }
+  return frames;
+}
+const walkFramesLeft = makeWalkFrames('walk_left');
+const walkFramesRight = makeWalkFrames('walk_right');
+
+// 行走人物容器(统一控制位置)
+const walkerContainer = new PIXI.Container();
+relayScene.addChild(walkerContainer);
+
+// 行走动画(行走时显示)
+const walker = new PIXI.AnimatedSprite(walkFramesLeft);
+walker.anchor.set(0.5, 1); // 底部中心
+walker.animationSpeed = 0.25;
+walker.visible = false;
+walkerContainer.addChild(walker);
+
+// 休息静态贴图(休息时显示)
+const walkIdleTex = PIXI.Texture.from(ASSETS.walk_idle);
+const walkerIdle = new PIXI.Sprite(walkIdleTex);
+walkerIdle.anchor.set(0.5, 1); // 底部中心
+walkerIdle.visible = true;
+walkerContainer.addChild(walkerIdle);
+
+// 被提起时的贴图(拖拽时显示)
+const walkerLiftTex = PIXI.Texture.from(ASSETS.walker_lift);
+const walkerLift = new PIXI.Sprite(walkerLiftTex);
+walkerLift.anchor.set(0.5, 1); // 底部中心
+walkerLift.visible = false;
+walkerContainer.addChild(walkerLift);
+
+// 坐姿背影贴图(坐在椅子上时显示)
+const walkerSitTex = PIXI.Texture.from(ASSETS.walker_sit);
+const walkerSit = new PIXI.Sprite(walkerSitTex);
+walkerSit.anchor.set(0.5, 1); // 底部中心
+walkerSit.visible = false;
+walkerContainer.addChild(walkerSit);
+
+// 统一切换人物贴图:任何状态都一次性设好全部 visible,避免漏设导致旧贴图残留。
+// 新增贴图只需在这里加一行;所有状态切换(含事件处理函数)都必须走这里,不要各自手写四行。
+function showWalker(which) {
+  walker.visible = which === 'walk';
+  walkerIdle.visible = which === 'idle';
+  walkerLift.visible = which === 'lift';
+  walkerSit.visible = which === 'sit';
+}
+
+// 人物拖拽状态
+const walkerDrag = {
+  isDragging: false,
+  offsetX: 0,
+  offsetY: 0,
+};
+// 人物自由落体物理(无碰撞反弹,落地即恢复走路/坐下)
+const walkerPhysics = {
+  vy: 0,
+  gravity: 0.25,  // 重力加速度(较小,避免太快)
+  isFalling: false,
+  targetY: 0,     // 目标落地高度(地面或椅子坐高)
+  sitOnChair: false, // 是否落在椅子上
+};
+// 椅子可坐区域参数(在 layoutRelayScene 中计算)
+const chairSeat = {
+  sitY: 0,        // 坐的高度(人物底部y)
+  minX: 0,        // 可坐区域左边界
+  maxX: 0,        // 可坐区域右边界
+};
+
 // 椅子(高清素材,锚点底部中心,方便按地面线摆放)
 const chairSprite = PIXI.Sprite.from(ASSETS.chair);
 chairSprite.anchor.set(0.5, 1);
 relayScene.addChild(chairSprite);
+
+// 椅子描边图(提起人物时替换椅子原图显示,提示可坐区域)
+const chairOutline = PIXI.Sprite.from(ASSETS.chair_outline);
+chairOutline.anchor.set(0.5, 1);
+chairOutline.visible = false;
+relayScene.addChild(chairOutline);
+
+// 把屏幕点击区域移到最上层(不被walkerContainer/chairSprite等遮挡)
+relayScene.addChild(screenGlowHit);
+
+// AI 随机行走状态
+const walkerAI = {
+  x: 0, y: 0,           // 当前位置
+  dx: 0, dy: 0,         // 移动方向(归一化)
+  speed: 1.2,            // 移动速度(像素/帧)
+  state: 'idle',         // idle / walking
+  timer: 0,               // 状态持续计时器
+  facing: 'left',         // 朝向
+  bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 }
+};
+
+function updateWalkerAI() {
+  if (!relaySceneOpen) return;
+
+  // 自由落体中(无碰撞,落到目标高度后恢复走路或锁定坐姿)
+  if (walkerPhysics.isFalling) {
+    walkerPhysics.vy += walkerPhysics.gravity;
+    walkerContainer.y += walkerPhysics.vy;
+    walkerAI.y = walkerContainer.y;
+    if (walkerContainer.y >= walkerPhysics.targetY) {
+      walkerContainer.y = walkerPhysics.targetY;
+      walkerAI.y = walkerPhysics.targetY;
+      walkerPhysics.isFalling = false;
+      walkerPhysics.vy = 0;
+      if (walkerPhysics.sitOnChair) {
+        // 落在椅子上:锁定坐姿,不再随机走动
+        walkerAI.state = 'sitting';
+        walkerAI.x = chairSprite.x; // 对齐椅子中心
+        walkerContainer.x = walkerAI.x;
+      } else {
+        // 落在地面:恢复走路姿态
+        walkerAI.state = 'walking';
+        walkerAI.timer = 120 + Math.floor(Math.random() * 120);
+        if (Math.random() < 0.5) {
+          walkerAI.dx = Math.random() < 0.5 ? -1 : 1;
+          walkerAI.dy = 0;
+        } else {
+          const angle = Math.random() * Math.PI * 2;
+          walkerAI.dx = Math.cos(angle);
+          walkerAI.dy = Math.sin(angle) * 0.5;
+        }
+        if (Math.abs(walkerAI.dx) > 0.1) {
+          walkerAI.facing = walkerAI.dx > 0 ? 'right' : 'left';
+          walker.textures = walkerAI.facing === 'left' ? walkFramesLeft : walkFramesRight;
+        }
+      }
+    }
+    // 落体时显示提起贴图
+    showWalker('lift');
+    return;
+  }
+
+  // 坐姿锁定:不随机走动,显示背影,电脑屏幕显示草绿色描边
+  if (walkerAI.state === 'sitting') {
+    showWalker('sit'); // 坐姿背影
+    walkerContainer.scale.set(1.0); // 背影本身已放大,不需要额外缩放
+    screenGlow.visible = true; // 人物坐下,电脑屏幕描边显示
+    screenGlowHit.visible = true;
+    return;
+  }
+  // 非坐姿时隐藏屏幕描边
+  if (screenGlow.visible) screenGlow.visible = false;
+  if (screenGlowHit.visible) screenGlowHit.visible = false;
+  // 非坐姿时恢复正常大小
+  if (walkerContainer.scale.x !== 1) walkerContainer.scale.set(1);
+
+  if (walkerDrag.isDragging) {
+    // 拖拽中:显示提起贴图,暂停AI;椅子保持描边图显示
+    showWalker('lift');
+    return;
+  }
+
+  walkerAI.timer--;
+
+  if (walkerAI.state === 'idle') {
+    // 休息结束,开始行走
+    if (walkerAI.timer <= 0) {
+      walkerAI.state = 'walking';
+      walkerAI.timer = 180 + Math.floor(Math.random() * 180); // 3-6秒(60fps)
+      // 随机方向(8方向)
+      if (Math.random() < 0.5) {
+        walkerAI.dx = Math.random() < 0.5 ? -1 : 1;
+        walkerAI.dy = 0;
+      } else {
+        const angle = Math.random() * Math.PI * 2;
+        walkerAI.dx = Math.cos(angle);
+        walkerAI.dy = Math.sin(angle) * 0.5;
+      }
+      // 更新朝向
+      if (Math.abs(walkerAI.dx) > 0.1) {
+        const newFacing = walkerAI.dx > 0 ? 'right' : 'left';
+        if (newFacing !== walkerAI.facing) {
+          walkerAI.facing = newFacing;
+          walker.textures = newFacing === 'left' ? walkFramesLeft : walkFramesRight;
+          walker.play();
+        }
+      }
+    }
+  } else {
+    // 行走中
+    walkerAI.x += walkerAI.dx * walkerAI.speed;
+    walkerAI.y += walkerAI.dy * walkerAI.speed;
+
+    // 碰到边界反弹
+    const b = walkerAI.bounds;
+    if (walkerAI.x < b.minX) { walkerAI.x = b.minX; walkerAI.dx = Math.abs(walkerAI.dx); walkerAI.facing = 'right'; walker.textures = walkFramesRight; walker.play(); }
+    if (walkerAI.x > b.maxX) { walkerAI.x = b.maxX; walkerAI.dx = -Math.abs(walkerAI.dx); walkerAI.facing = 'left'; walker.textures = walkFramesLeft; walker.play(); }
+    if (walkerAI.y < b.minY) { walkerAI.y = b.minY; walkerAI.dy = Math.abs(walkerAI.dy); }
+    if (walkerAI.y > b.maxY) { walkerAI.y = b.maxY; walkerAI.dy = -Math.abs(walkerAI.dy); }
+
+    // 行走结束,休息
+    if (walkerAI.timer <= 0) {
+      walkerAI.state = 'idle';
+      walkerAI.timer = 120 + Math.floor(Math.random() * 120); // 2-4秒休息(60fps)
+    }
+  }
+
+  walkerContainer.x = walkerAI.x;
+  walkerContainer.y = walkerAI.y;
+  // 休息时显示静态贴图,行走时播放动画
+  if (walkerAI.state === 'idle') {
+    if (walker.playing) { walker.stop(); walker.gotoAndStop(0); }
+    showWalker('idle');
+  } else {
+    showWalker('walk');
+    if (!walker.playing) walker.play();
+  }
+}
+
+// ========== 人物拖拽(无物理碰撞,松开恢复走路) ==========
+function startWalkerDrag(e) {
+  if (!relaySceneOpen) return;
+  walkerDrag.isDragging = true;
+  const pos = e.global;
+  walkerDrag.offsetX = pos.x - walkerContainer.x;
+  walkerDrag.offsetY = pos.y - walkerContainer.y;
+  walkerAI.state = 'idle';
+  walkerAI.timer = 0;
+  walkerPhysics.isFalling = false;
+  walkerPhysics.sitOnChair = false;
+  if (walker.playing) { walker.stop(); walker.gotoAndStop(0); }
+  // 立即切到提起贴图(不能等 updateWalkerAI,拖拽分支会提前return,坐姿背影会残留)
+  showWalker('lift');
+  screenGlow.visible = false; // 从椅子上拖起,隐藏屏幕描边
+  screenGlowHit.visible = false;
+  // 提起人物时椅子换成描边图,提示可坐区域
+  chairSprite.visible = false;
+  chairOutline.visible = true;
+  walkerContainer.scale.set(1); // 拖拽时恢复正常大小
+}
+
+function updateWalkerDrag(e) {
+  if (!walkerDrag.isDragging) return;
+  const pos = e.global;
+  walkerContainer.x = pos.x - walkerDrag.offsetX;
+  walkerContainer.y = pos.y - walkerDrag.offsetY;
+  walkerAI.x = walkerContainer.x;
+  walkerAI.y = walkerContainer.y;
+}
+
+function endWalkerDrag(e) {
+  if (!walkerDrag.isDragging) return;
+  walkerDrag.isDragging = false;
+  // 恢复椅子原图
+  chairSprite.visible = true;
+  chairOutline.visible = false;
+
+  // 判断是否在椅子可坐区域内松开
+  const atChair = (walkerAI.x >= chairSeat.minX && walkerAI.x <= chairSeat.maxX &&
+                   walkerAI.y < chairSeat.sitY); // 在坐高上方松开
+  walkerPhysics.vy = 0;
+  walkerPhysics.isFalling = true;
+  if (atChair) {
+    // 落在椅子上:目标高度=坐高
+    walkerPhysics.targetY = chairSeat.sitY;
+    walkerPhysics.sitOnChair = true;
+  } else {
+    // 落在地面:目标高度=行走区域下边界
+    walkerPhysics.targetY = walkerAI.bounds ? walkerAI.bounds.maxY : h * 0.85;
+    walkerPhysics.sitOnChair = false;
+  }
+}
+
+// 人物可拖拽(事件绑定到容器,三个子元素都能触发)
+walkerContainer.eventMode = 'static';
+walkerContainer.cursor = 'pointer';
+walkerContainer.on('pointerdown', startWalkerDrag);
+walkerContainer.on('pointermove', updateWalkerDrag);
+walkerContainer.on('pointerup', endWalkerDrag);
+walkerContainer.on('pointerupoutside', endWalkerDrag);
 
 // 注:玩法(货币/升级/交互)后续安排,当前只放背景和椅子占位。
 let relaySceneOpen = false;
@@ -971,14 +1525,39 @@ let relaySceneOpen = false;
 function openRelayScene() {
   relaySceneOpen = true;
   relayScene.visible = true;
-  state.paused = true;
+  // 不暂停生产逻辑(token增加/自动点击/水冷等继续运行)
+  // 隐藏生产场景渲染元素,减少渲染开销
+  layers.bg.visible = false;
+  layers.clickArea.visible = false;
+  layers.characters.visible = false;
+  layers.scene.visible = false;
+  layers.ui.visible = false;
+  layers.fx.visible = false;
+  // 隐藏顶部tokens显示,但保留设置按钮
+  topbarBg.visible = false;
+  tokenLabel.visible = false;
+  tpsLabel.visible = false;
   layoutRelayScene();
+  if (screenPanelOpen) layoutScreenPanel();
 }
 
 function closeRelayScene() {
   relaySceneOpen = false;
   relayScene.visible = false;
-  state.paused = false;
+  if (screenPanelOpen) closeScreenPanel(); // 切回生产时自动关闭电脑面板
+  // 恢复生产场景渲染元素
+  layers.bg.visible = true;
+  layers.clickArea.visible = true;
+  layers.characters.visible = true;
+  layers.scene.visible = true;
+  layers.ui.visible = true;
+  layers.fx.visible = true;
+  // 恢复顶部tokens显示
+  topbarBg.visible = true;
+  tokenLabel.visible = true;
+  tpsLabel.visible = true;
+  // 立即刷新购买面板(中转站期间token可能增加,按钮状态需同步)
+  updateAllBuyButtons();
 }
 
 relayTab.on('pointerdown', () => { switchScene('relay'); });
@@ -986,19 +1565,89 @@ relayTab.on('pointerdown', () => { switchScene('relay'); });
 function layoutRelayScene() {
   const w = app.screen.width;
   const h = app.screen.height;
-  // 背景图铺满
-  const bgScale = Math.max(w / relayBg.texture.width, h / relayBg.texture.height);
+  // 纹理未加载完成时使用默认尺寸,避免除以0导致NaN边界
+  const rbgW = relayBg.texture.width > 1 ? relayBg.texture.width : 1672;
+  const rbgH = relayBg.texture.height > 1 ? relayBg.texture.height : 941;
+  const bgScale = Math.max(w / rbgW, h / rbgH);
   relayBg.scale.set(bgScale);
-  relayBg.x = (w - relayBg.texture.width * bgScale) / 2;
-  relayBg.y = (h - relayBg.texture.height * bgScale) / 2;
+  relayBg.x = (w - rbgW * bgScale) / 2;
+  relayBg.y = (h - rbgH * bgScale) / 2;
   // 椅子:与背景同一坐标系,位置/大小对齐原始带椅子背景
   // (在 1672x941 原图坐标系中:顶 0.3996 / 底 0.9277 / 水平中心 0.508)
-  const bw = relayBg.texture.width;
-  const bh = relayBg.texture.height;
+  const bw = rbgW;
+  const bh = rbgH;
   const chH = (0.9277 - 0.3996) * bh * bgScale;
-  chairSprite.scale.set(chH / chairSprite.texture.height);
+  const chairTexH = chairSprite.texture.height > 1 ? chairSprite.texture.height : 800;
+  chairSprite.scale.set(chH / chairTexH);
   chairSprite.x = relayBg.x + 0.508 * bw * bgScale;
   chairSprite.y = relayBg.y + 0.9277 * bh * bgScale; // anchor (0.5, 1):底部中心
+
+  // 电脑屏幕草绿色描边(贴合左边显示表格的宽屏主显示器)
+  screenGlow.clear();
+  const sgX = relayBg.x + 0.421 * bw * bgScale;
+  const sgY = relayBg.y + 0.298 * bh * bgScale;
+  const sgW = 0.174 * bw * bgScale;
+  const sgH = 0.160 * bh * bgScale;
+  screenGlow.lineStyle(3, 0x7cba3f, 0.85); // 草绿色
+  screenGlow.drawRoundedRect(sgX, sgY, sgW, sgH, 4);
+  // 透明点击区域覆盖整个矩形(描边+内部)
+  screenGlowHit.clear();
+  screenGlowHit.beginFill(0x000000, 0.001); // 几乎透明(alpha=0可能不响应事件)
+  screenGlowHit.drawRect(sgX, sgY, sgW, sgH);
+  screenGlowHit.endFill();
+  screenGlowHit.hitArea = new PIXI.Rectangle(sgX, sgY, sgW, sgH);
+
+  // 行走人物:大小与场景适配,边界在背景图范围内
+  const walkerScale = (h * 0.32) / WALK_FRAME_H;
+  walker.scale.set(walkerScale);
+  // 休息贴图与行走人物等高(保持比例)
+  const idleScale = (WALK_FRAME_H * walkerScale) / walkerIdle.texture.height * 1.12;
+  walkerIdle.scale.set(idleScale);
+  // 提起贴图与行走人物等高(保持比例)
+  const liftScale = (WALK_FRAME_H * walkerScale) / walkerLift.texture.height;
+  walkerLift.scale.set(liftScale);
+  // 坐姿背影贴图:比行走人物稍大(坐姿背影更饱满)
+  const sitScale = (WALK_FRAME_H * walkerScale * 1.15) / walkerSit.texture.height;
+  walkerSit.scale.set(sitScale);
+  const ww = WALK_FRAME_W * walkerScale;
+  const wh = WALK_FRAME_H * walkerScale;
+  // 活动边界:地面区域(背景图下半部分),留出边距
+  // 用 rbgH*bgScale 而非 relayBg.height,后者在纹理未加载时=1*bgScale 会导致边界错误
+  const bgH = rbgH * bgScale;
+  walkerAI.bounds = {
+    minX: relayBg.x + ww * 0.6,
+    maxX: relayBg.x + rbgW * bgScale - ww * 0.6,
+    minY: relayBg.y + bgH * 0.70,
+    maxY: relayBg.y + bgH - wh * 0.12
+  };
+  // 首次布局时设置初始位置(椅子旁边)
+  if (walkerAI.x === 0 && walkerAI.y === 0) {
+    walkerAI.x = chairSprite.x - 150;
+    walkerAI.y = chairSprite.y;
+  }
+  walkerContainer.x = walkerAI.x;
+  walkerContainer.y = walkerAI.y;
+
+  // 计算椅子可坐区域:坐高=椅子高度40%处(从底部往上,比一半低一点),宽度=椅子宽度
+  const chairW = chairSprite.width;
+  const chairH = chairSprite.height;
+  chairSeat.sitY = chairSprite.y - chairH * 0.40; // 底部往上40%(顶部往下60%,比一半低一点)
+  chairSeat.minX = chairSprite.x - chairW * 0.5;
+  chairSeat.maxX = chairSprite.x + chairW * 0.5;
+
+  // 椅子描边图与椅子同位置同大小
+  const outlineTexH = chairOutline.texture.height > 1 ? chairOutline.texture.height : chairTexH;
+  chairOutline.scale.set(chH / outlineTexH);
+  chairOutline.x = chairSprite.x;
+  chairOutline.y = chairSprite.y;
+
+  // resize时(如F12开关控制台)如果人物处于坐姿,重新对齐到椅子坐高,避免位置偏移
+  if (walkerAI.state === 'sitting') {
+    walkerAI.x = chairSprite.x;
+    walkerAI.y = chairSeat.sitY;
+    walkerContainer.x = chairSprite.x;
+    walkerContainer.y = chairSeat.sitY;
+  }
 }
 
 function layoutRelayTab() {
@@ -1152,25 +1801,7 @@ function drawSettingsPanel() {
   });
   settingsPanel.addChild(sfxSlider);
 
-  // 重置存档按钮
-  const resetBtn = new PIXI.Container();
-  const resetBg = new PIXI.Graphics();
-  const resetText = makeText('重置存档', { size: 14, color: '#ff8a8a', weight: 'bold', anchor: 0.5 });
-  resetBtn.addChild(resetBg, resetText);
-  roundRect(resetBg, 0, 0, pw - 60, 40, 8, 0x4a2a2a, 0.8);
-  resetText.x = (pw - 60) / 2; resetText.y = 20;
-  resetBtn.x = 30; resetBtn.y = ph - 125;
-  resetBtn.eventMode = 'static';
-  resetBtn.cursor = 'pointer';
-  resetBtn.hitArea = new PIXI.Rectangle(0, 0, pw - 60, 40);
-  resetBtn.on('pointerdown', () => {
-    if (confirm('确定要重置所有存档吗？此操作不可撤销！')) {
-      resetGame();
-      closeSettings();
-    }
-  });
-  addPressFeedback(resetBtn);
-  settingsPanel.addChild(resetBtn);
+  // 重置存档按钮已移除(避免误触),后续首页会有存档/加载功能
 
   // 继续游戏按钮
   const continueBtn = new PIXI.Container();
@@ -1287,14 +1918,8 @@ function a100Price() {
 function extraRackPrice() {
   return Math.floor(5000 * Math.pow(2, state.machines.extraRack.count));
 }
-function serverPrice() {
-  return Math.floor(10000 * Math.pow(2, state.machines.server.count));
-}
-function waterCoolingPrice() {
-  return Math.floor(3000 * Math.pow(1.8, state.cooling.waterCooling.count));
-}
 function recalcClickPower() {
-  state.tokensPerClick = Math.pow(1.1, state.cooling.fan.count);
+  state.tokensPerClick = Math.pow(1.25, state.cooling.fan.count);
 }
 function recalcCrit() {
   state.critChance = 0.005 + state.machines.a100.count * 0.005;
@@ -1425,15 +2050,44 @@ app.ticker.add(() => {
   const dt = Math.min((now - lastFrameTime) / 1000, 0.5);
   lastFrameTime = now;
   updateTweens(dt);
+  // 中转站行走人物AI(不受暂停影响)
+  updateWalkerAI();
+  // 电脑屏幕描边呼吸动画(4s周期:0.4s出现+1.2s保持+0.4s消失+2s等待,悬停常驻)
+  // 悬停时timer停止累积,移出时平滑过渡避免跳变
+  if (relaySceneOpen && screenGlow.visible) {
+    if (!screenGlowHover) {
+      screenGlowTimer += dt;
+      if (screenGlowTimer >= 4) screenGlowTimer -= 4;
+    }
+    let targetA = 0;
+    if (screenGlowHover) {
+      targetA = 1;
+    } else if (screenGlowTimer < 0.4) {
+      targetA = screenGlowTimer / 0.4;
+    } else if (screenGlowTimer < 1.6) {
+      targetA = 1;
+    } else if (screenGlowTimer < 2.0) {
+      targetA = 1 - (screenGlowTimer - 1.6) / 0.4;
+    }
+    // 平滑过渡(lerp),避免移出时alpha突然跳变被误以为卡顿
+    screenGlow.alpha += (targetA - screenGlow.alpha) * Math.min(1, dt * 8);
+  } else {
+    screenGlowTimer = 0;
+    screenGlow.alpha = 0;
+  }
   if (!state.paused) {
-    updateLight();
-    updateCharacters(dt);
-    updateAllBuyButtons();
-    updateCasePhysics();
-    // 说话气泡：拖动或物理运动时显示，静止时隐藏
-    const caseMoving = casePhysics.isDragging || (casePhysics.isActive && (Math.abs(casePhysics.vx) > 0.2 || Math.abs(casePhysics.vy) > 0.2));
-    speechBubble.visible = caseMoving;
+    // ===== 生产场景专属更新(中转站时跳过,减少CPU开销) =====
+    if (!relaySceneOpen) {
+      updateLight();
+      updateCharacters(dt);
+      updateAllBuyButtons();
+      updateCasePhysics();
+      // 说话气泡：拖动或物理运动时显示，静止时隐藏
+      const caseMoving = casePhysics.isDragging || (casePhysics.isActive && (Math.abs(casePhysics.vx) > 0.2 || Math.abs(casePhysics.vy) > 0.2));
+      speechBubble.visible = caseMoving;
+    }
 
+    // ===== 全局逻辑(中转站时也运行:token增加/自动点击/水冷/存档) =====
     // 自动点击脚本：每秒3次
     if (state.scripts.autoClick) {
       state.autoClickAccum += dt * 3;
@@ -1506,6 +2160,8 @@ bgDark.texture.on('update', () => { safeRelayout(); });
 charClosed.texture.on('update', () => { safeRelayout(); });
 charOpen.texture.on('update', () => { safeRelayout(); });
 pcCase.texture.on('update', () => { safeRelayout(); });
+relayBg.texture.on('update', () => { safeRelayout(); });
+chairSprite.texture.on('update', () => { safeRelayout(); });
 
 window.addEventListener('load', () => { setTimeout(safeRelayout, 0); });
 

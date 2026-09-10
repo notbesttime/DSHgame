@@ -1,9 +1,23 @@
-# 构建产物(index.html 可由 build.py 重新生成)
+﻿# 构建产物(index.html 可由 build.py 重新生成)
 index.html
 
 # 临时/交换文件
 _tmp_*
 _*.js
+_*.py
 *.log
 Thumbs.db
 Desktop.ini
+check_syntax.js
+
+# 编辑器/系统
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 用户素材备份目录(原始素材备份,不入库)
+用户自己创建的素材备份/
+
+# raw 原始素材/中间产物(最终webp在 compressed_webp/ 中,原始素材在备份目录)
+assets/raw/

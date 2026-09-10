@@ -6,19 +6,23 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,约1400行 JS + CSS)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,约2100行 JS + 少量 CSS/HTML,共2184行)
 ├── build.py               ★ 构建脚本:把 PixiJS + 素材 base64 内联进模板 → index.html
 ├── index.html               构建产物(勿手改,重新生成)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护)
+├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
 ├── recompress_assets.py   ★ 资产重压缩:compressed/*.png → compressed_webp/*.webp
 ├── cut_chair.py             椅子专用:从 raw 高清原图裁剪 → compressed_webp/chair_hi.webp
+├── process_assets.py        早期资产批量处理(仍在用的活脚本之一)
 ├── lib/pixi.min.js          PixiJS v7.4.0(构建时内联)
 ├── assets/
-│   ├── raw/                 原始素材(来源,不参与构建)
-│   ├── compressed/          第一代压缩(png/jpg,build.py 仍引用其中 4 张)
-│   └── compressed_webp/     ★ 第二代 WebP(大部分素材来自这里)
-└── add_*.py / fix_*.py / rewrite_*.py / ...   ⚠️ 历史一次性补丁脚本,已被 git 历史
-                              取代的可归档删除;不要在新流程中使用
+│   ├── raw/                 原始素材(来源,不参与构建;28.9MB,已进版本库)
+│   ├── compressed/          第一代压缩(png/jpg,build.py 仅引用其中 4 张:bg_dark/bg_light/placeholder/transfer_bg)
+│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用其中 14 张)
+└── add_*.py / fix_*.py / rewrite_*.py / check_*.py / make_*.py / process_*.py(旧) / ...
+                              ⚠️ 33 个历史一次性补丁脚本,不要在新流程中使用。其中 15 个会直接
+                              重写 index_template.html,误跑一次会静默改坏源码。
+                              有效脚本只有 6 个,见上方 ★。清理任务见文末交接章节。
 ```
 
 ★ = 当前有效流水线。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
@@ -27,6 +31,7 @@ DSHgame/
 
 ```bash
 python build.py            # 重新构建 index.html(改模板/素材后必跑)
+node check_syntax.js       # 构建自检:语法 + ASSETS key + 素材文件存在性(退出码非0即出错)
 python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
 node server.js             # http://localhost:8765
 ```
@@ -37,25 +42,69 @@ node server.js             # http://localhost:8765
 - PNG 素材走 `recompress_assets.py` 转 WebP(按游戏内显示尺寸×2 出图,质量 85-88)。目前 `bg_dark/bg_light/placeholder/transfer_bg` 四张仍用 compressed/ 的 JPG(全屏大图 WebP 收益低,未迁移)。
 - 修改 compressed/ 原图后必须重跑 recompress 才会影响构建。
 
-## 当前进度(2026-09-06)
+## 当前进度(2026-09-10)
+
+### 中转站行走动画(已完成)
+- **人物精灵图**:6帧行走动画,从用户提供的绿幕视频提取中间6帧(第40/48/56/64/72/80帧),用户自行抠绿幕后提供最终精灵图(4320×1280)。
+- **帧对齐处理**:原始视频中人物在向左走,每帧水平中心位置不一致(465→273),直接播放会抽搐。处理方式:每帧紧裁剪+统一画布(508×704→缩放158×220)+底部中心对齐。生成 walk_left.webp(948×220,76KB)和镜像 walk_right.webp。
+- **休息静态贴图**:walk_idle.webp(用户提供的Q版角色站立图,压缩后23KB),休息时显示,行走时显示动画。休息贴图因有透明边距,额外×1.12补偿。
+- **AI行走系统**:walkerAI 状态机(idle/walking),随机8方向+50%概率纯水平移动,碰边界反弹,水平方向自动切换左/右精灵图。行走3~6秒,休息2~4秒随机。速度1.2像素/帧。人物大小=屏幕高×32%。
+- **行走边界**:minY=背景图高度×70%(底部最高位置,人物只在屏幕下方30%区域活动),maxY=背景图底部-人物高×12%。边界在 layoutRelayScene() 中用 rbgH*bgScale 计算(不能用 relayBg.height,纹理未加载时=1*bgScale 导致边界错误)。
+- **容器架构**:walkerContainer 统一控制位置,内部包含 walker(AnimatedSprite,行走时显示)、walkerIdle(Sprite,休息时显示)、walkerLift(Sprite,拖拽/自由落体时显示)、walkerSit(Sprite,坐姿背影,用户提供的"背影7.png",压缩后31KB)。anchor 均为(0.5,1)底部中心。walkerSit 基础大小比行走人物大15%(坐姿背影更饱满)。
+- **人物拖拽系统**:按住人物可拖拽,拖拽时显示 walkerLift 贴图(用户提供的"提干8.png",压缩后64KB),暂停AI行走。松开后开始自由落体(gravity=0.25,无墙壁碰撞/地面反弹),落到目标高度后恢复走路或锁定坐姿。拖拽事件绑定到 walkerContainer(eventMode='static'),四个子元素都能触发。
+- **贴图切换统一走 `showWalker('idle'|'walk'|'lift'|'sit')`**(2026-09-10 重构):人物有 4 张贴图,可见性是排他的。原先每个状态分支各自手写 4 行 `xxx.visible = ...`,在 5 个地方重复,已踩过坑(拖拽时背影残留、落体时贴图不显示)。现在全部收敛到一个函数,新增贴图只需加一行,状态分支不再可能漏设。**新增状态/贴图时必须走 showWalker,不要在分支里手写 visible**——尤其拖拽分支会提前 `return`,依赖 updateWalkerAI 的写法必然漏。
+- **椅子交互系统**:
+  - 椅子描边图(chairOutline,用户自己PS裁剪的椅子轮廓,压缩后75KB):提起人物时显示,替换椅子原图,提示可坐区域;松开后恢复椅子原图。
+  - 可坐区域:坐高=椅子底部往上40%(顶部往下60%,比一半低一点),宽度=椅子整个宽度。人物在坐高上方且x在椅子宽度内松开,则落到坐高后锁定坐姿。
+  - 坐姿锁定(state='sitting'):人物对齐椅子中心,显示walkerSit背影,不再随机走动。按住可重新拖拽起身。
+  - 电脑屏幕描边(screenGlow):人物坐下时,左边主屏幕显示草绿色描边(3px,#7cba3f)。位置经多次微调最终确定:背景图坐标系 x=42.1%, y=29.8%, w=17.4%, h=16.0%。图层在背景之上、人物/椅子之下,不遮挡。起身/拖拽时隐藏。
+  - **呼吸动画+悬停常驻**:描边不是常亮,而是4秒周期呼吸(0.4s渐变出现→1.2s保持→0.4s渐变消失→2s等待)。鼠标悬停在描边矩形范围内时 alpha=1 常驻显示,且 timer 停止累积(避免移出时刚好撞上渐变阶段导致跳变被误以为卡顿);移出时用 lerp 平滑过渡(dt*8,约0.125s)恢复呼吸循环。通过 hitArea 设置整个矩形区域响应悬停,不只是边框线。
+- **关键参数**:WALK_FRAME_W=158, WALK_FRAME_H=220, WALK_FRAMES=6, animationSpeed=0.25, walkerPhysics.gravity=0.25, chairSeat.sitY=chair底部往上40%。
+- **相关代码**(2026-09-10 重构后行号,模板共 2184 行):makeWalkFrames() 第1243行、showWalker() 第1289行(贴图切换唯一入口)、updateWalkerAI() 第1342行(自由落体物理+坐姿锁定)、startWalkerDrag/updateWalkerDrag/endWalkerDrag 第1461行起、layoutRelayScene() 第1565行(椅子描边+屏幕描边绘制)。注:行号会随改动漂移,以函数名搜索为准。
 
 ### 性能优化(已完成并实测)
-- 索引文件 4.0MB → 1.56MB;gzip 传输后约 943KB;ETag 304 协商缓存生效;路径越界返回 403。
-- PNG→WebP:pc_case 816KB→44KB、fan 456KB→119KB、角色 150KB→28KB/22KB 等,12 张共约 1.9MB→264KB。
+- **索引文件体积(2026-09-10 实测基线)**:`index.html` 2.13MB(2230937 字节)= PixiJS 445KB + 素材 base64 约 1.61MB(18 个素材原始共 1243KB,base64 膨胀 33%)+ HTML/CSS/JS 骨架约 86KB;服务端 gzip 后 1398KB(压缩率 64%)。**注意:这个数字已经是 WebP + 行走动画之后的实际值,比早期"1.56MB/943KB"大**——新增的行走/面板素材约占 500KB base64,且 WebP 本身已压缩、gzip 对它基本无效(gzip 主要压的是 PixiJS 和 base64 头部)。**判断后续优化时用 2.13MB 作基线,不要再引用旧的 1.56MB**。
+- PNG→WebP(当前实测):`compressed_webp/` 15 个文件共 740KB,build.py 实际内联其中 14 个共 732KB;素材原始尺寸从 1.9MB 量级压到 0.7MB 量级(pc_case 816KB→44KB、fan 456KB→119KB、角色 150KB→28KB/22KB)。
 - server.js:内存缓存 + gzip(level 8)+ If-None-Match/304 + Cache-Control + `path.normalize` 越界防护。
 - 购买按钮改为脏标记重绘(原先每帧对最多 8 个 Graphics 执行 clear+重画,是最大每帧开销)。
 - antialias 关闭;灯效层 `bgDark` 用 visible 切换代替 alpha=0(不参与渲染批次)。
 - 浮字对象池(上限池 40 / 同时在屏 30),替代每次点击 new PIXI.Text。
 - token 顶栏文字去重(setText 仅在变化时);resize/safeRelayout 用 rAF 节流。
+- **中转站场景性能优化(2026-09-10)**:
+  - 中转站时**不暂停生产逻辑**(token增加/自动点击/水冷触发/存档继续运行),切回生产时token已增加,不损失收益。
+  - 中转站时**隐藏生产场景所有渲染元素**(layers.bg/clickArea/characters/scene/ui/fx 全部 visible=false),PixiJS 跳过这些对象的渲染批次,GPU开销大幅降低。
+  - 中转站时**隐藏顶部tokens显示**(topbarBg/tokenLabel/tpsLabel),但保留设置按钮(全局)。
+  - 中转站时**跳过生产场景专属更新**(灯效updateLight/角色动画updateCharacters/机箱物理updateCasePhysics/说话气泡/购买按钮updateAllBuyButtons),减少CPU开销。
+  - 切回生产时**立即刷新一次购买面板**(updateAllBuyButtons),确保按钮状态(可购买/灰色/价格)与当前token同步,不需要等待下一帧。
+  - **Web Worker 评估后不做**:当前游戏逻辑计算量极小(每帧<1ms),主要瓶颈是渲染而非CPU逻辑;Worker不能操作Canvas/PixiJS,重构成本高风险大,收益低甚至负收益(增加postMessage开销)。
+- server.js:ETag 304 协商缓存生效;路径越界返回 403。
 
-### 中转站(仅 UI 框架,玩法待安排 ⚠️)
+### 中转站(UI框架 + 行走动画,玩法待安排 ⚠️)
 - **设计决定(用户拍板)**:排行榜/社交系统不做(那是其他 AI 意外加的);数据包货币/暂存/转运/4 项升级的第一版玩法**已实现过但按用户要求撤空**,中转站玩法由用户后续安排,不要自行实现。
-- 现状:底部「生产 / 中转站」双标签常驻(新增 `layers.nav` 置顶层,场景切换后标签仍可见可点),点击切换场景;中转站解锁条件=购买服务器(`updateRelayTabVisibility`);场景内目前只有背景+椅子占位。
-- 相关代码入口:`switchScene()`(场景切换+标签高亮)、`relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`。
+- 现状:底部「生产 / 中转站」双标签常驻(新增 `layers.nav` 置顶层,场景切换后标签仍可见可点),点击切换场景;中转站解锁条件=购买服务器(`updateRelayTabVisibility`);场景内有背景+椅子+行走人物(AI随机走动)。
+- 行走动画详见上方"中转站行走动画"章节。
+- 相关代码入口:`switchScene()`(场景切换+标签高亮)、`relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`、`updateWalkerAI`、`makeWalkFrames`。
 - `state.relay` 是空对象占位;存档 v1 没有中转站字段。撤掉的玩法可参考 git 历史里的本次提交前后 diff。
 
+### 电脑屏幕面板系统(2026-09-10)
+- **触发**:人物坐下后,电脑屏幕显示草绿色描边(呼吸动画:4s周期,0.4s出现+1.2s保持+0.4s消失+2s等待;悬停时常驻显示,timer暂停,移出时lerp平滑过渡)。点击描边及内部区域打开面板。
+- **面板结构**:背景遮罩(alpha=0.72半透明深色,点击关闭,但电脑屏幕区域不关闭)+ 面板主体(米白色#f5f0e8,占屏幕88%×85%,圆角14px)+ 顶部栏(浅米色48px,**大肥鱼站logo**+导航标签占位+搜索框占位)+ 左侧栏(浅米色200px,3组菜单项占位,选中项暖橙高亮)+ 中间内容区(留空,后续填充)。参考 Liminality 面板设计,简约暖色调,不用黑色。
+- **面板左上角logo**:大肥鱼站(透明背景PNG,浅蓝色卡通字体+鲸鱼,白色描边)。压缩为WebP(177×48,4.7KB,保留透明通道,质量85),内嵌到单文件HTML。位置:左边距14px,垂直居中,高度=顶部栏高度(48px)。透明背景和顶部栏浅米色自然融合,无需圆角蒙版/模糊滤镜。资产key:`panel_logo`,文件:`assets/compressed_webp/panel_logo.webp`。
+- **面板关闭逻辑优化**:背景遮罩(panelMask)在电脑屏幕点击区(screenGlowHit)之上,点击电脑屏幕区域时实际点击的是遮罩,会误关面板。优化:遮罩的 pointerdown 事件中判断点击位置是否在 screenGlowHit.getBounds() 内,是则不关闭面板,否则正常关闭。
+- **层级设计**:`layers.panel` 独立层,用 `addChildAt(layers.panel, getChildIndex(layers.topbar))` 插到 relayScene 之上、topbar 之下。最终层级:bg→...→ui→relayScene→**panel**→topbar→fx→settings→nav。面板盖住中转站场景,但设置按钮(topbar)和底部场景切换标签(nav)保持在面板之上可见可点。
+- **关键坑**:面板最初放在 `layers.settings` 层,但设置面板关闭时执行 `layers.settings.visible=false`,导致整个层被隐藏,面板 visible=true 也看不到。**父容器 visible=false 会隐藏所有子元素,即使子元素 visible=true**。解决方案:独立 panel 层,不受设置面板开关影响。
+- **场景切换**:切回生产(closeRelayScene)时自动调用 closeScreenPanel(),面板只在中转站存在。
+- **防重复打开**:openScreenPanel 开头 `if (screenPanelOpen) return`;打开时 `screenGlowHit.eventMode='none'` 禁用屏幕点击,关闭时恢复 'static'。
+- **透明点击区域**:screenGlowHit 独立 Graphics(alpha=0.001填充+hitArea双保险),覆盖整个屏幕矩形(描边+内部),比 Graphics 只画边框时的 hitArea 更可靠。移到 relayScene 最上层避免被 walkerContainer/chairSprite 遮挡。
+
 ### 其他本轮改动
-- 脚本商品 `niger` 改名 `autoClick`(显示名"自动点击");存档兼容:`loadGame` 里 `data.autoClick || data.niger`。
+- 服务器改为**一次性购买**(固定价格10000,买完即止,oneTime=true)。
+- 脚本商品显示名从"自动点击"改回 **"niger"**(用户要求);存档字段仍为 autoClick,兼容旧 niger 字段:`loadGame` 里 `data.autoClick || data.niger`。
+- **A100 购买限制**:每购买3台RTX3080才能购买1台A100(锁定条件:`a100.count >= floor(rtx3080.count / 3)`)。未解锁时价格位置显示进度提示(如"需3台3080(1/3)"),按钮灰色不可点击。通过 createBuyItem 新增的 `lockedFn`(锁定条件)和 `lockHintFn`(锁定提示)两个可选参数实现,后续其他物品可复用。
+- **设置按钮全局显示**:relayScene 用 `addChildAt(relayScene, getChildIndex(layers.topbar))` 插入到 topbar 层之下,确保设置按钮/顶部栏在所有场景之上始终可见。**关键:Container 的渲染层级由子元素顺序决定,后添加的在上面;场景容器必须插在全局UI层之下,否则会遮挡设置按钮等全局元素。**后续新增场景也必须插在 topbar 之下。
+- **设置面板移除重置存档按钮**(2026-09-10):避免用户误触。resetGame() 函数保留,后续首页会有存档/加载/重置等功能。设置面板目前只有音乐/音效滑条(暂无音频消费方,占位)。
+- **风扇倍率上调**:心静自然凉从 ×1.1^数量 上调为 ×1.25^数量。
+- **水冷改为一次性购买**:固定价格3000,买完即止(原可重复购买但效果不叠加,纯浪费)。
 
 ## 存档格式(localStorage key `dshgame_save_v1`)
 
@@ -64,18 +113,18 @@ node server.js             # http://localhost:8765
   "fan":0, "waterCooling":0, "autoClick":false, "miracle":false, "savedAt":0 }
 ```
 
-- 30 秒自动存档;购买时立即存;重置走设置面板。
+- 30 秒自动存档;购买时立即存;重置功能暂从设置面板移除(避免误触),后续首页实现。
 - 向后兼容字段:`niger`(=autoClick 旧名)。
 - **加字段时**:`saveGame`/`loadGame`/`resetGame` 三处同步,数值用 `data.x || 0` 兜底。
 
 ## 游戏机制速查
 
-- 点击:基础 1/次;风扇 ×1.1^数量;暴击率 0.5%+0.5%/A100,倍率 1.5+1%/机柜。
+- 点击:基础 1/次;风扇 ×1.25^数量(2026-09-10 从1.1上调);暴击率 0.5%+0.5%/A100,倍率 1.5+1%/机柜。
 - 产出:RTX3080 5/s + A100 50/s;每整秒入账。
-- 价格:3080=50×1.5^n、风扇=80×1.5^n、A100=2000×1.5^n、机柜=5000×2^n、服务器=10000×2^n、水冷=3000×1.8^n、自动点击 800(一次性)、奇迹算法 1500(一次性:机箱砸地 25% 得 tokens×3%)。
+- 价格:3080=50×1.5^n、风扇=80×1.5^n、A100=2000×1.5^n、机柜=5000×2^n、服务器=10000(一次性)、水冷=3000(一次性,2026-09-10 从可重复购买改为一次性)、niger(自动点击) 800(一次性)、奇迹算法 1500(一次性:机箱砸地 25% 得 tokens×3%)。
 - 水冷:每 10-120s 骰一次,19% 得 tokens×20%。
 - 机箱:可拖拽抛掷,重力/反弹/墙碰撞;≥9 张 3080 换升级贴图。
-- 中转站标签:server>0 时显示。
+- 中转站标签:server>0 时显示。中转站时生产逻辑继续运行(token不暂停),但生产场景渲染元素隐藏以提升性能。
 
 ## 代码导航(index_template.html 内的分节注释)
 
@@ -86,11 +135,70 @@ node server.js             # http://localhost:8765
 - 浏览器自动化点击 canvas 测试时:**设置面板开着会挡住底部标签**(遮罩全屏),先关面板再点。cua 坐标=CSS 像素(本机 dpr=1),中转站标签中心 ≈ `(0.62×宽, 高-36)`,生产 ≈ `(0.38×宽, 高-36)`。
 - 设置面板的音乐/音效滑条目前是摆设(无音频消费方),接入音频前别让玩家误会。
 - 手机竖屏会显示"请横屏游玩"遮罩(`#rotatePrompt`,触屏+竖屏才触发)。
-- 启动时序:base64 纹理异步解码,靠 5 个 `texture.on('update')` + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。
-- `_check_syntax.js` 已删;需要语法自检可用 `node -e "new Function(require('fs').readFileSync('index.html','utf8').match(/<script>([\s\S]*?)<\/script>/g).join('\n'))"` 之外的方式逐块检查(建议自建脚本)。
+- 启动时序:base64 纹理异步解码,靠 7 个 `texture.on('update')`(bgLight/bgDark/charClosed/charOpen/pcCase/**relayBg/chairSprite**) + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。**新增纹理必须加 update 监听**,否则 layoutRelayScene 等函数会在纹理未就绪时计算,除以0导致 NaN 边界(已踩过坑:中转站行走边界完全失效)。
+- layoutRelayScene 中有纹理未加载时的默认尺寸保护(rbgW=1672,rbgH=941),避免除以0。新增依赖纹理尺寸的布局函数时建议同样保护。
+- **构建自检用 `check_syntax.js`**(不是已删的 `_check_syntax.js`;旧名以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则忽略,所以改了名)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
 
 ## 后续待办(用户规划)
 
 1. **中转站玩法设计**(用户亲自安排——等需求,勿抢先实现)
 2. 设置面板音频接入(音乐/音效滑条已就位)
 3. 低优先:背景大图 WebP 迁移、offline 收益(存档已有 savedAt 可算离线时长)
+
+## 交给下一个 AI 的任务:仓库卫生 + 提交最新成果(2026-09-10 交接)
+
+> 用户明确指定:这份工作由下一个 AI 执行,不是"待用户决定"。以下是完成它所需的全部事实,
+> 不要重新调研,直接照做。**做之前先读本节末尾的"不要做"清单。**
+
+### A. 先提交(有数据丢失风险,优先)
+
+现状:`git status` 有 3 个已修改、37 个未跟踪。**未跟踪里包含中转站行走动画和面板的全部素材**,
+而 `.gitignore` 忽略了 `index.html`(合理:它能由 `build.py` 重新生成)——但前提是"模板+素材"都在库里。
+也就是说**现在克隆这个仓库,`python build.py` 会直接报文件不存在**,最新成果只存在于本机硬盘。
+
+已修改(3 个,直接 add):
+`PROJECT.md`、`build.py`、`index_template.html`
+
+必须提交的素材与工具(消失就无法重新构建):
+- `assets/compressed_webp/` 7 个新 webp:`walk_left` / `walk_right` / `walk_idle` / `walker_lift` / `walker_sit` / `chair_outline` / `panel_logo`(共 347.6KB)
+- `check_syntax.js`(注意:名字不能再带 `_` 前缀,否则被 `.gitignore` 的 `_*.js` 吃掉)
+- `assets/raw/walk_video.mp4`(1.15MB,行走动画的唯一原始来源)、`walk_frame_0[1-6].png`、`walk_spritesheet_raw.png`、`walker_lift_new.png`、`panel_reference.png`、`screen_position*.png`、`walk_area_ref.png`
+- 用户自己创建的素材备份/、踩过的坑(人看的).docx
+
+提交前验证(必做,防止提交一个构建不了的版本):
+```bash
+python build.py && node check_syntax.js    # 两个都要过,退出码 0
+```
+提交信息建议:说明"补交行走/面板素材 + check_syntax.js + showWalker 重构",别写成一坨。
+
+### B. 仓库卫生(用户已同意清理,但**要求交给下一个 AI 执行**)
+
+1. **归档一次性补丁脚本**。根目录 39 个脚本(`.py` 37 + `.js` 2)里,**只有 6 个是活的**:
+   `build.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
+   其余 **33 个**是历史补丁痕迹,已被 git 历史取代:
+   `add_*.py`(9)、`fix_*.py`(4)、`rewrite_*.py`(3)、`check_*.py`(4)、`make_*.py`(2)、
+   `process_*.py`(7)、`compress_fan.py`、`simplify_fan.py`、`adjust_ui.py`、`align_walk_frames.py`、
+   `download.py`、`download_new_chars.py`、`rename_relay.py`、`remove_walk.py`。
+   ⚠️ **其中 15 个会直接重写 `index_template.html`**(用字符串替换覆盖模板,如 `rewrite_panel.py`、
+   `add_walker_ai.py`、`fix_all.py`、`rewrite_relay_v2.py` 等),**误跑一次会静默改坏源码**。
+   建议移到 `attic/`(或直接删,git 历史里都有)。
+   ⚠️ 它们目前都未被 git 跟踪,删除只在工作区生效,git 历史里仍可找回。
+
+2. **删死素材**(经实测确认 build.py 未引用):
+   - `assets/compressed/`(17 个里只有 4 个在用):死文件 `chair.png`、`char1.png`、`char2.png`、`fan.png`、
+     `pc_case.png`、`pc_case_upgraded.png`、`relay_bg.jpg`、`speech_bubble.png`、`walk_left.png`、
+     `walk_right.png`、`walk_left_aligned.png`(1977KB!)、`walk_right_aligned.png`(1977KB!)、`walk_spritesheet.json`
+   - `assets/compressed_webp/chair.webp`(8KB,已被 `chair_hi.webp` 取代)
+   ⚠️ 删之前先跑 `node check_syntax.js` 确认当前构建是好的;删完**必须重跑 `python build.py` + `check_syntax.js`**。
+
+3. **`assets/raw/` 的 28.9MB 已进 git**——这是可选的长期优化(用 `git lfs` 或改为不入库),
+   **本轮不要动**:已跟踪文件的删除涉及历史重写,风险大于收益,且用户没要求。
+
+### C. 不要做
+
+- **不要**改 `index.html`(它是构建产物,由 `build.py` 生成)。
+- **不要**为了"整洁"把 2200 行单文件 HTML 拆成模块。单文件离线可打开是这个项目的分发前提,拆分要引打包器,成本和风险远超收益。
+- **不要**实现中转站玩法(用户明确要亲自安排)。
+- **不要**把 `assets/raw/` 已跟踪的文件删掉或做 `git filter-branch`。
+- **不要**只删素材不重跑构建——`build.py` 找不到文件会抛异常,`check_syntax.js` 第 ③ 项也会报"素材文件不存在"。
+

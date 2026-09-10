@@ -17,6 +17,13 @@ ASSET_FILES = {
     "pc_case_upgraded": ("assets/compressed_webp/pc_case_upgraded.webp", "image/webp"),
     "transfer_bg": ("assets/compressed/transfer_bg.jpg", "image/jpeg"),
     "chair": ("assets/compressed_webp/chair_hi.webp", "image/webp"),
+    "walk_left": ("assets/compressed_webp/walk_left.webp", "image/webp"),
+    "walk_right": ("assets/compressed_webp/walk_right.webp", "image/webp"),
+    "walk_idle": ("assets/compressed_webp/walk_idle.webp", "image/webp"),
+    "walker_lift": ("assets/compressed_webp/walker_lift.webp", "image/webp"),
+    "walker_sit": ("assets/compressed_webp/walker_sit.webp", "image/webp"),
+    "chair_outline": ("assets/compressed_webp/chair_outline.webp", "image/webp"),
+    "panel_logo": ("assets/compressed_webp/panel_logo.webp", "image/webp"),
 }
 
 with open("index_template.html", "r", encoding="utf-8") as f:
@@ -41,4 +48,3 @@ with open("index.html", "w", encoding="utf-8") as f:
     f.write(html)
 
 print("\nFinal index.html:", os.path.getsize("index.html") // 1024, "KB")
-print("Done!")
