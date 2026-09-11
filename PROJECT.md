@@ -156,6 +156,10 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
   设成 `static` 后 panelBody 自己成为命中目标,而遮罩是它的**兄弟节点、不在事件父链上**,面板范围内永远不会命中遮罩。
   另外给 panelBody 设了显式 `hitArea`(随 `layoutScreenPanel()` 更新),比依赖 Graphics 填充几何做命中判定更可靠。
   ⚠️ **`screenPanel` 的子节点里,凡是挡住遮罩的都必须自己 eventMode='static'**,否则点击会穿透到遮罩触发关闭。
+- **模型页「数据详情」按钮**:模型页右上角胶囊按钮(纸页图标 + "数据详情"),点开在 `attrDetailLayer` 上画
+  **全屏遮罩 + 说明卡片**,列出 9 项属性各自对应什么(`ATTR_DESC`)。遮罩铺满整屏(盖住顶栏与左侧栏——
+  该层挂在 `screenPanel` 的**最后一个子节点**才盖得住),点遮罩关闭;卡片自身 `eventMode='static'` + `hitArea`,点卡片内不关。
+  切标签页 / 关面板时重置 `showAttrDetail=false`。全屏遮罩同样属于「挡住遮罩的节点」,所以卡片必须自己 `static`。
 - **遮罩的屏幕区域豁免**:`panelMask` 里保留了「点击落在电脑屏幕矩形内则不关闭」的判断,作为兜底
   (面板占屏 88%×85%,极端宽高比下电脑屏幕可能露在面板之外)。主防线是上面的 panelBody。
   (历史:该判断原先是为了绕开「命中目标落在遮罩上」的问题;根因修复后它退化为兜底,代码保留。)

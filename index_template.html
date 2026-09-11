@@ -1032,6 +1032,19 @@ screenGlowHit.on('pointerout', () => {
 const ATTR_KEYS = ['reasoning', 'knowledge', 'longCtx', 'speed', 'multimodal', 'instruct', 'toolCall'];
 const ATTR_NAMES = { reasoning: '推理', knowledge: '知识', longCtx: '长上下文', speed: '速度', multimodal: '多模态', instruct: '指令遵循', toolCall: '工具调用', fit: '拟合', params: '参数' };
 
+// 面板「数据详情」里每项属性对应什么。一句话,别写成说明书——玩家扫一眼就要懂。
+const ATTR_DESC = {
+  reasoning:  '能力的主要来源,权重最高',
+  knowledge:  '决定知识截止日期;判能力时给百分比加成',
+  longCtx:    '决定上下文长度(20k ~ 1000k)与记忆力',
+  speed:      '每 1 点 = 2 tokens/s',
+  instruct:   '影响能力,也影响站信誉',
+  toolCall:   '影响能力,并决定能同时服务的用户上限',
+  multimodal: '10 纯文本 → 40 识图 → 50 视频 → 60 PDF',
+  fit:        '最优 70;过拟合 / 欠拟合都会掉能力',
+  params:     '不直接加能力,只放大训练时的收益',
+};
+
 // 能力公式权重(设计文档 2.1):capability = (推理*0.55 + 指令*0.25 + 工具*0.20) * 知识乘区 * 拟合乘区 / 1.25
 const CAP_W = { reasoning: 0.55, instruct: 0.25, toolCall: 0.20 };
 const CAP_KNOW_RANGE = 0.25;   // 知识乘区 ±25% → 0.75~1.25
@@ -1183,6 +1196,13 @@ const panelLogo = PIXI.Sprite.from(ASSETS.panel_logo);
 panelLogo.anchor.set(0, 0.5);
 screenPanel.addChild(panelLogo);
 
+// 模型页右上角「数据详情」的弹层。**必须是 screenPanel 的最后一个子节点**:
+// 阴影要盖住顶部栏和左侧栏(只包住卡片会显得卡片浮在半空),同时它也是"点任意处关闭"的点击层。
+const attrDetailLayer = new PIXI.Container();
+attrDetailLayer.visible = false;
+screenPanel.addChild(attrDetailLayer);
+let showAttrDetail = false;
+
 let screenPanelOpen = false;
 
 function openScreenPanel() {
@@ -1195,6 +1215,7 @@ function openScreenPanel() {
 
 function closeScreenPanel() {
   screenPanelOpen = false;
+  showAttrDetail = false;
   screenPanel.visible = false;
   screenGlowHit.eventMode = 'static'; // 恢复屏幕点击
 }
@@ -1257,6 +1278,7 @@ function layoutScreenPanel() {
   // 清空旧占位与旧内容
   panelPlaceholders.removeChildren();
   panelContentArea.removeChildren();
+  attrDetailLayer.removeChildren();
 
   // ===== 顶部栏占位 =====
   // 左侧网站logo(大肥鱼站,新版横排,米色背景和顶部栏融合)
@@ -1297,7 +1319,7 @@ function layoutScreenPanel() {
     item.eventMode = 'static';   // 可点击(见 panelBody 的注释:auto 不参与命中测试)
     item.cursor = 'pointer';
     item.hitArea = new PIXI.Rectangle(sideX - 4, sideY - 4, sideW - 24, 32);
-    item.on('pointerdown', () => { panelTab = tab.key; layoutScreenPanel(); });
+    item.on('pointerdown', () => { panelTab = tab.key; showAttrDetail = false; layoutScreenPanel(); });
     panelPlaceholders.addChild(item);
 
     // 标签名(用真文字,方便辨认;占位阶段够用)
@@ -1320,6 +1342,10 @@ function layoutScreenPanel() {
   if (panelTab === 'model')      drawModelPage(cx0, cy0, cw, ch);
   else if (panelTab === 'community') drawCommunityPage(cx0, cy0, cw, ch);
   else                            drawBackendPage(cx0, cy0, cw, ch);
+
+  // 数据详情弹层(只在模型页存在)
+  attrDetailLayer.visible = showAttrDetail && panelTab === 'model';
+  if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
 }
 
 // 面板内容重绘(存档载入/属性变化后调用)
@@ -1381,6 +1407,124 @@ function drawModelPage(x, y, w, h) {
     t.x = x + w * 0.05;
     t.y = y + h * 0.90 + i * 17;
     panelContentArea.addChild(t);
+  });
+
+  drawAttrDetailButton(x + w, y);
+}
+
+// 模型页右上角「数据详情」按钮。样式贴左侧栏:浅米色底 + 暖橙纸页图标 + 深色标签。
+function drawAttrDetailButton(right, top) {
+  const bw = 108, bh = 30;
+  const bx = right - bw - 16, by = top + 14;
+  const btn = new PIXI.Graphics();
+  btn.lineStyle(1, 0xc4b8a8, 0.9);
+  btn.beginFill(showAttrDetail ? 0xd4a574 : 0xe8e0d4, 1);
+  btn.drawRoundedRect(bx, by, bw, bh, 8);
+  btn.endFill();
+  drawPaperIcon(btn, bx + 13, by + 8, 14);
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+  btn.on('pointerdown', () => { showAttrDetail = !showAttrDetail; layoutScreenPanel(); });
+  panelContentArea.addChild(btn);
+
+  const label = makeText('数据详情', { size: 12, color: '#5a4632', weight: 'bold' });
+  label.x = bx + 34;
+  label.y = by + (bh - 12) / 2 - 2;
+  panelContentArea.addChild(label);
+}
+
+// 纸页图标(日志/文档感):圆角纸 + 右上折角 + 三条内容线。s = 图标高度
+function drawPaperIcon(g, x, y, s) {
+  const w = s * 0.8;
+  g.beginFill(0xfdfaf5, 1);
+  g.drawRoundedRect(x, y, w, s, 2);
+  g.endFill();
+  g.lineStyle(1, 0x8a7a68, 1);
+  g.drawRoundedRect(x, y, w, s, 2);
+  // 右上折角
+  g.beginFill(0xd4a574, 1);
+  g.moveTo(x + w * 0.58, y);
+  g.lineTo(x + w, y + s * 0.34);
+  g.lineTo(x + w * 0.58, y + s * 0.34);
+  g.closePath();
+  g.endFill();
+  // 三条内容线
+  g.lineStyle(1, 0x8a7a68, 0.75);
+  for (let i = 0; i < 3; i++) {
+    const ly = y + s * (0.46 + i * 0.17);
+    g.moveTo(x + w * 0.2, ly);
+    g.lineTo(x + w * (i === 2 ? 0.58 : 0.8), ly);
+  }
+}
+
+// ---------- 模型页「数据详情」弹层 ----------
+// 阴影铺满整个屏幕(不只包住卡片),它同时是"点卡片外任意处关闭"的点击层。
+function drawAttrDetail(px, py, pw, ph) {
+  const w = app.screen.width, h = app.screen.height;
+
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w, h);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  shade.on('pointerdown', () => { showAttrDetail = false; layoutScreenPanel(); });
+  attrDetailLayer.addChild(shade);
+
+  const cw = Math.min(pw * 0.74, 640);
+  const rowH = 40, headH = 58, footH = 24;
+  const chh = headH + RADAR_KEYS.length * rowH + footH;
+  const cx = px + (pw - cw) / 2;
+  const cy = py + (ph - chh) / 2;
+
+  const card = new PIXI.Graphics();
+  card.lineStyle(1, 0xc4b8a8, 0.9);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  // 头部条用和左侧栏/顶部栏同一个浅米色,视觉上就是"这个面板的一部分"
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRoundedRect(cx, cy, cw, headH, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRect(cx, cy + headH - 12, cw, 12);
+  card.endFill();
+  card.eventMode = 'static';   // 挡住阴影:点卡片内部不关闭
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('属性数据详情', { size: 17, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 20; title.y = cy + 17;
+  attrDetailLayer.addChild(title);
+
+  const tip = makeText('点卡片外任意处关闭', { size: 11, color: '#8a7a68' });
+  tip.x = cx + cw - tip.width - 20; tip.y = cy + 21;
+  attrDetailLayer.addChild(tip);
+
+  const ak = state.relay.ability;
+  RADAR_KEYS.forEach((k, i) => {
+    const ry = cy + headH + i * rowH;
+    if (i > 0) {
+      const line = new PIXI.Graphics();
+      line.lineStyle(1, 0xc4b8a8, 0.28);
+      line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
+      attrDetailLayer.addChild(line);
+    }
+    const nm = makeText(ATTR_NAMES[k], { size: 14, color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 12;
+    attrDetailLayer.addChild(nm);
+
+    const val = makeText(String(Math.round(ak[k])), { size: 13, color: '#c05a2a', weight: 'bold' });
+    val.x = cx + 96; val.y = ry + 13;
+    attrDetailLayer.addChild(val);
+
+    const desc = makeText(ATTR_DESC[k], { size: 12, color: '#8a7a68' });
+    desc.style.wordWrap = true;
+    desc.style.breakWords = true;
+    desc.style.wordWrapWidth = cw - 148 - 20;
+    desc.x = cx + 148; desc.y = ry + 13;
+    attrDetailLayer.addChild(desc);
   });
 }
 
