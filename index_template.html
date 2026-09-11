@@ -1065,9 +1065,11 @@ const SIM_SAT = 0.6;           // 加权距离 ≥ 0.6 → 相似度 0
 
 // 真实模型锚点。**这里是生成物,不要手改** —— 唯一数据源是《中转站设计.md》§3.1 的数据表,
 // 改完跑 `python sync_models.py --write` 重新生成(先不带 `--write` 跑一次看会改什么)。
+// ⚠️ 型号、性能、价格均为**虚构设定**,不代表真实产品(见设计文档 §3.1 顶部声明)。
 // 字段含义(顺序不可改,由 sync_models.py 生成):
-//   n 名称 / v 厂商 / t 档位 / k 知识截止(YYYY-MM) / c 上下文(k tokens) / pi 输入价 / po 输出价($/M)
-//   m 多模态档位(0文本 1图 2视频 3PDF) / tools 工具调用 / cap 能力 / legacy 已退役(退役模型已整行移除,该字段暂无行使用)
+//   n 名称 / v 厂商 / t 档位(按厂商内部定位,不代表绝对强度) / k 知识截止(YYYY-MM) / c 上下文(k tokens)
+//   pi 输入价 / po 输出价($/M,兼作后台定价参考) / m 多模态档位(0文本 1图 2视频 3PDF)
+//   tools 工具调用 / cap 能力 / legacy 已退役(退役模型已整行移除,该字段暂无行使用)
 const REAL_MODELS = [
   { n: 'GPT-6 Astra',              v: 'OpenAI',    t: '旗舰',   k: '2026-04', c: 1050, pi: 10, po: 50, m: 3, tools: 1, cap: 87 },
   { n: 'Claude Fable 5.1',         v: 'Anthropic', t: '旗舰',   k: '2026-03', c: 1000, pi: 10, po: 50, m: 1, tools: 1, cap: 85 },
@@ -1075,51 +1077,54 @@ const REAL_MODELS = [
   { n: 'GPT-5.6 Sol',              v: 'OpenAI',    t: '旗舰',   k: '2026-01', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 78 },
   { n: 'Claude Fable 5',           v: 'Anthropic', t: '旗舰',   k: '2026-02', c: 1000, pi: 10, po: 50, m: 1, tools: 1, cap: 76 },
   { n: 'GPT-5.5',                  v: 'OpenAI',    t: '旗舰',   k: '2025-11', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 73 },
-  { n: 'Claude Sonnet 5',          v: 'Anthropic', t: '旗舰',   k: '2026-02', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 72 },
+  { n: 'Claude Sonnet 5',          v: 'Anthropic', t: '中端',   k: '2026-02', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 72 },
   { n: 'GLM 5.3',                  v: '智谱',        t: '旗舰',   k: '2025-11', c: 1050, pi: 1.4, po: 4.4, m: 0, tools: 1, cap: 68 },
   { n: 'GPT-5.4',                  v: 'OpenAI',    t: '中端',   k: '2025-10', c: 400, pi: 2, po: 8, m: 1, tools: 1, cap: 67 },
   { n: 'GPT-5.2',                  v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 66 },
-  { n: 'Gemini 3.1 Pro',           v: 'Google',    t: '中端',   k: '2026-01', c: 1000, pi: 2, po: 12, m: 3, tools: 1, cap: 66 },
+  { n: 'Gemini 3.1 Pro',           v: 'Google',    t: '旗舰',   k: '2026-01', c: 1000, pi: 2, po: 12, m: 3, tools: 1, cap: 66 },
   { n: 'Claude Opus 4.8',          v: 'Anthropic', t: '中端',   k: '2025-06', c: 500, pi: 5, po: 25, m: 1, tools: 1, cap: 64 },
-  { n: 'Qwen3.8 Max',              v: '阿里',        t: '中端',   k: '2026-02', c: 1000, pi: 2, po: 6, m: 2, tools: 1, cap: 63 },
-  { n: 'Kimi K3',                  v: '月之暗面',      t: '中端',   k: '2025-12', c: 1000, pi: 2.8, po: 14, m: 0, tools: 1, cap: 63 },
+  { n: 'Qwen3.8 Max',              v: '阿里',        t: '旗舰',   k: '2026-02', c: 1000, pi: 2, po: 6, m: 2, tools: 1, cap: 63 },
+  { n: 'Kimi K3',                  v: '月之暗面',      t: '旗舰',   k: '2025-12', c: 1000, pi: 2.8, po: 14, m: 0, tools: 1, cap: 63 },
   { n: 'GPT-5.6 Terra',            v: 'OpenAI',    t: '中端',   k: '2026-01', c: 1000, pi: 2, po: 8, m: 1, tools: 1, cap: 62 },
-  { n: 'Gemini 3.8 Flash',         v: 'Google',    t: '中端',   k: '2026-03', c: 1050, pi: 0.75, po: 3.75, m: 3, tools: 1, cap: 61 },
-  { n: 'Seed 2.0 Pro',             v: '字节',        t: '中端',   k: '2025-06', c: 256, pi: 0.4, po: 1.2, m: 2, tools: 1, cap: 61 },
+  { n: 'DeepSeek V4.1 Flash',      v: 'DeepSeek',  t: '旗舰',   k: '2025-10', c: 1000, pi: 0.15, po: 0.60, m: 1, tools: 1, cap: 62 },
+  { n: 'Seed 2.0 Pro',             v: '字节',        t: '旗舰',   k: '2025-06', c: 256, pi: 0.4, po: 1.2, m: 2, tools: 1, cap: 61 },
+  { n: 'Gemini 3.8 Flash',         v: 'Google',    t: '轻量',   k: '2026-03', c: 1050, pi: 0.75, po: 3.75, m: 3, tools: 1, cap: 61 },
   { n: 'GPT-5',                    v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 60 },
-  { n: 'Grok 4.6',                 v: 'xAI',       t: '中端',   k: '2025-11', c: 500, pi: 2, po: 6, m: 1, tools: 1, cap: 60 },
+  { n: 'Grok 4.6',                 v: 'xAI',       t: '旗舰',   k: '2025-11', c: 500, pi: 2, po: 6, m: 1, tools: 1, cap: 60 },
   { n: 'DeepSeek V4 Pro',          v: 'DeepSeek',  t: '中端',   k: '2025-10', c: 1000, pi: 0.6, po: 2.4, m: 0, tools: 1, cap: 59 },
-  { n: 'Gemini 3.7 Flash',         v: 'Google',    t: '中端',   k: '2026-02', c: 1050, pi: 0.5, po: 2, m: 3, tools: 1, cap: 58 },
+  { n: 'Gemini 3.7 Flash',         v: 'Google',    t: '轻量',   k: '2026-02', c: 1050, pi: 0.5, po: 2, m: 3, tools: 1, cap: 58 },
   { n: 'Qwen3.7 Max',              v: '阿里',        t: '中端',   k: '2025-10', c: 1000, pi: 1.2, po: 4, m: 2, tools: 1, cap: 57 },
   { n: 'Kimi K2.7 Code',           v: '月之暗面',      t: '中端',   k: '2025-11', c: 256, pi: 1.5, po: 6, m: 0, tools: 1, cap: 57 },
   { n: 'Kimi K2.6',                v: '月之暗面',      t: '中端',   k: '2025-08', c: 256, pi: 0.5, po: 2, m: 0, tools: 1, cap: 56 },
-  { n: 'Gemini 3.6 Flash',         v: 'Google',    t: '中端',   k: '2026-01', c: 1000, pi: 0.4, po: 1.6, m: 2, tools: 1, cap: 55 },
+  { n: 'Hunyuan Hy4',              v: '腾讯',        t: '旗舰',   k: '2025-11', c: 256, pi: 0.8, po: 3, m: 1, tools: 1, cap: 56 },
+  { n: 'Gemini 3.6 Flash',         v: 'Google',    t: '轻量',   k: '2026-01', c: 1000, pi: 0.4, po: 1.6, m: 2, tools: 1, cap: 55 },
   { n: 'Grok 4.5',                 v: 'xAI',       t: '中端',   k: '2025-08', c: 500, pi: 2, po: 6, m: 1, tools: 1, cap: 54 },
-  { n: 'DeepSeek V4.1',            v: 'DeepSeek',  t: '中端',   k: '2025-10', c: 1000, pi: 0.15, po: 0.60, m: 0, tools: 1, cap: 53 },
-  { n: 'Gemini 3.5 Flash',         v: 'Google',    t: '中端',   k: '2025-12', c: 1000, pi: 0.5, po: 2, m: 2, tools: 1, cap: 52 },
-  { n: 'MiniMax M3',               v: 'MiniMax',   t: '中端',   k: '2025-11', c: 1000, pi: 0.3, po: 1.2, m: 2, tools: 1, cap: 51 },
-  { n: 'DeepSeek V4 Flash Vision', v: 'DeepSeek',  t: '中端',   k: '2025-10', c: 1000, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 50 },
+  { n: 'Gemini 3.5 Flash',         v: 'Google',    t: '轻量',   k: '2025-12', c: 1000, pi: 0.5, po: 2, m: 2, tools: 1, cap: 52 },
+  { n: 'MiniMax M3',               v: 'MiniMax',   t: '旗舰',   k: '2025-11', c: 1000, pi: 0.3, po: 1.2, m: 2, tools: 1, cap: 51 },
+  { n: 'DeepSeek V4 Flash Vision', v: 'DeepSeek',  t: '轻量',   k: '2025-10', c: 1000, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 50 },
   { n: 'Seed 2.1 Pro',             v: '字节',        t: '中端',   k: '2025-10', c: 256, pi: 0.5, po: 1.5, m: 1, tools: 1, cap: 49 },
-  { n: 'GPT-5 mini',               v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 48 },
   { n: 'GLM 5.2',                  v: '智谱',        t: '中端',   k: '2025-08', c: 1050, pi: 1, po: 3.2, m: 0, tools: 1, cap: 48 },
-  { n: 'Seed 2.0 Lite',            v: '字节',        t: '中端',   k: '2025-06', c: 256, pi: 0.05, po: 0.2, m: 0, tools: 1, cap: 46 },
+  { n: 'GPT-5 mini',               v: 'OpenAI',    t: '轻量',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 48 },
+  { n: 'Seed 2.0 Lite',            v: '字节',        t: '轻量',   k: '2025-06', c: 256, pi: 0.05, po: 0.2, m: 0, tools: 1, cap: 46 },
   { n: 'MiniMax M2.5',             v: 'MiniMax',   t: '中端',   k: '2025-06', c: 1000, pi: 0.5, po: 2, m: 1, tools: 1, cap: 45 },
-  { n: 'GPT-5.4 Mini',             v: 'OpenAI',    t: '中端',   k: '2025-10', c: 400, pi: 0.25, po: 1, m: 1, tools: 1, cap: 45 },
+  { n: 'GPT-5.4 Mini',             v: 'OpenAI',    t: '轻量',   k: '2025-10', c: 400, pi: 0.25, po: 1, m: 1, tools: 1, cap: 45 },
   { n: 'Qwen3.8 Flash',            v: '阿里',        t: '轻量',   k: '2026-01', c: 1000, pi: 0.15, po: 0.47, m: 2, tools: 1, cap: 44 },
-  { n: 'Hunyuan Hy3',              v: '腾讯',        t: '轻量',   k: '2025-09', c: 256, pi: 0.3, po: 1.2, m: 1, tools: 1, cap: 43 },
+  { n: 'Hunyuan Hy3',              v: '腾讯',        t: '中端',   k: '2025-09', c: 256, pi: 0.3, po: 1.2, m: 1, tools: 1, cap: 43 },
   { n: 'Qwen3.8-27B',              v: '阿里',        t: '轻量',   k: '2026-02', c: 256, pi: 0.3, po: 1.2, m: 1, tools: 1, cap: 42 },
   { n: 'Qwen3.7 Flash',            v: '阿里',        t: '轻量',   k: '2025-10', c: 1000, pi: 0.1, po: 0.3, m: 1, tools: 1, cap: 41 },
   { n: 'Qwen3.6-27B',              v: '阿里',        t: '轻量',   k: '2025-06', c: 128, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 40 },
-  { n: 'GLM 5.1',                  v: '智谱',        t: '轻量',   k: '2025-04', c: 400, pi: 0.5, po: 1.6, m: 0, tools: 1, cap: 40 },
-  { n: 'Seed 2.1 Turbo',           v: '字节',        t: '轻量',   k: '2025-10', c: 262, pi: 0.5, po: 2.5, m: 0, tools: 1, cap: 39 },
+  { n: 'GLM 5.1',                  v: '智谱',        t: '中端',   k: '2025-04', c: 400, pi: 0.5, po: 1.6, m: 0, tools: 1, cap: 40 },
+  { n: 'Seed 2.1 Turbo',           v: '字节',        t: '中端',   k: '2025-10', c: 262, pi: 0.5, po: 2.5, m: 0, tools: 1, cap: 39 },
   { n: 'Gemma 4 31B',              v: 'Google',    t: '轻量',   k: '2026-01', c: 128, pi: 0.1, po: 0.4, m: 1, tools: 1, cap: 39 },
   { n: 'GLM 5.3 Flash',            v: '智谱',        t: '轻量',   k: '2025-11', c: 1050, pi: 0.15, po: 0.50, m: 0, tools: 1, cap: 38 },
-  { n: 'ERNIE 5.1',                v: '百度',        t: '轻量',   k: '2025-09', c: 128, pi: 0.4, po: 1.6, m: 1, tools: 1, cap: 38 },
-  { n: 'MiMo V2.5',                v: '小米',        t: '轻量',   k: '2025-09', c: 256, pi: 0.2, po: 0.8, m: 0, tools: 1, cap: 37 },
+  { n: 'ERNIE 5.1',                v: '百度',        t: '旗舰',   k: '2025-09', c: 128, pi: 0.4, po: 1.6, m: 1, tools: 1, cap: 38 },
+  { n: 'MiMo V2.5',                v: '小米',        t: '旗舰',   k: '2025-09', c: 256, pi: 0.2, po: 0.8, m: 0, tools: 1, cap: 37 },
   { n: 'openPangu 2.0 Flash',      v: '华为',        t: '轻量',   k: '2025-08', c: 128, pi: 0.15, po: 0.6, m: 0, tools: 0, cap: 36 },
+  { n: 'Agnes 2.5 Pro',            v: 'Agnes',     t: '旗舰',   k: '2025-07', c: 128, pi: 0.8, po: 3, m: 1, tools: 1, cap: 36 },
   { n: 'SenseNova 6.8 Flash Lite', v: '商汤',        t: '轻量',   k: '2025-07', c: 256, pi: 0.1, po: 0.4, m: 1, tools: 1, cap: 35 },
   { n: 'Step 3.7 Flash',           v: '阶跃星辰',      t: '轻量',   k: '2025-08', c: 128, pi: 0.1, po: 0.4, m: 0, tools: 1, cap: 34 },
   { n: 'GPT-5 nano',               v: 'OpenAI',    t: '廉价',   k: '2025-08', c: 400, pi: 0.05, po: 0.2, m: 1, tools: 0, cap: 30 },
+  { n: 'Agnes 2.5 Flash',          v: 'Agnes',     t: '轻量',   k: '2025-07', c: 128, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 30 },
   { n: 'Qwen2.5-7B',               v: '阿里',        t: '廉价',   k: '2024-09', c: 32, pi: 0.05, po: 0.2, m: 0, tools: 1, cap: 14 },
   { n: 'Mistral 7B',               v: 'Mistral',   t: '廉价',   k: '2023-09', c: 8, pi: 0.02, po: 0.05, m: 0, tools: 0, cap: 9 },
 ];
@@ -1673,18 +1678,22 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
   }
 }
 
-// ---------- 内容页:榜单(全部在售真实模型的数据) ----------
+// ---------- 内容页:榜单(全部在售模型的数据) ----------
 // 数据源就是 REAL_MODELS(由《中转站设计.md》§3.1 生成),这里只读不写。
+// ⚠️ 型号、性能、价格全部是**虚构设定**(设计文档 §3.1 顶部有同样的声明),所以页脚必须带上免责提示。
 // 退役模型已从源表整行移除,所以榜单里不再有灰色行;行数放不下一屏时用 boardScroll 滚轮翻页。
 const BOARD_COLS = [
   // [标题, 从左起算的 x 占比, 取值函数]
   ['#',    0.00, (m, i) => String(i + 1)],
-  ['模型', 0.06, (m) => m.n],
-  ['厂商', 0.34, (m) => m.v],
-  ['档位', 0.50, (m) => m.t],
-  ['截止', 0.58, (m) => m.k],
-  ['上下文', 0.68, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
-  ['cap',  0.82, (m) => String(m.cap)],
+  ['模型', 0.045, (m) => m.n],
+  ['厂商', 0.30, (m) => m.v],
+  ['档位', 0.44, (m) => m.t],
+  ['截止', 0.51, (m) => m.k],
+  ['上下文', 0.60, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
+  // 价格列是给「后台定价」当参考的虚构值,不追求和真实行情一致(用户明确)
+  ['入价$', 0.70, (m) => String(m.pi)],
+  ['出价$', 0.79, (m) => String(m.po)],
+  ['cap',  0.90, (m) => String(m.cap)],
 ];
 
 function drawLeaderboardPage(x, y, w, h) {
@@ -1745,13 +1754,17 @@ function drawLeaderboardPage(x, y, w, h) {
     }
   }
 
-  // 底部滚动提示(兼作"还能往下滚"的暗示)
+  // 底部:左边滚动提示,右边虚构声明(和设计文档 §3.1 顶部那条是同一件事)
   const hint = boardScroll + maxRows >= REAL_MODELS.length
     ? '已到底 · 共 ' + REAL_MODELS.length + ' 个'
     : '↓ 滚轮继续 · ' + (boardScroll + maxRows) + ' / ' + REAL_MODELS.length;
   const ht = makeText(hint, { size: 11, color: '#b0a294' });
   ht.x = x + padX; ht.y = y + h - 20;
   panelContentArea.addChild(ht);
+
+  const note = makeText('非真实榜单 · 型号与数值均为虚构', { size: 11, color: '#b0a294', anchor: 1 });
+  note.x = x + padX + colW; note.y = y + h - 20;
+  panelContentArea.addChild(note);
 }
 
 // ---------- 内容页:社区(热点报道 + 公告) 占位 ----------

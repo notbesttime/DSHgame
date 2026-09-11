@@ -134,14 +134,17 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **行走动画**详见上方"中转站行走动画"章节;相关入口 `relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`、`updateWalkerAI`、`makeWalkFrames`。
 - **代码里已落地的算法最小集**(在 `// ========== 中转站模型养成(设计草案) ==========` 注释块内,改数值只改这里):
   - `ATTR_KEYS` / `ATTR_NAMES` — 9 项基础属性(推理/知识/长上下文/速度/多模态/指令遵循/工具调用/拟合/参数)。
-  - `REAL_MODELS` — 真实模型锚点生成物(**53 条在售**),由 `python sync_models.py --write` 从设计文档 §3.1 生成,**勿手改**。
+  - `REAL_MODELS` — 真实模型锚点生成物(**56 条在售**),由 `python sync_models.py --write` 从设计文档 §3.1 生成,**勿手改**。
     退役模型已按用户要求从源表整行移除(原先 51 条含 25 条退役),`legacy` 字段保留但全部为 0。
     v0.3 参考 `wycode.cn/gaokao` 补了一批大众型号(排除 Meta 与该榜名次 ≥70 的),名次/cap 未照抄该榜,按讨论热度与厂商定位重排。
+    v0.4 补 Hunyuan Hy4 / Agnes 2.5 Pro & Flash,`DeepSeek V4.1` → `V4.1 Flash` 并改原生多模态(cap 62,排在 V4 Pro 之上)。
+    ⚠️ **档位 `t` 按「厂商内部定位」分,不代表绝对强度** —— 一条 `轻量` 的 Flash 可能强过别家的 `中端`(见设计文档 §3.4)。
+    ⚠️ **型号 / 性能 / 价格均为虚构设定**,设计文档 §3.1 顶部与榜单页页脚都有声明;要商业化前先看 §13 的 IP 风险条目。
   - `ctxK()` / `tokPerSec()` / `cutoffMonths()` / `modelCapability(a)` — 四组派生量公式(与属性值互逆)。
   - `modelToAttrs(m)` / `modelCapabilityOf(m)` — 真实模型 → 等效属性(用于雷达图叠影与距离计算)。
     ⚠️ 坑:`knowledge` 曾写成 `5 + (m.k ? 5 : 0)`,`m.k` 是 `'YYYY-MM'` 字符串恒为真 → **每个模型知识恒 10**,
     `closestModel` 的「知识不如它新 +0.35」门槛连模型对自己都触发,53 条里 34 条最近邻都是 Qwen2.5-7B。
-    2026-09-11 改为用 `monthsFromStr(m.k)` 反推(与 `cutoff()` 互逆),实测 53/53 各自命中自己,新手锚点不变。改这块前先看设计文档 §3.5。
+    2026-09-11 改为用 `monthsFromStr(m.k)` 反推(与 `cutoff()` 互逆),实测 56/56 各自命中自己,新手锚点不变。改这块前先看设计文档 §3.5。
   - `closestModel(a)` — 7 维加权距离 + 2 个硬门槛(知识截止、模态档位),返回"最接近的真实模型"与相似度。
 - **`state.relay`(存档 v1 已含)**:`{ ability: { 9 项属性 }, listedModel: null, price: 0, pool: 'standard', reputation: 50 }`。
   `saveGame`/`loadGame` 已接上;载入后调 `refreshRelayPanel()` 重绘面板。
@@ -149,8 +152,9 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **面板左栏改为可点击标签**(模型 / 榜单 / 社区 / 后台),替换原先的三组纯占位菜单;`panelTab` 决定 `drawModelPage`/`drawLeaderboardPage`/`drawCommunityPage`/`drawBackendPage`。
   内容全部画进 `panelContentArea`,用**绝对屏幕坐标**(该容器自身位移为 0)。
   - **模型页(已实现)**:最接近的真实模型名 + 相似度 + 综合评分块(评分/速度/上下文)+ **9 轴雷达图**。
-  - **榜单页(已实现)**:`REAL_MODELS` 的只读表格(名次/模型/厂商/档位/截止/上下文/cap),斑马纹 + cap 橙色加粗。
-    只收在售模型(退役行已从源表移除);53 行一屏放不下(1280×720 实测一屏 15 行),滚轮每格翻 3 行,页脚显示进度。
+  - **榜单页(已实现)**:`REAL_MODELS` 的只读表格(名次/模型/厂商/档位/截止/上下文/入价$/出价$/cap),斑马纹 + cap 橙色加粗。
+    只收在售模型(退役行已从源表移除);56 行一屏放不下(1280×720 实测一屏 15 行),滚轮每格翻 3 行,页脚左边显示进度、**右边固定「非真实榜单 · 型号与数值均为虚构」**。
+    价格列是给后台定价当参考的虚构值,不追求与真实行情一致。
     ⚠️ 滚轮**挂在 `app.view` 的 DOM `wheel` 上**(`screenPanel.on('wheel')` 实测收不到真实浏览器 wheel),`{ passive: true }`,且只在「面板开着 + 榜单页」时生效。
   - 社区页 / 后台页:**静态文字占位**,机制设计见设计文档 7、8 节,尚未接逻辑。
 - **底部标签栏收拢 + 左移**(2026-09-11):`layoutNavTabs()` 用 104×42 / 间距 18,先按屏宽居中再整体左移,
