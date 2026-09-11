@@ -957,10 +957,17 @@ const tabOf = (key) => TABS.find(t => t.key === key);
 tabOf('relay').container.visible = false;
 
 function layoutNavTabs() {
-  const w = 120, h = 44;
+  const w = 104, h = 42, gap = 10;
   const vis = TABS.filter(t => t.container.visible);
+  // 右下角站着人物(layoutCharacters 用的同一套尺寸)。旧版把标签均匀铺满整屏宽,
+  // 最后一个标签会正好压在人物身上 → 这里改成:先按屏宽居中,再整体左移到人物左边。
+  const charW = Math.min(340, app.screen.height * 0.4);
+  const rightLimit = app.screen.width - charW - 16;
+  const totalW = vis.length * w + Math.max(0, vis.length - 1) * gap;
+  let startX = Math.min((app.screen.width - totalW) / 2, rightLimit - totalW);
+  startX = Math.max(startX, 12);
   vis.forEach((t, i) => {
-    t.container.x = app.screen.width * ((i + 0.5) / vis.length) - w / 2;
+    t.container.x = startX + i * (w + gap);
     t.container.y = app.screen.height - h - 14;
     // 高亮当前场景:这里统一画,避免"布局函数画一种颜色、切换函数再覆盖另一种"的两处不同步
     roundRect(t.bg, 0, 0, w, h, 10, navScene === t.key ? t.on : t.off, 0.85);
@@ -1215,10 +1222,15 @@ screenPanel.addChild(panelContentArea);
 // 左侧栏标签页。内容与数值设计见 中转站设计.md 第 11 节;当前只做到"能切、有占位图"。
 const PANEL_TABS = [
   { key: 'model', label: '模型' },
+  { key: 'leaderboard', label: '榜单' },
   { key: 'community', label: '社区' },
   { key: 'backend', label: '后台' },
 ];
 let panelTab = 'model';
+
+// 「榜单」页的滚动位置(首行下标)与每行高度。只在 panelTab==='leaderboard' 时被读写。
+let boardScroll = 0;
+const BOARD_ROW_H = 26;
 
 // 占位容器(顶部栏和左侧栏的占位UI元素)
 const panelPlaceholders = new PIXI.Container();
@@ -1372,14 +1384,27 @@ function layoutScreenPanel() {
   // ===== 内容区:按当前标签渲染 =====
   const cx0 = px + sideW, cy0 = py + topH;
   const cw = pw - sideW, ch = ph - topH;
-  if (panelTab === 'model')      drawModelPage(cx0, cy0, cw, ch);
-  else if (panelTab === 'community') drawCommunityPage(cx0, cy0, cw, ch);
-  else                            drawBackendPage(cx0, cy0, cw, ch);
+  if (panelTab === 'model')            drawModelPage(cx0, cy0, cw, ch);
+  else if (panelTab === 'leaderboard') drawLeaderboardPage(cx0, cy0, cw, ch);
+  else if (panelTab === 'community')   drawCommunityPage(cx0, cy0, cw, ch);
+  else                                 drawBackendPage(cx0, cy0, cw, ch);
 
   // 数据详情弹层(只在模型页存在)
   attrDetailLayer.visible = showAttrDetail && panelTab === 'model';
   if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
 }
+
+// 榜单滚轮:直接挂 DOM wheel,不走 Pixi 的事件系统 ——
+// 面板已占屏 88%×85%,不需要把指针精确停在列表上才响应;也免得再踩一次 Pixi 命中测试的坑。
+// 只在「面板开着 + 当前是榜单页」时生效,其他时候滚轮照旧(生产页本来也没滚动需求)。
+app.view.addEventListener('wheel', (e) => {
+  if (!screenPanelOpen || panelTab !== 'leaderboard') return;
+  const step = e.deltaY > 0 ? 3 : -3;
+  const next = Math.max(0, Math.min(REAL_MODELS.length - 1, boardScroll + step));
+  if (next === boardScroll) return;
+  boardScroll = next;
+  layoutScreenPanel();
+}, { passive: true });
 
 // 面板内容重绘(存档载入/属性变化后调用)
 function refreshRelayPanel() {
@@ -1638,6 +1663,88 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
     t.y = cy + Math.sin(a) * (r + 20);
     panelContentArea.addChild(t);
   }
+}
+
+// ---------- 内容页:榜单(全部真实模型的数据) ----------
+// 数据源就是 REAL_MODELS(由《中转站设计.md》§3.1 生成),这里只读不写。
+// 全部 51 行放不下一屏,用 boardScroll 记首行下标,滚轮翻页(见 screenPanel 的 wheel 处理)。
+const BOARD_COLS = [
+  // [标题, 从左起算的 x 占比, 取值函数]
+  ['#',    0.00, (m, i) => String(i + 1)],
+  ['模型', 0.06, (m) => m.n],
+  ['厂商', 0.34, (m) => m.v],
+  ['档位', 0.50, (m) => m.t],
+  ['截止', 0.60, (m) => m.k],
+  ['上下文', 0.70, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
+  ['cap',  0.82, (m) => String(m.cap)],
+  ['状态', 0.90, (m) => (m.legacy ? '退役' : '在售')],
+];
+
+function drawLeaderboardPage(x, y, w, h) {
+  const padX = w * 0.04;
+  const title = makeText('模型榜单', { size: Math.min(30, w * 0.055), color: '#2a2118', weight: 'bold' });
+  title.x = x + padX; title.y = y + h * 0.04;
+  panelContentArea.addChild(title);
+
+  const sub = makeText('全部 ' + REAL_MODELS.length + ' 个真实模型 · 按综合能力(cap)排序 · 滚轮翻页',
+    { size: 12, color: '#8a7a68' });
+  sub.x = x + padX; sub.y = title.y + title.height + 5;
+  panelContentArea.addChild(sub);
+
+  // 表头
+  const headY = sub.y + sub.height + 12;
+  const colW = w - padX * 2;
+  const head = new PIXI.Graphics();
+  head.beginFill(0xe8e0d4, 1);
+  head.drawRoundedRect(x + padX, headY, colW, BOARD_ROW_H, 5);
+  head.endFill();
+  panelContentArea.addChild(head);
+  for (const [label, fx] of BOARD_COLS) {
+    const t = makeText(label, { size: 12, color: '#6a5a48', weight: 'bold' });
+    t.x = x + padX + 8 + colW * fx;
+    t.y = headY + (BOARD_ROW_H - t.height) / 2;
+    panelContentArea.addChild(t);
+  }
+
+  // 可视行数:表头以下到底部提示文字之上的空间
+  const listTop = headY + BOARD_ROW_H + 4;
+  const listBottom = y + h - 26;
+  const maxRows = Math.max(1, Math.floor((listBottom - listTop) / BOARD_ROW_H));
+  boardScroll = Math.max(0, Math.min(REAL_MODELS.length - maxRows, boardScroll));
+  const end = Math.min(REAL_MODELS.length, boardScroll + maxRows);
+
+  for (let i = boardScroll; i < end; i++) {
+    const m = REAL_MODELS[i];
+    const ry = listTop + (i - boardScroll) * BOARD_ROW_H;
+    // 斑马纹:奇数行浅色底,长列表横向读的时候不容易串行
+    if ((i - boardScroll) % 2 === 1) {
+      const band = new PIXI.Graphics();
+      band.beginFill(0xe8e0d4, 0.35);
+      band.drawRect(x + padX, ry, colW, BOARD_ROW_H);
+      band.endFill();
+      panelContentArea.addChild(band);
+    }
+    for (let c = 0; c < BOARD_COLS.length; c++) {
+      const [label, fx, get] = BOARD_COLS[c];
+      const isCap = label === 'cap';
+      const t = makeText(get(m, i), {
+        size: 12,
+        color: isCap ? '#c05a2a' : (m.legacy ? '#9a8d7e' : '#3a2f22'),
+        weight: isCap ? 'bold' : 'normal',
+      });
+      t.x = x + padX + 8 + colW * fx;
+      t.y = ry + (BOARD_ROW_H - t.height) / 2;
+      panelContentArea.addChild(t);
+    }
+  }
+
+  // 底部滚动提示(兼作"还能往下滚"的暗示)
+  const hint = boardScroll + maxRows >= REAL_MODELS.length
+    ? '已到底 · 共 ' + REAL_MODELS.length + ' 个'
+    : '↓ 滚轮继续 · ' + (boardScroll + maxRows) + ' / ' + REAL_MODELS.length;
+  const ht = makeText(hint, { size: 11, color: '#b0a294' });
+  ht.x = x + padX; ht.y = y + h - 20;
+  panelContentArea.addChild(ht);
 }
 
 // ---------- 内容页:社区(热点报道 + 公告) 占位 ----------
