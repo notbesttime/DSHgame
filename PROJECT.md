@@ -26,10 +26,14 @@ DSHgame/
 │   └── compressed_webp/     ★ 第二代 WebP(build.py 引用的全部 18 张都在这里)
 ```
 
-★ = 当前有效流水线 = 根目录只有这 6 个脚本是活的:
-`build.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
+★ = 当前有效流水线 = 根目录只有这 7 个脚本是活的:
+`build.py`、`sync_models.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
+
+> ⚠️ **`index_template.html` 里的 `REAL_MODELS` 是生成物,不要手改。**
+> 真实模型库的唯一数据源是《中转站设计.md》§3.1 的数据表(改文档就能离线调榜,不用进游戏)。
+> 改完跑 `python sync_models.py --write` 重新生成(先不带 `--write` 跑一次看 diff)。
 
 ## 常用命令
 
@@ -37,6 +41,8 @@ DSHgame/
 python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
 python build.py --dist     # 网页托管模式:代码与哈希资源分离 → dist/(发布 VibeHub 用)
 node check_syntax.js       # 构建自检:语法 + ASSETS key + 素材文件存在性(退出码非0即出错)
+python sync_models.py      # 模型库:报告《中转站设计.md》§3.1 与 REAL_MODELS 的差异(不动文件)
+python sync_models.py --write  # 同上,并把文档表写进 index_template.html
 python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
 node server.js             # http://localhost:8765(根目录自动补 index.html,可直接预览 /dist/)
 ```
@@ -47,7 +53,7 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 |---|---|---|
 | 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
 | 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
-| 体积 | **1956KB**(整个文件) | 首访 **1597KB**;回访只需重下 75KB 的 index.html |
+| 体积 | **1985KB**(整个文件) | 首访 **1622KB**;回访只需重下 100KB 的 index.html |
 | 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
 | 能否离线 | 能 | 不能(需要 http 服务) |
 
@@ -128,8 +134,7 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **行走动画**详见上方"中转站行走动画"章节;相关入口 `relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`、`updateWalkerAI`、`makeWalkFrames`。
 - **代码里已落地的算法最小集**(在 `// ========== 中转站模型养成(设计草案) ==========` 注释块内,改数值只改这里):
   - `ATTR_KEYS` / `ATTR_NAMES` — 9 项基础属性(推理/知识/长上下文/速度/多模态/指令遵循/工具调用/拟合/参数)。
-  - `REAL_MODELS` — 真实模型锚点(能力/上下文/知识截止/多模态档/工具调用/官方价),来源见设计文档 3.2。
-    当前代码 20 条;设计文档 §3.4 的**完整榜单已扩到 51 条并删掉了 Meta**,两边暂时不一致,**下次动代码时同步**。
+  - `REAL_MODELS` — 真实模型锚点生成物(**51 条**),由 `python sync_models.py --write` 从设计文档 §3.1 生成,**勿手改**。
   - `ctxK()` / `tokPerSec()` / `cutoffMonths()` / `modelCapability(a)` — 四组派生量公式(与属性值互逆)。
   - `modelToAttrs(m)` / `modelCapabilityOf(m)` — 真实模型 → 等效属性(用于雷达图叠影与距离计算)。
   - `closestModel(a)` — 7 维加权距离 + 2 个硬门槛(知识截止、模态档位),返回"最接近的真实模型"与相似度。
