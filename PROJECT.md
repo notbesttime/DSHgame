@@ -128,7 +128,8 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **行走动画**详见上方"中转站行走动画"章节;相关入口 `relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`、`updateWalkerAI`、`makeWalkFrames`。
 - **代码里已落地的算法最小集**(在 `// ========== 中转站模型养成(设计草案) ==========` 注释块内,改数值只改这里):
   - `ATTR_KEYS` / `ATTR_NAMES` — 9 项基础属性(推理/知识/长上下文/速度/多模态/指令遵循/工具调用/拟合/参数)。
-  - `REAL_MODELS` — 20 条真实模型锚点(能力/上下文/知识截止/多模态档/工具调用/官方价),来源见设计文档 3.2。
+  - `REAL_MODELS` — 真实模型锚点(能力/上下文/知识截止/多模态档/工具调用/官方价),来源见设计文档 3.2。
+    当前代码 20 条;设计文档 §3.4 的**完整榜单已扩到 51 条并删掉了 Meta**,两边暂时不一致,**下次动代码时同步**。
   - `ctxK()` / `tokPerSec()` / `cutoffMonths()` / `modelCapability(a)` — 四组派生量公式(与属性值互逆)。
   - `modelToAttrs(m)` / `modelCapabilityOf(m)` — 真实模型 → 等效属性(用于雷达图叠影与距离计算)。
   - `closestModel(a)` — 7 维加权距离 + 2 个硬门槛(知识截止、模态档位),返回"最接近的真实模型"与相似度。
