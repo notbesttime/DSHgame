@@ -29,6 +29,8 @@ BACKGROUNDS = {
     'bg_light.jpg': 82,
     'placeholder.jpg': 85,
     'transfer_bg.jpg': 82,
+    # tune_bg 目前只存在于 compressed_webp/raw;若以后放进 compressed/ 再启用这一行
+    # 'tune_bg.png': 85,
 }
 
 for name, (max_edge, q) in TARGETS.items():

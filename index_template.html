@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -100,7 +100,11 @@ const tweens = [];
 function tween(target, delta, duration, onComplete) {
   const start = {};
   for (const k in delta) start[k] = target[k];
-  tweens.push({ target, start, delta, duration, elapsed: 0, onComplete });
+  const tw = { target, start, delta, duration, elapsed: 0, onComplete };
+  // target 自身的 expando(如雷达 scale 上的 __radar 标记)透传给补间记录,radarTicker 靠它找进度
+  for (const k in target) if (!(k in tw)) tw[k] = target[k];
+  tweens.push(tw);
+  return tw;
 }
 function updateTweens(dt) {
   for (let i = tweens.length - 1; i >= 0; i--) {
@@ -933,14 +937,17 @@ purchaseBtn.on('pointerdown', () => {
 addPressFeedback(purchaseBtn);
 
 // ==================== 底部标签栏(生产 / 中转站 / 调教) ====================
-// 标签是**收拢成一组**的:layoutNavTabs() 只对「当前可见」的标签算位置,
-// 所以中转站没解锁时不会在中间留一个空位。
+// 标签是**收拢成一组**的:layoutNavTabs() 只对「当前可见」的标签算位置。
+// 中转站 2026-09-11 起常显:没买服务器也展示,点击只提示"暂未解锁"(见 switchScene)。
 const TABS = [
   { key: 'production', label: '生产', on: 0x6a3a2a, off: 0x2a1f16 },
   { key: 'relay', label: '中转站', on: 0x9a5a3a, off: 0x6a3a2a },
   { key: 'tune', label: '调教', on: 0x9a5a3a, off: 0x6a3a2a },
 ];
 let navScene = 'production';
+let relayHint = null;   // 「中转站暂未解锁」提示条引用(连点不叠加)
+let lbDebug = false;    // 调试模式(/admodel 回车切换):开启后点行进编辑器、显示已改标记
+let searchHitIdx = -1;  // 搜索跳转后常驻的蓝框行下标(移动鼠标后清除)
 for (const t of TABS) {
   t.container = new PIXI.Container();
   t.bg = new PIXI.Graphics();
@@ -953,8 +960,8 @@ for (const t of TABS) {
   t.container.on('pointerdown', () => switchScene(t.key));
 }
 const tabOf = (key) => TABS.find(t => t.key === key);
-// 中转站:购买服务器后解锁;调教:一直显示(训练系统设计中,见 中转站设计.md 第10节)
-tabOf('relay').container.visible = false;
+// 中转站:常显,未购买服务器时点击只冒提示(旧版整个藏掉,用户根本不知道有这个玩法);
+// 调教:一直显示(训练系统设计中,见 中转站设计.md 第10节)
 
 function layoutNavTabs() {
   const w = 104, h = 42, gap = 18;
@@ -978,7 +985,22 @@ function layoutNavTabs() {
 
 // ---- 场景切换:底部标签,点击切换 ----
 function switchScene(name) {
-  if (name === 'relay' && !tabOf('relay').container.visible) return; // 未解锁,无操作
+  // 中转站常显但未解锁:买了服务器才放行。点击冒提示 —— 原地保持 1.6s 再缓慢淡出
+  // (2026-09-12 用户要求:不要一闪而过;不走浮字池,浮字池是"上飘快消"的动线)
+  if (name === 'relay' && state.machines.server.count <= 0) {
+    const tb = tabOf('relay').container;
+    if (relayHint) { relayHint.destroy(); relayHint = null; }
+    const hint = makeText('暂未解锁 · 购买服务器后开放', { size: 15, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
+    hint.x = tb.x + 52;
+    hint.y = tb.y - 34;
+    floatTexts.addChild(hint);
+    relayHint = hint;
+    setTimeout(() => {
+      if (relayHint !== hint) return;
+      tween(hint, { alpha: 0 }, 1.2, () => { hint.destroy(); relayHint = null; });
+    }, 1600);
+    return;
+  }
   if (name !== 'relay' && relaySceneOpen) closeRelayScene();
   if (name !== 'tune' && tuneSceneOpen) closeTuneScene();
   if (name === 'relay' && !relaySceneOpen) openRelayScene();
@@ -1043,17 +1065,24 @@ const ATTR_NAMES = { reasoning: '推理', knowledge: '知识', longCtx: '长上�
 const ATTR_DESC = {
   reasoning:  '能力的主要来源,权重最高',
   knowledge:  '决定知识截止日期;判能力时给百分比加成',
-  longCtx:    '决定上下文长度(20k ~ 1000k)与记忆力',
-  speed:      '每 1 点 = 2 tokens/s',
+  longCtx:    '决定上下文长度(0k ~ 1000k)与记忆力',
+  speed:      '每 1 点 = 3 tokens/s;受推理约束给能力加分',
   instruct:   '影响能力,也影响站信誉',
   toolCall:   '影响能力,并决定能同时服务的用户上限',
-  multimodal: '10 纯文本 → 40 识图 → 50 视频 → 60 PDF',
+  multimodal: '10 纯文本 → 40 识图 → 50 视频 → 60 PDF;受推理约束给能力加分',
   fit:        '最优 70;过拟合 / 欠拟合都会掉能力',
   params:     '不直接加能力,只放大训练时的收益',
 };
 
-// 能力公式权重(设计文档 2.1):capability = (推理*0.55 + 指令*0.25 + 工具*0.20) * 知识乘区 * 拟合乘区 / 1.25
+// 能力公式权重(设计文档 2.1):capability = (推理*0.55 + 指令*0.25 + 工具*0.20 + 速度/长上下/多模态加权项) * 知识乘区 * 拟合乘区 / 1.25
 const CAP_W = { reasoning: 0.55, instruct: 0.25, toolCall: 0.20 };
+// —— 2026-09-11 用户定稿:速度/长上下文/多模态加分权重(都还要 × 推理/100,见 modelCapability)——
+const CAP_SPEED_W = 0.06;       // 速度:权重相对更小,满值满推理最多 +6
+const CAP_CTX_W_LO = 0.06;      // 长上下文 <60:一个权重
+const CAP_CTX_W_HI = 0.09;      // 长上下文 ≥60:更大,但差距不太多
+const CAP_MM_W_LOW = 0.10;      // 多模态 <40(纯文本):小权重
+const CAP_MM_W_MID = 0.04;      // 多模态 40–60(文图/文图视):最小
+const CAP_MM_W_HIGH = 0.13;     // 多模态 >60(文图视PDF):比 LOW 略高一点
 const CAP_KNOW_RANGE = 0.25;   // 知识乘区 ±25% → 0.75~1.25
 const CAP_FIT_OPT = 70;        // 拟合最优点
 const CAP_FIT_PENALTY = 0.35;  // 两端最大扣 35%
@@ -1068,86 +1097,120 @@ const SIM_SAT = 0.6;           // 加权距离 ≥ 0.6 → 相似度 0
 // ⚠️ 型号、性能、价格均为**虚构设定**,不代表真实产品(见设计文档 §3.1 顶部声明)。
 // 字段含义(顺序不可改,由 sync_models.py 生成):
 //   n 名称 / v 厂商 / t 档位(按厂商内部定位,不代表绝对强度) / k 知识截止(YYYY-MM) / c 上下文(k tokens)
-//   pi 输入价 / po 输出价($/M,兼作后台定价参考) / m 多模态档位(0文本 1图 2视频 3PDF)
+//   pi 输入价 / po 输出价($/M,兼作后台定价参考) / ts AA 实测输出速度(仅调研留痕,不进游戏逻辑)
+//   m 多模态档位(0文本 1图 2视频 3PDF)
 //   tools 工具调用 / cap 能力 / legacy 已退役(退役模型已整行移除,该字段暂无行使用)
 const REAL_MODELS = [
-  { n: 'GPT-6 Astra',              v: 'OpenAI',    t: '旗舰',   k: '2026-04', c: 1050, pi: 10, po: 50, m: 3, tools: 1, cap: 87 },
-  { n: 'Claude Fable 5.1',         v: 'Anthropic', t: '旗舰',   k: '2026-03', c: 1000, pi: 10, po: 50, m: 1, tools: 1, cap: 85 },
-  { n: 'Claude Opus 5',            v: 'Anthropic', t: '旗舰',   k: '2025-12', c: 1000, pi: 5, po: 25, m: 1, tools: 1, cap: 80 },
-  { n: 'GPT-5.6 Sol',              v: 'OpenAI',    t: '旗舰',   k: '2026-01', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 78 },
-  { n: 'Claude Fable 5',           v: 'Anthropic', t: '旗舰',   k: '2026-02', c: 1000, pi: 10, po: 50, m: 1, tools: 1, cap: 76 },
-  { n: 'GPT-5.5',                  v: 'OpenAI',    t: '旗舰',   k: '2025-11', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 73 },
-  { n: 'Claude Sonnet 5',          v: 'Anthropic', t: '中端',   k: '2026-02', c: 1000, pi: 4, po: 20, m: 1, tools: 1, cap: 72 },
-  { n: 'GLM 5.3',                  v: '智谱',        t: '旗舰',   k: '2025-11', c: 1050, pi: 1.4, po: 4.4, m: 0, tools: 1, cap: 68 },
-  { n: 'GPT-5.4',                  v: 'OpenAI',    t: '中端',   k: '2025-10', c: 400, pi: 2, po: 8, m: 1, tools: 1, cap: 67 },
-  { n: 'GPT-5.2',                  v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 66 },
-  { n: 'Gemini 3.1 Pro',           v: 'Google',    t: '旗舰',   k: '2026-01', c: 1000, pi: 2, po: 12, m: 3, tools: 1, cap: 66 },
-  { n: 'Claude Opus 4.8',          v: 'Anthropic', t: '中端',   k: '2025-06', c: 500, pi: 5, po: 25, m: 1, tools: 1, cap: 64 },
-  { n: 'Qwen3.8 Max',              v: '阿里',        t: '旗舰',   k: '2026-02', c: 1000, pi: 2, po: 6, m: 2, tools: 1, cap: 63 },
-  { n: 'Kimi K3',                  v: '月之暗面',      t: '旗舰',   k: '2025-12', c: 1000, pi: 2.8, po: 14, m: 0, tools: 1, cap: 63 },
-  { n: 'GPT-5.6 Terra',            v: 'OpenAI',    t: '中端',   k: '2026-01', c: 1000, pi: 2, po: 8, m: 1, tools: 1, cap: 62 },
-  { n: 'DeepSeek V4.1 Flash',      v: 'DeepSeek',  t: '旗舰',   k: '2025-10', c: 1000, pi: 0.15, po: 0.60, m: 1, tools: 1, cap: 62 },
-  { n: 'Seed 2.0 Pro',             v: '字节',        t: '旗舰',   k: '2025-06', c: 256, pi: 0.4, po: 1.2, m: 2, tools: 1, cap: 61 },
-  { n: 'Gemini 3.8 Flash',         v: 'Google',    t: '轻量',   k: '2026-03', c: 1050, pi: 0.75, po: 3.75, m: 3, tools: 1, cap: 61 },
-  { n: 'GPT-5',                    v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 60 },
-  { n: 'Grok 4.6',                 v: 'xAI',       t: '旗舰',   k: '2025-11', c: 500, pi: 2, po: 6, m: 1, tools: 1, cap: 60 },
-  { n: 'DeepSeek V4 Pro',          v: 'DeepSeek',  t: '中端',   k: '2025-10', c: 1000, pi: 0.6, po: 2.4, m: 0, tools: 1, cap: 59 },
-  { n: 'Gemini 3.7 Flash',         v: 'Google',    t: '轻量',   k: '2026-02', c: 1050, pi: 0.5, po: 2, m: 3, tools: 1, cap: 58 },
-  { n: 'Qwen3.7 Max',              v: '阿里',        t: '中端',   k: '2025-10', c: 1000, pi: 1.2, po: 4, m: 2, tools: 1, cap: 57 },
-  { n: 'Kimi K2.7 Code',           v: '月之暗面',      t: '中端',   k: '2025-11', c: 256, pi: 1.5, po: 6, m: 0, tools: 1, cap: 57 },
-  { n: 'Kimi K2.6',                v: '月之暗面',      t: '中端',   k: '2025-08', c: 256, pi: 0.5, po: 2, m: 0, tools: 1, cap: 56 },
-  { n: 'Hunyuan Hy4',              v: '腾讯',        t: '旗舰',   k: '2025-11', c: 256, pi: 0.8, po: 3, m: 1, tools: 1, cap: 56 },
-  { n: 'Gemini 3.6 Flash',         v: 'Google',    t: '轻量',   k: '2026-01', c: 1000, pi: 0.4, po: 1.6, m: 2, tools: 1, cap: 55 },
-  { n: 'Grok 4.5',                 v: 'xAI',       t: '中端',   k: '2025-08', c: 500, pi: 2, po: 6, m: 1, tools: 1, cap: 54 },
-  { n: 'Gemini 3.5 Flash',         v: 'Google',    t: '轻量',   k: '2025-12', c: 1000, pi: 0.5, po: 2, m: 2, tools: 1, cap: 52 },
-  { n: 'MiniMax M3',               v: 'MiniMax',   t: '旗舰',   k: '2025-11', c: 1000, pi: 0.3, po: 1.2, m: 2, tools: 1, cap: 51 },
-  { n: 'DeepSeek V4 Flash Vision', v: 'DeepSeek',  t: '轻量',   k: '2025-10', c: 1000, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 50 },
-  { n: 'Seed 2.1 Pro',             v: '字节',        t: '中端',   k: '2025-10', c: 256, pi: 0.5, po: 1.5, m: 1, tools: 1, cap: 49 },
-  { n: 'GLM 5.2',                  v: '智谱',        t: '中端',   k: '2025-08', c: 1050, pi: 1, po: 3.2, m: 0, tools: 1, cap: 48 },
-  { n: 'GPT-5 mini',               v: 'OpenAI',    t: '轻量',   k: '2025-08', c: 400, pi: 0.5, po: 2, m: 1, tools: 1, cap: 48 },
-  { n: 'Seed 2.0 Lite',            v: '字节',        t: '轻量',   k: '2025-06', c: 256, pi: 0.05, po: 0.2, m: 0, tools: 1, cap: 46 },
-  { n: 'MiniMax M2.5',             v: 'MiniMax',   t: '中端',   k: '2025-06', c: 1000, pi: 0.5, po: 2, m: 1, tools: 1, cap: 45 },
-  { n: 'GPT-5.4 Mini',             v: 'OpenAI',    t: '轻量',   k: '2025-10', c: 400, pi: 0.25, po: 1, m: 1, tools: 1, cap: 45 },
-  { n: 'Qwen3.8 Flash',            v: '阿里',        t: '轻量',   k: '2026-01', c: 1000, pi: 0.15, po: 0.47, m: 2, tools: 1, cap: 44 },
-  { n: 'Hunyuan Hy3',              v: '腾讯',        t: '中端',   k: '2025-09', c: 256, pi: 0.3, po: 1.2, m: 1, tools: 1, cap: 43 },
-  { n: 'Qwen3.8-27B',              v: '阿里',        t: '轻量',   k: '2026-02', c: 256, pi: 0.3, po: 1.2, m: 1, tools: 1, cap: 42 },
-  { n: 'Qwen3.7 Flash',            v: '阿里',        t: '轻量',   k: '2025-10', c: 1000, pi: 0.1, po: 0.3, m: 1, tools: 1, cap: 41 },
-  { n: 'Qwen3.6-27B',              v: '阿里',        t: '轻量',   k: '2025-06', c: 128, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 40 },
-  { n: 'GLM 5.1',                  v: '智谱',        t: '中端',   k: '2025-04', c: 400, pi: 0.5, po: 1.6, m: 0, tools: 1, cap: 40 },
-  { n: 'Seed 2.1 Turbo',           v: '字节',        t: '中端',   k: '2025-10', c: 262, pi: 0.5, po: 2.5, m: 0, tools: 1, cap: 39 },
-  { n: 'Gemma 4 31B',              v: 'Google',    t: '轻量',   k: '2026-01', c: 128, pi: 0.1, po: 0.4, m: 1, tools: 1, cap: 39 },
-  { n: 'GLM 5.3 Flash',            v: '智谱',        t: '轻量',   k: '2025-11', c: 1050, pi: 0.15, po: 0.50, m: 0, tools: 1, cap: 38 },
-  { n: 'ERNIE 5.1',                v: '百度',        t: '旗舰',   k: '2025-09', c: 128, pi: 0.4, po: 1.6, m: 1, tools: 1, cap: 38 },
-  { n: 'MiMo V2.5',                v: '小米',        t: '旗舰',   k: '2025-09', c: 256, pi: 0.2, po: 0.8, m: 0, tools: 1, cap: 37 },
-  { n: 'openPangu 2.0 Flash',      v: '华为',        t: '轻量',   k: '2025-08', c: 128, pi: 0.15, po: 0.6, m: 0, tools: 0, cap: 36 },
-  { n: 'Agnes 2.5 Pro',            v: 'Agnes',     t: '旗舰',   k: '2025-07', c: 128, pi: 0.8, po: 3, m: 1, tools: 1, cap: 36 },
-  { n: 'SenseNova 6.8 Flash Lite', v: '商汤',        t: '轻量',   k: '2025-07', c: 256, pi: 0.1, po: 0.4, m: 1, tools: 1, cap: 35 },
-  { n: 'Step 3.7 Flash',           v: '阶跃星辰',      t: '轻量',   k: '2025-08', c: 128, pi: 0.1, po: 0.4, m: 0, tools: 1, cap: 34 },
-  { n: 'GPT-5 nano',               v: 'OpenAI',    t: '廉价',   k: '2025-08', c: 400, pi: 0.05, po: 0.2, m: 1, tools: 0, cap: 30 },
-  { n: 'Agnes 2.5 Flash',          v: 'Agnes',     t: '轻量',   k: '2025-07', c: 128, pi: 0.2, po: 0.8, m: 1, tools: 1, cap: 30 },
-  { n: 'Qwen2.5-7B',               v: '阿里',        t: '廉价',   k: '2024-09', c: 32, pi: 0.05, po: 0.2, m: 0, tools: 1, cap: 14 },
-  { n: 'Mistral 7B',               v: 'Mistral',   t: '廉价',   k: '2023-09', c: 8, pi: 0.02, po: 0.05, m: 0, tools: 0, cap: 9 },
+  { n: 'GPT-6 Astra',              v: 'OpenAI',    t: '旗舰',   k: '2026-04', c: 1050, pi: 8.0, po: 24.0, ts: 54, m: 3, tools: 1, cap: 91.9, ax: [92, 81, 100, 100, 65, 87, 80, 79, 83],  },
+  { n: 'Claude Fable 5.1',         v: 'Anthropic', t: '旗舰',   k: '2026-03', c: 1000, pi: 16.0, po: 48.0, ts: 66, m: 1, tools: 1, cap: 85.5, ax: [90, 77, 100, 22, 60, 85, 75, 79, 82],  },
+  { n: 'Claude Fable 5',           v: 'Anthropic', t: '旗舰',   k: '2026-02', c: 1000, pi: 16.0, po: 48.0, ts: 66, m: 1, tools: 1, cap: 81.4, ax: [88, 73, 100, 22, 60, 76, 78, 78, 73],  },
+  { n: 'Claude Opus 5',            v: 'Anthropic', t: '旗舰',   k: '2025-12', c: 1000, pi: 8.0, po: 24.0, ts: 51, m: 1, tools: 1, cap: 80.9, ax: [85, 66, 100, 17, 60, 80, 78, 78, 77],  },
+  { n: 'GPT-5.6 Sol',              v: 'OpenAI',    t: '旗舰',   k: '2026-01', c: 1000, pi: 6.4, po: 19.2, ts: 57, m: 1, tools: 1, cap: 79.1, ax: [81, 70, 100, 19, 62, 75, 75, 81, 73],  },
+  { n: 'Kimi K3',                  v: '月之暗面',      t: '旗舰',   k: '2025-12', c: 1000, pi: 4.4, po: 13.2, ts: 38, m: 0, tools: 1, cap: 73.1, ax: [79, 66, 100, 13, 53, 77, 75, 76, 62],  },
+  { n: 'GLM 5.3',                  v: '智谱',        t: '旗舰',   k: '2025-11', c: 1050, pi: 1.48, po: 4.44, ts: 60, m: 0, tools: 1, cap: 70.3, ax: [76, 62, 100, 20, 15, 69, 75, 77, 66],  },
+  { n: 'DeepSeek V4.1 Flash',      v: 'DeepSeek',  t: '旗舰',   k: '2025-10', c: 1000, pi: 0.2, po: 0.6, ts: 206, m: 1, tools: 1, cap: 67.8, ax: [75, 58, 100, 69, 70, 77, 70, 74, 37],  },
+  { n: 'Claude Sonnet 5',          v: 'Anthropic', t: '中端',   k: '2026-02', c: 1000, pi: 6.4, po: 19.2, ts: 72, m: 1, tools: 1, cap: 66.8, ax: [80, 73, 100, 24, 48, 70, 80, 73, 31],  },
+  { n: 'Claude Opus 4.8',          v: 'Anthropic', t: '中端',   k: '2025-06', c: 500, pi: 8.0, po: 24.0, ts: 57, m: 1, tools: 1, cap: 66.2, ax: [74, 43, 83, 19, 45, 70, 75, 76, 58],  },
+  { n: 'Grok 4.6',                 v: 'xAI',       t: '旗舰',   k: '2025-11', c: 500, pi: 2.0, po: 6.0, ts: 52, m: 1, tools: 1, cap: 66.1, ax: [68, 62, 83, 17, 68, 61, 75, 76, 59],  },
+  { n: 'Hunyuan Hy4',              v: '腾讯',        t: '旗舰',   k: '2025-11', c: 256, pi: 1.0, po: 3.0, ts: 23, m: 1, tools: 1, cap: 65.6, ax: [75, 62, 67, 19, 10, 70, 70, 76, 55],  },
+  { n: 'GPT-5.6 Terra',            v: 'OpenAI',    t: '中端',   k: '2026-01', c: 1000, pi: 2.6, po: 7.8, ts: 81, m: 1, tools: 1, cap: 64.3, ax: [67, 70, 100, 28, 61, 63, 65, 76, 61],  },
+  { n: 'GLM 5.3 Flash',            v: '智谱',        t: '轻量',   k: '2025-11', c: 1050, pi: 0.16, po: 0.48, ts: 95, m: 0, tools: 1, cap: 64, ax: [71, 62, 100, 32, 68, 62, 77, 74, 39],  },
+  { n: 'Gemini 3.8 Flash',         v: 'Google',    t: '轻量',   k: '2026-03', c: 1050, pi: 1.2, po: 3.6, ts: 267, m: 3, tools: 1, cap: 61.5, ax: [65, 77, 100, 89, 78, 62, 82, 74, 38],  },
+  { n: 'Qwen3.8 Max',              v: '阿里',        t: '旗舰',   k: '2026-02', c: 1000, pi: 2.0, po: 6.0, ts: 38, m: 2, tools: 1, cap: 59, ax: [66, 73, 100, 13, 55, 64, 75, 74, 37],  },
+  { n: 'Qwen3.8 Flash',            v: '阿里',        t: '轻量',   k: '2026-01', c: 1000, pi: 0.16, po: 0.48, ts: 53, m: 2, tools: 1, cap: 57.1, ax: [65, 70, 100, 18, 55, 65, 80, 73, 36],  },
+  { n: 'DeepSeek V4 Pro',          v: 'DeepSeek',  t: '中端',   k: '2025-10', c: 1000, pi: 0.76, po: 2.28, ts: 72, m: 0, tools: 1, cap: 57, ax: [68, 58, 100, 24, 28, 69, 75, 73, 30],  },
+  { n: 'MiMo-X Flash Preview',     v: '小米',        t: '轻量',   k: '2026-08', c: 256, pi: 0.2, po: 0.6, ts: 81, m: 1, tools: 1, cap: 56.5, ax: [50, 95, 67, 27, 45, 48, 75, 75, 25],  },
+  { n: 'GPT-5.5',                  v: 'OpenAI',    t: '旗舰',   k: '2025-11', c: 1000, pi: 6.4, po: 19.2, ts: 84, m: 1, tools: 1, cap: 55.3, ax: [65, 62, 100, 28, 45, 65, 75, 73, 35],  },
+  { n: 'MiMo-X Pro Preview',       v: '小米',        t: '旗舰',   k: '2026-08', c: 256, pi: 0.52, po: 1.56, ts: 45, m: 1, tools: 1, cap: 55, ax: [58, 95, 67, 15, 45, 55, 75, 75, 60],  },
+  { n: 'DeepSeek V4 Flash Vision', v: 'DeepSeek',  t: '轻量',   k: '2025-10', c: 1000, pi: 0.28, po: 0.84, ts: 216, m: 1, tools: 1, cap: 53.5, ax: [63, 58, 100, 72, 45, 67, 75, 73, 29],  },
+  { n: 'GPT-5.4',                  v: 'OpenAI',    t: '中端',   k: '2025-10', c: 400, pi: 2.6, po: 7.8, ts: 132, m: 1, tools: 1, cap: 51, ax: [60, 58, 77, 44, 45, 60, 75, 73, 34],  },
+  { n: 'Gemini 3.7 Flash',         v: 'Google',    t: '轻量',   k: '2026-02', c: 1050, pi: 0.64, po: 1.92, ts: 292, m: 3, tools: 1, cap: 49.4, ax: [52, 73, 100, 97, 65, 62, 75, 73, 33],  },
+  { n: 'Grok 4.5',                 v: 'xAI',       t: '中端',   k: '2025-08', c: 500, pi: 2.0, po: 6.0, ts: 55, m: 1, tools: 1, cap: 48.2, ax: [55, 51, 83, 18, 48, 66, 77, 73, 32],  },
+  { n: 'Qwen3.8-27B',              v: '阿里',        t: '轻量',   k: '2026-02', c: 256, pi: 0.4, po: 1.2, ts: 39, m: 1, tools: 1, cap: 46.4, ax: [52, 73, 67, 13, 48, 65, 75, 72, 27],  },
+  { n: 'GLM 5.2',                  v: '智谱',        t: '中端',   k: '2025-08', c: 1050, pi: 1.08, po: 3.24, ts: 68, m: 0, tools: 1, cap: 46.3, ax: [54, 51, 100, 23, 20, 65, 75, 73, 28],  },
+  { n: 'Gemini 3.6 Flash',         v: 'Google',    t: '轻量',   k: '2026-01', c: 1000, pi: 0.52, po: 1.56, ts: 199, m: 2, tools: 1, cap: 46.1, ax: [47, 70, 100, 66, 65, 60, 75, 73, 28],  },
+  { n: 'Gemini 3.1 Pro',           v: 'Google',    t: '旗舰',   k: '2026-01', c: 1000, pi: 3.8, po: 11.4, ts: 108, m: 3, tools: 1, cap: 45.9, ax: [50, 70, 100, 36, 65, 62, 75, 72, 23],  },
+  { n: 'Seed 2.1 Pro',             v: '字节',        t: '中端',   k: '2025-10', c: 256, pi: 0.48, po: 1.44, ts: 48, m: 1, tools: 1, cap: 44.7, ax: [50, 58, 67, 16, 45, 45, 65, 75, 49],  },
+  { n: 'Seed 2.1 Turbo',           v: '字节',        t: '中端',   k: '2025-10', c: 262, pi: 0.8, po: 2.4, ts: 55, m: 0, tools: 1, cap: 44.7, ax: [49, 58, 67, 18, 48, 55, 70, 74, 40],  },
+  { n: 'GPT-5.4 Mini',             v: 'OpenAI',    t: '轻量',   k: '2025-10', c: 400, pi: 0.32, po: 0.96, ts: 174, m: 1, tools: 1, cap: 44.3, ax: [54, 58, 77, 58, 48, 62, 78, 71, 18],  },
+  { n: 'Qwen3.7 Max',              v: '阿里',        t: '中端',   k: '2025-10', c: 1000, pi: 1.32, po: 3.96, ts: 142, m: 2, tools: 1, cap: 42.8, ax: [48, 58, 100, 47, 55, 66, 75, 72, 22],  },
+  { n: 'Hunyuan Hy3',              v: '腾讯',        t: '中端',   k: '2025-09', c: 256, pi: 0.4, po: 1.2, ts: 106, m: 1, tools: 1, cap: 41.7, ax: [48, 54, 67, 27, 12, 61, 65, 50, 44],  },
+  { n: 'Gemini 3.5 Flash',         v: 'Google',    t: '轻量',   k: '2025-12', c: 1000, pi: 0.64, po: 1.92, ts: 213, m: 2, tools: 1, cap: 40.6, ax: [46, 66, 100, 71, 55, 60, 75, 60, 26],  },
+  { n: 'SenseNova 6.8 Flash Lite', v: '商汤',        t: '轻量',   k: '2025-07', c: 256, pi: 0.12, po: 0.36, ts: 115, m: 1, tools: 1, cap: 38.9, ax: [44, 47, 67, 38, 45, 58, 70, 55, 37],  },
+  { n: 'Kimi K2.7 Code',           v: '月之暗面',      t: '中端',   k: '2025-11', c: 256, pi: 1.96, po: 5.88, ts: 49, m: 0, tools: 1, cap: 36.4, ax: [42, 62, 67, 16, 12, 64, 70, 57, 19],  },
+  { n: 'Kimi K2.6',                v: '月之暗面',      t: '中端',   k: '2025-08', c: 256, pi: 0.64, po: 1.92, ts: 42, m: 0, tools: 1, cap: 33.9, ax: [41, 51, 67, 14, 12, 63, 70, 50, 25],  },
+  { n: 'Gemini 3.5 Flash-Lite',    v: 'Google',    t: '轻量',   k: '2026-07', c: 1000, pi: 0.8, po: 2.4, ts: 346, m: 1, tools: 1, cap: 32.6, ax: [44, 92, 100, 100, 45, 35, 75, 50, 15],  },
+  { n: 'Qwen3.7 Flash',            v: '阿里',        t: '轻量',   k: '2025-10', c: 1000, pi: 0.08, po: 0.24, ts: 67, m: 1, tools: 1, cap: 30.7, ax: [36, 58, 100, 22, 45, 43, 75, 37, 42],  },
+  { n: 'MiniMax M3',               v: 'MiniMax',   t: '旗舰',   k: '2025-11', c: 1000, pi: 0.4, po: 1.2, ts: 87, m: 2, tools: 1, cap: 29, ax: [35, 62, 100, 29, 15, 62, 70, 45, 21],  },
+  { n: 'GPT-5.2',                  v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.64, po: 1.92, ts: 68, m: 1, tools: 1, cap: 27.6, ax: [29, 51, 77, 23, 45, 45, 75, 72, 24],  },
+  { n: 'MiMo V2.5',                v: '小米',        t: '旗舰',   k: '2025-09', c: 256, pi: 0.28, po: 0.84, ts: 52, m: 0, tools: 1, cap: 27.2, ax: [41, 54, 67, 17, 45, 28, 75, 71, 13],  },
+  { n: 'Seed 2.0 Pro',             v: '字节',        t: '旗舰',   k: '2025-06', c: 256, pi: 0.4, po: 1.2, ts: 46, m: 2, tools: 1, cap: 26.2, ax: [18, 43, 67, 15, 55, 24, 75, 25, 60],  },
+  { n: 'GLM 5.1',                  v: '智谱',        t: '中端',   k: '2025-04', c: 400, pi: 0.52, po: 1.56, ts: 69, m: 0, tools: 1, cap: 25.4, ax: [26, 35, 77, 23, 22, 61, 78, 55, 19],  },
+  { n: 'Agnes 2.5 Flash',          v: 'Agnes',     t: '轻量',   k: '2025-07', c: 128, pi: 0.28, po: 0.84, ts: 135, m: 1, tools: 1, cap: 22.9, ax: [19, 47, 51, 61, 45, 48, 50, 73, 32],  },
+  { n: 'Agnes 2.5 Pro',            v: 'Agnes',     t: '旗舰',   k: '2025-07', c: 128, pi: 1.0, po: 3.0, ts: 166, m: 1, tools: 1, cap: 22.1, ax: [22, 47, 51, 55, 51, 54, 60, 72, 20],  },
+  { n: 'openPangu 2.0 Flash',      v: '华为',        t: '轻量',   k: '2025-08', c: 128, pi: 0.2, po: 0.6, ts: 54, m: 0, tools: 0, cap: 22, ax: [14, 51, 51, 18, 10, 30, 12, 65, 37],  },
+  { n: 'ERNIE 5.1',                v: '百度',        t: '旗舰',   k: '2025-09', c: 128, pi: 0.52, po: 1.56, ts: 38, m: 1, tools: 1, cap: 21.1, ax: [15, 54, 51, 13, 45, 30, 75, 50, 39],  },
+  { n: 'Seed 2.0 Lite',            v: '字节',        t: '轻量',   k: '2025-06', c: 256, pi: 0.08, po: 0.24, ts: 58, m: 0, tools: 1, cap: 21, ax: [12, 43, 67, 19, 10, 32, 50, 75, 46],  },
+  { n: 'GPT-5',                    v: 'OpenAI',    t: '中端',   k: '2025-08', c: 400, pi: 0.64, po: 1.92, ts: 85, m: 1, tools: 1, cap: 18.5, ax: [16, 51, 77, 28, 45, 35, 75, 65, 17],  },
+  { n: 'Qwen2.5-7B',               v: '阿里',        t: '廉价',   k: '2024-09', c: 32, pi: 0.08, po: 0.24, ts: 100, m: 0, tools: 1, cap: 16, ax: [17, 9, 24, 33, 10, 17, 75, 71, 18],  },
+  { n: 'MiniMax M2.5',             v: 'MiniMax',   t: '中端',   k: '2025-06', c: 1000, pi: 0.64, po: 1.92, ts: 80, m: 1, tools: 1, cap: 13.5, ax: [15, 43, 100, 27, 45, 15, 75, 71, 16],  },
+  { n: 'Qwen3.6-27B',              v: '阿里',        t: '轻量',   k: '2025-06', c: 128, pi: 0.28, po: 0.84, ts: 56, m: 1, tools: 1, cap: 11, ax: [13, 43, 51, 19, 45, 14, 75, 71, 14],  },
+  { n: 'Step 3.7 Flash',           v: '阶跃星辰',      t: '轻量',   k: '2025-08', c: 128, pi: 0.12, po: 0.36, ts: 100, m: 0, tools: 1, cap: 8.5, ax: [11, 51, 51, 33, 10, 12, 75, 71, 12],  },
+  { n: 'GPT-5 mini',               v: 'OpenAI',    t: '轻量',   k: '2025-08', c: 400, pi: 0.64, po: 1.92, ts: 93, m: 1, tools: 1, cap: 7, ax: [10, 51, 77, 31, 45, 11, 75, 71, 11],  },
+  { n: 'Gemma 4 31B',              v: 'Google',    t: '轻量',   k: '2026-01', c: 128, pi: 0.12, po: 0.36, ts: 35, m: 1, tools: 1, cap: 6, ax: [9, 70, 51, 12, 45, 10, 75, 71, 10],  },
+  { n: 'GPT-5 nano',               v: 'OpenAI',    t: '廉价',   k: '2025-08', c: 400, pi: 0.08, po: 0.24, ts: 138, m: 1, tools: 0, cap: 5, ax: [8, 51, 77, 46, 45, 9, 12, 71, 10],  },
+  { n: 'Mercury 2',                v: 'Inception', t: '廉价',   k: '2026-02', c: 128, pi: 0.24, po: 0.72, ts: 100, m: 0, tools: 0, cap: 4, ax: [7, 73, 51, 33, 10, 8, 12, 70, 9],  },
+  { n: 'Celeris-1',                v: 'Celeris',   t: '廉价',   k: '2026-07', c: 131, pi: 0.24, po: 0.72, ts: 120, m: 1, tools: 0, cap: 3, ax: [6, 92, 51, 40, 45, 7, 12, 70, 8],  },
+  { n: 'Mistral 7B',               v: 'Mistral',   t: '廉价',   k: '2024-07', c: 8, pi: 0.0, po: 0.0, ts: 87, m: 0, tools: 0, cap: 2, ax: [5, 0, 8, 29, 10, 6, 12, 70, 7],  },
 ];
 
 // 属性 → 派生量。三处互逆:ctxK() ↔ 长上下文属性、cutoffMonths() ↔ 知识属性。
-const CTX_MIN_K = 20, CTX_MAX_K = 1000, CTX_RATIO = 50;
+// 上下文区间 0k ~ 1000k(2026-09-11 用户改:原来 20k 起步,8k 的小模型属性被顶死在 0)。
+// 曲线 = 平移对数:x=0 → 恰好 0k、x=100 → 1000k,中高段保持对数手感,严格递增、可精确反解。
+const CTX_MAX_K = 1000, CTX_RATIO = 50;
 const KNOW_M0 = 2024 * 12 + 8;    // 知识=5   → 2024-08
 const KNOW_M1 = 2026 * 12 + 9;    // 知识=100 → 2026-09
-const TOK_PER_SPEED_POINT = 2;
+const TOK_PER_SPEED_POINT = 3;    // 2026-09-11 用户改:1 分 = 3 tok/s(原 2)
 
-function ctxK(longCtx)      { return CTX_MIN_K * Math.pow(CTX_RATIO, longCtx / 100); }
+function ctxK(longCtx)      { return CTX_MAX_K * (Math.pow(CTX_RATIO, longCtx / 100) - 1) / (CTX_RATIO - 1); }
 function tokPerSec(speed)   { return speed * TOK_PER_SPEED_POINT; }
 function cutoffMonths(know) { return KNOW_M0 + (know - 5) * (KNOW_M1 - KNOW_M0) / 95; }
-function monthsStr(m)       { const y = Math.floor(m / 12), mo = Math.round(m % 12) + 1; return y + '-' + (mo < 10 ? '0' : '') + mo; }
+// 月份存的是 年*12 + 月(1~12),不是 0-indexed —— 曾经按 0-indexed 还原,所有日期显示都差一个月
+function monthsStr(m)       { m = Math.round(m); const y = Math.floor((m - 1) / 12), mo = m - y * 12; return y + '-' + (mo < 10 ? '0' : '') + mo; }
+// 长上下文属性 → 上下文 的逆映射(ctxK 的反函数),deriveModelAttrs 用
+function ctxAttr(ctxKv)     { return 100 * Math.log(1 + (CTX_RATIO - 1) * ctxKv / CTX_MAX_K) / Math.log(CTX_RATIO); }
 function modelCapability(a) {
-  const core = a.reasoning * CAP_W.reasoning + a.instruct * CAP_W.instruct + a.toolCall * CAP_W.toolCall;
-  const knowMul = 1 + (a.knowledge - 50) / 200;
+  // 2026-09-11 用户定稿:速度/长上下文/多模态也计入能力,但都以「推理」为闸门 ——
+  // 推理决定这些能力用不用得上:推理 0 时三者一律 0 分,推理 100 时足额给(× reasoning/100)。
+  // 权重都刻意小于主项(CAP_W),加分 = 属性值 × 权重,直接进 core(照样吃知识/拟合乘区)。
+  const gate = a.reasoning / 100;
+  const ctxW = a.longCtx >= 60 ? CAP_CTX_W_HI : CAP_CTX_W_LO;   // 长上下文 60 分两档,高档略大
+  const mmW = a.multimodal > 60 ? CAP_MM_W_HIGH                 // >60(文图视PDF):比 LOW 略高
+    : a.multimodal >= 40 ? CAP_MM_W_MID                          // 40–60(文图/文图视):最小,平台期不给甜头
+    : CAP_MM_W_LOW;                                              // <40(纯文本):小权重
+  const core = a.reasoning * CAP_W.reasoning + a.instruct * CAP_W.instruct + a.toolCall * CAP_W.toolCall
+    + a.speed * CAP_SPEED_W * gate
+    + a.longCtx * ctxW * gate
+    + a.multimodal * mmW * gate;
+  // 知识乘区受推理闸门(2026-09-12 用户定稿):推理越高,知识发挥的倍率越大。
+  // gate = 推理/100:推理 100 时足额 ±25%(与旧公式一致),推理 0 时知识不起作用(倍率恒 1)。
+  const knowMul = 1 + ((a.knowledge - 50) / 200) * (a.reasoning / 100);
   const fitMul = 1 - CAP_FIT_PENALTY * Math.pow(Math.abs(a.fit - CAP_FIT_OPT) / 70, CAP_FIT_EXP);
   return Math.max(0, Math.min(100, core * knowMul * fitMul / CAP_NORM));
 }
 // 真实模型的能力反推成"等效属性",用于雷达图叠影与加权距离(与 modelCapability 同一套公式反解)
-function modelToAttrs(m) {
-  const ao = Math.log(m.c / CTX_MIN_K) / Math.log(CTX_RATIO) * 100;
+function deriveModelAttrs(m) {
+  // §13.11 落地(2026-09-12):模型自带 9 维属性(ax,来自 §3.1 设计属性列,顺序同列:
+  // 推理/知识/长上下/速度/多模态/指令/工具/拟合/参数)时**直接采用**,不再从 cap 硬推;
+  // 没有的行(设计属性 = —)退回下面的 cap 推导。编辑器覆盖在其上合并(见 modelToAttrs)。
+  // ⚠️ 属性由此变为第一手数据:改 §3.1 设计属性列 + --write 即生效,cap/名次不再牵动属性。
+  if (m.ax) {
+    return {
+      reasoning: m.ax[0], knowledge: m.ax[1], longCtx: m.ax[2], speed: m.ax[3],
+      multimodal: m.ax[4], instruct: m.ax[5], toolCall: m.ax[6], fit: m.ax[7], params: m.ax[8],
+    };
+  }
+  const ao = ctxAttr(m.c);   // 0k~1000k 平移对数的逆映射(见 ctxK/ctxAttr 定义处)
   // 知识属性必须能反推回 m.k 的月份(设计文档 §3.3:与 cutoff() 互逆)。
   // 这里曾经写成 `m.k ? 5 : 0` —— m.k 是 'YYYY-MM' 字符串恒为真,于是**每个模型的知识都恒等于 10**,
   // cutoff 恒为 2024-09。后果不只是雷达图难看:closestModel 里「知识不如它新 +0.35」那道门槛
@@ -1156,7 +1219,10 @@ function modelToAttrs(m) {
   const know = 5 + (monthsFromStr(m.k) - KNOW_M0) * 95 / (KNOW_M1 - KNOW_M0);
   return {
     longCtx: Math.max(0, Math.min(100, ao)),
-    speed: Math.max(0, Math.min(100, (m.cap - 5) * 1.6 + 15)),
+    // 速度:锚定 §3.1 的 AA 实测 tok/s(ts / 3,与 tokPerSec 互逆)——2026-09-12 最终定稿。
+    // 这样 cap 重排/任何其它调整都不会再拖动速度(用户要求:不要轻易修改速度属性)。
+    // 能力公式里的速度项(0.06 × 推理闸门)基于此值,单项影响 <1 分。
+    speed: Math.max(0, Math.min(100, m.ts / TOK_PER_SPEED_POINT)),
     knowledge: Math.max(0, Math.min(100, know)),
     multimodal: [10, 45, 55, 65][m.m] || 10,
     toolCall: m.tools ? 75 : 12,
@@ -1168,6 +1234,35 @@ function modelToAttrs(m) {
     fit: Math.min(100, CAP_FIT_OPT + m.cap * 0.10),
     params: Math.min(100, m.cap * 0.90 + 5),
   };
+}
+// 【临时调试】榜单编辑器改数值后的"有效 cap" = 静态设计值 + 覆盖引起的派生能力变化量(Δ)。
+// 用 Δ 而不是直接拿派生值排,是因为两套刻度有系统差(旗舰派生 ~78 vs 设计 cap 87):
+// 直接换刻度会导致"改 1 点属性名次猛跳几位"。Δ 方案:没改的模型顺序与 §3.1 完全一致,
+// 改多少、挪多少,顺手感。REAL_MODELS 数组本身仍不动(closestModel 等不受影响)。
+function effectiveCap(m) {
+  if (!MODEL_ATTR_OVERRIDE[m.n]) return m.cap;
+  const before = modelCapability(deriveModelAttrs(m));
+  const after = modelCapability(modelToAttrs(m));
+  return m.cap + (after - before);
+}
+// 有效知识截止日期:编辑器改了「知识」后,所有显示日期的地方(编辑器左上角、榜单截止列)
+// 都跟着 cutoffMonths() 反推(与知识属性互逆,见 §2.1)。没改过的模型就是表里的静态 m.k。
+function effectiveCutoff(m) {
+  const ov = MODEL_ATTR_OVERRIDE[m.n];
+  if (!ov || ov.knowledge === undefined) return m.k;   // 没改知识 = 表里静态日期(避免钳位反推失真)
+  return monthsStr(cutoffMonths(ov.knowledge));        // 改了 → 按改后的知识反推
+}
+// 榜单显示顺序:按有效 cap 降序(平手按原表序)。每帧排序 56 条,开销可忽略。
+function boardOrder() {
+  return REAL_MODELS
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => (effectiveCap(b.m) - effectiveCap(a.m)) || (a.i - b.i));
+}
+// 【临时调试】合并覆盖值(编辑器手改的等效属性);注意它依赖下方 MODEL_ATTR_OVERRIDE(运行时才取,无初始化顺序问题)
+function modelToAttrs(m) {
+  const a = deriveModelAttrs(m);
+  const ov = MODEL_ATTR_OVERRIDE[m.n];
+  return ov ? Object.assign(a, ov) : a;
 }
 function modelCapabilityOf(m) { return modelCapability(modelToAttrs(m)); }
 
@@ -1187,6 +1282,197 @@ function closestModel(a) {
   return { model: best, distance: bestD, similarity: Math.max(0, Math.round(100 * (1 - bestD / SIM_SAT))) };
 }
 function monthsFromStr(s) { const p = String(s).split('-'); return (+p[0]) * 12 + (+p[1]); }
+
+// ========== 中转站经营 v1(设计文档 §14;拍板见 §14.10) ==========
+// tokens 单池:用户每秒消耗 state.tokens,按定价换成刀乐。1 现实秒 = 1 游戏分钟。
+const RELAY_BIZ = {
+  GAME_MIN_PER_REAL_SEC: 1,   // 1 现实秒 → 1 游戏分钟 → 1/60 游戏时
+  REP_CYCLE_H: 10,            // 信誉结算周期(游戏时)
+  REP_STEP: [0.1, 0.5],       // 单次结算幅度
+  USER_TENURE: [2, 6],        // 新用户存在时长(游戏时);信誉加成 +信誉/50
+  GROW_PCT: [0.05, 0.20],     // 定价有竞争力时的增长比(基于 base)
+  CHEAP_LINE: 0.8,            // ≤ 官方参考价×0.8 → 概率/比例上调(2026-09-12 起无市场价,只对官价)
+  RENEW_LINE: 1.1,            // ≤ 官方参考价×1.1 → 有机会续约
+  ACTIVE_MIN: 0.3, ACTIVE_MAX: 1.0,
+  DOWN_REP_HOURLY: 1,         // 每小时处在服务中断 → 信誉 -1
+};
+
+function blendPriceNum(m) { return (m.pi + m.po * 3) / 4; }
+// 2026-09-12 用户要求:删除「市场价」概念,经营对比只保留官方参考价(blendPrice)。
+// CHEAP_LINE / RENEW_LINE 直接乘官价;旧 marketPriceOf() 已废除。
+function officialPriceOf(m) { return blendPriceNum(m); }
+function findModelByName(n) {
+  if (!n) return null;
+  for (const m of REAL_MODELS) if (m.n === n) return m;
+  return null;
+}
+// 对「某个指定模型」的属性相似度(距离算法同 §4,0~100,不含能力倍率)。
+// ⚠️ 初始属性极弱时 d 很容易 ≥ SIM_SAT(0.6) → 显示 0%:这是「和任何真实模型都完全不像」,
+// 不是 bug。硬门槛(知识截止 +0.35 / 多模态 +0.30)会再叠距离,新手对旗舰几乎必是 0。
+function rawSimilarityTo(a, m) {
+  const ma = modelToAttrs(m);
+  const cutoff = cutoffMonths(a.knowledge);
+  let d = 0;
+  for (const k of ATTR_KEYS) d += SIM_W[k] * Math.abs(a[k] - ma[k]) / 100;
+  if (cutoff < monthsFromStr(m.k) - 3) d += 0.35;
+  if (a.multimodal < ma.multimodal) d += 0.30;
+  return Math.max(0, 100 * (1 - d / SIM_SAT));
+}
+// 能力倍率:我的 cap / 标榜 cap,幂函数软化(§14.11)。
+// 比值 1→1.0  2→~1.32  0.5→~0.76;封顶 1.5、保底 0.4,防极端比值把相似度炸飞或压死。
+function capMulTo(a, m) {
+  const myCap = modelCapability(a);
+  const listCap = Math.max(m.cap, 1);
+  return Math.max(0.4, Math.min(1.5, Math.pow(myCap / listCap, 0.4)));
+}
+// 有效相似度 = 属性相似 × 能力倍率。可 >100(高配低标 / 能力溢出的「灰测」感)。
+// 信誉结算与后台展示都用这个,不再用裸属性距离。
+function similarityTo(a, m) {
+  const raw = rawSimilarityTo(a, m);
+  const mul = capMulTo(a, m);
+  return Math.min(140, raw * mul);
+}
+function relayListedModel() { return findModelByName(state.relay.listedModel); }
+function relayBaseUsers() { return 2 + Math.floor(state.relay.reputation / 25); }
+
+// 每游戏时:续约 + 概率增长。增长基于 base(防复利,§14.5 用户强调)。
+// 价格对比基准 = 官方参考价(2026-09-12 起无市场价)。
+function relayHourlyRefresh() {
+  const R = state.relay;
+  const listed = relayListedModel();
+  const official = listed ? officialPriceOf(listed) : 0;
+  const keep = [];
+  for (const u of R.userSlots) {
+    u.leftH -= 1;
+    if (u.leftH > 0) { keep.push(u); continue; }
+    // 到期:定价不太离谱 + 信誉尚可 → 续约(保持留存,不全靠新增)
+    if (R.price > 0 && official > 0 && R.price <= official * RELAY_BIZ.RENEW_LINE
+        && Math.random() < 0.5 + R.reputation / 200) {
+      keep.push({ leftH: RELAY_BIZ.USER_TENURE[0] + Math.random() * (RELAY_BIZ.USER_TENURE[1] - RELAY_BIZ.USER_TENURE[0] + R.reputation / 50) });
+    }
+  }
+  R.userSlots = keep;
+  // 新增:定价 ≤ 官价×0.8 才触发;概率与比例都随便宜程度上调
+  if (listed && R.price > 0 && official > 0 && R.price <= official * RELAY_BIZ.CHEAP_LINE) {
+    const cheapness = Math.min(1, (official * RELAY_BIZ.CHEAP_LINE - R.price) / (official * RELAY_BIZ.CHEAP_LINE));
+    const p = 0.20 + 0.40 * cheapness;
+    if (Math.random() < p) {
+      const base = relayBaseUsers();
+      const pct = RELAY_BIZ.GROW_PCT[0] + (RELAY_BIZ.GROW_PCT[1] - RELAY_BIZ.GROW_PCT[0]) * cheapness;
+      const add = Math.max(1, Math.round(base * pct));
+      const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + R.reputation / 50;
+      for (let i = 0; i < add; i++) {
+        keep.push({ leftH: tMin + Math.random() * Math.max(0.5, tMax - tMin) });
+      }
+    }
+  }
+  R.users = R.userSlots.length;
+  // 服务中断惩罚
+  if (R.serviceDown) {
+    R.reputation = Math.max(0, R.reputation - RELAY_BIZ.DOWN_REP_HOURLY);
+  }
+}
+
+// 每 10 游戏时:按对标榜模型的相似度结算信誉(§14.4)
+function relayRepSettle() {
+  const R = state.relay;
+  const listed = relayListedModel();
+  if (!listed) return; // 自研不结算
+  const sim = similarityTo(R.ability, listed);
+  const step = RELAY_BIZ.REP_STEP[0] + Math.random() * (RELAY_BIZ.REP_STEP[1] - RELAY_BIZ.REP_STEP[0]);
+  if (sim > 100) {
+    // 高配低标:只升,幅度小
+    R.reputation = Math.min(100, R.reputation + step * 0.4);
+  } else if (sim >= 80) {
+    const pUp = (sim - 80) / 20; // 80→0  100→1,越高越易升
+    if (Math.random() < 0.25 + pUp * 0.5) {
+      R.reputation = Math.min(100, R.reputation + step);
+    } else {
+      R.reputation = Math.max(0, R.reputation - step * 0.5);
+    }
+  } else {
+    // <80:主跌,越低越狠
+    const sev = Math.min(1, (80 - sim) / 80);
+    R.reputation = Math.max(0, R.reputation - step * (1 + sev * 2));
+  }
+}
+
+// 主循环每帧调用:时钟 + 卖 token 换刀乐 + 到点触发小时/信誉刷新
+function updateRelayBusiness(dt) {
+  const R = state.relay;
+  const gameHours = dt * (RELAY_BIZ.GAME_MIN_PER_REAL_SEC / 60);
+  R.gameHour = (R.gameHour + gameHours) % 24;
+
+  // 活跃系数随机游走(慢,别每帧乱跳)
+  if (Math.random() < gameHours * 8) {
+    R.activeCoef += (Math.random() - 0.5) * 0.1;
+    R.activeCoef = Math.max(RELAY_BIZ.ACTIVE_MIN, Math.min(RELAY_BIZ.ACTIVE_MAX, R.activeCoef));
+  }
+
+  // 卖出:仅上架且定价 > 0
+  const listed = relayListedModel();
+  if (listed && R.price > 0 && R.users > 0) {
+    const ideal = R.users * R.ability.speed * R.activeCoef;
+    const used = Math.min(ideal, state.tokens);
+    if (used < ideal * 0.5) R.serviceDown = true;
+    else if (used >= ideal * 0.95) R.serviceDown = false;
+    if (used > 0) {
+      state.tokens -= used;
+      R.dollars += used * R.price / 1e6;
+      R.totalTokensSold += used;
+      R.totalDollarsEarned += used * R.price / 1e6;
+    }
+  } else {
+    R.serviceDown = false;
+  }
+
+  // 到点刷新
+  R.hourAccum += gameHours;
+  while (R.hourAccum >= 1) { R.hourAccum -= 1; relayHourlyRefresh(); }
+  R.repAccum += gameHours;
+  while (R.repAccum >= RELAY_BIZ.REP_CYCLE_H) {
+    R.repAccum -= RELAY_BIZ.REP_CYCLE_H;
+    relayRepSettle();
+  }
+
+  // 后台页开着时原地刷新活字(不整页重绘,避免 destroy 开销)
+  if (screenPanelOpen && panelTab === 'backend' && backendLive) {
+    backendLive.dollars.text = '$' + formatNum(R.dollars);
+    backendLive.tokens.text = formatNum(state.tokens);
+    backendLive.rep.text = R.reputation.toFixed(1);
+    backendLive.users.text = String(R.users);
+    backendLive.clock.text = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0');
+    backendLive.rate.text = listed && R.price > 0
+      ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
+      : '未标榜';
+    // 相似度:优先显示「选中行」的,否则显示当前标榜的;≥80 或 >100 绿,否则红
+    // 显示口径 = 有效相似度(属性相似 × 能力倍率);括号里附 raw%,方便看倍率拉了多少
+    let simM = null;
+    if (backendSelIdx >= 0) simM = REAL_MODELS[backendSelIdx];
+    else if (listed) simM = listed;
+    if (simM) {
+      const raw = rawSimilarityTo(R.ability, simM);
+      const mul = capMulTo(R.ability, simM);
+      const eff = similarityTo(R.ability, simM);
+      const tag = (backendSelIdx >= 0 && listed && simM.n !== listed.n) ? '(选中)'
+        : (listed && simM.n === listed.n) ? '(标榜)' : '';
+      backendLive.sim.text = '有效相似 ' + eff.toFixed(0) + '% ' + tag
+        + '  属性' + raw.toFixed(0) + '% ×能力' + mul.toFixed(2) + '×';
+      backendLive.sim.style.fill = (eff >= 80 || eff > 100) ? '#2a7a3a' : '#c05a2a';
+    } else {
+      backendLive.sim.text = '未标榜 · 点下方列表选一个模型';
+      backendLive.sim.style.fill = '#b0a294';
+    }
+  }
+  // 中转站顶栏 HUD(与生产 tokens 同位置,不遮电脑面板)
+  if (relaySceneOpen && relayHudLine1) {
+    const listed2 = relayListedModel();
+    relayHudLine1.text = '$' + formatNum(R.dollars) + '   ·   ' + R.users + ' 人   ·   信誉 ' + R.reputation.toFixed(1);
+    relayHudLine2.text = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0')
+      + (listed2 ? '   ·   标榜 ' + listed2.n : '   ·   未标榜')
+      + (R.serviceDown ? '   ·   ⚠中断' : '');
+  }
+}
 
 // ========== 电脑屏幕面板(点击描边打开) ==========
 const screenPanel = new PIXI.Container();
@@ -1243,7 +1529,8 @@ let panelTab = 'model';
 
 // 「榜单」页的滚动位置(首行下标)与每行高度。只在 panelTab==='leaderboard' 时被读写。
 let boardScroll = 0;
-const BOARD_ROW_H = 26;
+// 行高 26 → 30(用户要求放宽):1280×720 一屏 15 行 → 13 行,滚轮翻页不受影响
+const BOARD_ROW_H = 30;
 
 // 占位容器(顶部栏和左侧栏的占位UI元素)
 const panelPlaceholders = new PIXI.Container();
@@ -1261,6 +1548,24 @@ attrDetailLayer.visible = false;
 screenPanel.addChild(attrDetailLayer);
 let showAttrDetail = false;
 
+// 雷达图"从中心长出来"的开关:只在打开面板 / 切到模型页时播一次,
+// 拖动滑块之类的重绘不会反复重播。drawRadar 消费后置回 false。
+let radarAnim = true;
+
+// ---------- 【临时调试】榜单点行 → 手改该模型的等效属性 ----------
+// 只存本地 localStorage,不进存档、不改 REAL_MODELS(它是 sync_models.py 的生成物);
+// 影响面就一处:modelToAttrs 末尾把覆盖值合并进去 → 雷达图灰影 + 「最接近的模型」跟着变。
+// 要撤掉:删本块 + modelToAttrs 的合并 + 榜单行点击 + drawModelAttrEditor + keydown 里 editingKey 那段。
+// ponytail: 调试工具,只做 0-100 整数 + 本地存,没做撤销/多存档;正式版整块删。
+const MODEL_ATTR_KEY = 'dshgame.modelAttrOverride';
+let MODEL_ATTR_OVERRIDE = {};
+try { MODEL_ATTR_OVERRIDE = JSON.parse(localStorage.getItem(MODEL_ATTR_KEY) || '{}') || {}; }
+catch (e) { MODEL_ATTR_OVERRIDE = {}; }
+let boardPickIdx = -1;   // 正在查看的榜单行(-1 = 无)
+let editingKey = null;   // 正在输入的属性 key(null = 没在输入)
+let editBuf = '';        // 输入缓冲(字符串,提交时转 int)
+let editRef = null;      // { g, t, ... } 当前值框引用:敲键只更新这一个框,不整页重绘
+
 let screenPanelOpen = false;
 
 function openScreenPanel() {
@@ -1268,14 +1573,26 @@ function openScreenPanel() {
   screenPanelOpen = true;
   screenPanel.visible = true;
   screenGlowHit.eventMode = 'none'; // 打开后禁用屏幕点击,避免重复触发
+  radarAnim = true;                 // 每次打开都重新播一次"从中心长出"
   layoutScreenPanel();
 }
 
 function closeScreenPanel() {
   screenPanelOpen = false;
   showAttrDetail = false;
+  backendDetailOpen = false;
+  boardPickIdx = -1;
+  editingKey = null;
   screenPanel.visible = false;
   screenGlowHit.eventMode = 'static'; // 恢复屏幕点击
+  if (typeof ensureLbDom === 'function') {
+    const lbDom = ensureLbDom();
+    lbDom.inp.style.display = 'none';
+    lbDom.drop.style.display = 'none';
+  }
+  if (typeof backendPriceDom === 'function') {
+    backendPriceDom().inp.style.display = 'none';
+  }
 }
 
 function layoutScreenPanel() {
@@ -1333,10 +1650,18 @@ function layoutScreenPanel() {
   panelSideBar.moveTo(px, py + topH);
   panelSideBar.lineTo(px + pw, py + topH);
 
-  // 清空旧占位与旧内容
-  panelPlaceholders.removeChildren();
-  panelContentArea.removeChildren();
-  attrDetailLayer.removeChildren();
+  // 清空旧占位与旧内容。⚠️ 必须 destroy:面板每次重绘都新建一两百个 Text/Graphics,
+  // 只 removeChildren 的话 JS 对象会被 GC,但它们占着的 canvas 纹理不会立刻释放,
+  // 反复改数值就泄漏一堆纹理 → 越用越卡。销毁推迟到下一帧,避免在事件派发途中析构正在派发的对象。
+  const wipeLater = (container) => {
+    const old = container.removeChildren();
+    setTimeout(() => { for (const c of old) if (!c.destroyed) c.destroy({ children: true }); }, 0);
+  };
+  wipeLater(panelPlaceholders);
+  wipeLater(panelContentArea);
+  wipeLater(attrDetailLayer);
+  radarCounters.clear();   // 计数器里引用的 Text 已在上面的销毁队列里
+  editRef = null;
 
   // ===== 顶部栏占位 =====
   // 左侧网站logo(大肥鱼站,新版横排,米色背景和顶部栏融合)
@@ -1377,7 +1702,15 @@ function layoutScreenPanel() {
     item.eventMode = 'static';   // 可点击(见 panelBody 的注释:auto 不参与命中测试)
     item.cursor = 'pointer';
     item.hitArea = new PIXI.Rectangle(sideX - 4, sideY - 4, sideW - 24, 32);
-    item.on('pointerdown', () => { panelTab = tab.key; showAttrDetail = false; layoutScreenPanel(); });
+    item.on('pointerdown', () => {
+      panelTab = tab.key;
+      showAttrDetail = false;
+      backendDetailOpen = false;
+      boardPickIdx = -1;
+      editingKey = null;
+      if (tab.key === 'model') radarAnim = true;   // 切回模型页也重播一次
+      layoutScreenPanel();
+    });
     panelPlaceholders.addChild(item);
 
     // 标签名(用真文字,方便辨认;占位阶段够用)
@@ -1402,21 +1735,47 @@ function layoutScreenPanel() {
   else if (panelTab === 'community')   drawCommunityPage(cx0, cy0, cw, ch);
   else                                 drawBackendPage(cx0, cy0, cw, ch);
 
-  // 数据详情弹层(只在模型页存在)
-  attrDetailLayer.visible = showAttrDetail && panelTab === 'model';
-  if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
+  // 弹层:榜单行点开的是模型属性编辑器(临时调试);模型页是「数据详情」;后台页是经营数据详情
+  attrDetailLayer.visible = boardPickIdx >= 0
+    || (showAttrDetail && panelTab === 'model')
+    || (backendDetailOpen && panelTab === 'backend');
+  if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
+  else if (backendDetailOpen && panelTab === 'backend') drawBackendDetail(px, py, pw, ph);
+  else if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
+
+  // 搜索框 DOM:只在「面板开着 + 榜单页 + 没打开模型面板」显示
+  // (搜索框是 DOM,叠在画布最上层,模型面板开着时不藏会盖在面板上)
+  const lbDom = ensureLbDom();
+  const lbShow = screenPanelOpen && panelTab === 'leaderboard' && boardPickIdx < 0;
+  lbDom.inp.style.display = lbShow ? 'block' : 'none';
+  if (!lbShow) lbDom.drop.style.display = 'none';
+
+  // 价格输入 DOM:只在「面板开着 + 后台页 + 没开数据详情」显示
+  const bp = backendPriceDom();
+  bp.inp.style.display = (screenPanelOpen && panelTab === 'backend' && !backendDetailOpen) ? 'block' : 'none';
 }
 
 // 榜单滚轮:直接挂 DOM wheel,不走 Pixi 的事件系统 ——
 // 面板已占屏 88%×85%,不需要把指针精确停在列表上才响应;也免得再踩一次 Pixi 命中测试的坑。
-// 只在「面板开着 + 当前是榜单页」时生效,其他时候滚轮照旧(生产页本来也没滚动需求)。
+// 只在「面板开着 + 当前是榜单页/后台页」时生效。
 app.view.addEventListener('wheel', (e) => {
-  if (!screenPanelOpen || panelTab !== 'leaderboard') return;
-  const step = e.deltaY > 0 ? 3 : -3;
-  const next = Math.max(0, Math.min(REAL_MODELS.length - 1, boardScroll + step));
-  if (next === boardScroll) return;
-  boardScroll = next;
-  layoutScreenPanel();
+  if (!screenPanelOpen) return;
+  if (panelTab === 'leaderboard') {
+    if (boardPickIdx >= 0) return;   // 编辑器开着时不要滚动背后的榜单
+    searchHitIdx = -1;               // 滚动了就清掉搜索跳转蓝框
+    const step = e.deltaY > 0 ? 3 : -3;
+    const next = Math.max(0, Math.min(REAL_MODELS.length - 1, boardScroll + step));
+    if (next === boardScroll) return;
+    boardScroll = next;
+    layoutScreenPanel();
+  } else if (panelTab === 'backend') {
+    if (backendEditingPrice) return;
+    const step = e.deltaY > 0 ? 3 : -3;
+    const next = Math.max(0, Math.min(REAL_MODELS.length - 1, backendPickScroll + step));
+    if (next === backendPickScroll) return;
+    backendPickScroll = next;
+    layoutScreenPanel();
+  }
 }, { passive: true });
 
 // 面板内容重绘(存档载入/属性变化后调用)
@@ -1459,6 +1818,12 @@ function drawModelPage(x, y, w, h) {
   const scoreVal = makeText(String(Math.round(cap * 10)), { size: Math.min(52, bh * 0.42), color: '#3a2a14', weight: 'bold' });
   scoreVal.x = bx + 16; scoreVal.y = by + bh * 0.30;
   panelContentArea.addChild(scoreVal);
+
+  // cap(0-100 刻度的综合能力值,榜单同款)显示在大数右侧
+  const capTxt = makeText('cap ' + (Math.round(cap * 10) / 10), { size: 16, color: '#6a4a24', weight: 'bold' });
+  capTxt.x = scoreVal.x + scoreVal.width + 14;
+  capTxt.y = scoreVal.y + scoreVal.height - capTxt.height - 2;
+  panelContentArea.addChild(capTxt);
 
   const scoreMeta = makeText(tokPerSec(a.speed).toFixed(1) + ' tok/s · 上下文 ' + Math.round(ctx) + 'k',
     { size: 12, color: '#6a4a24' });
@@ -1599,6 +1964,316 @@ function drawAttrDetail(px, py, pw, ph) {
   });
 }
 
+// ---------- 【临时调试】榜单点行弹出的模型属性编辑器 ----------
+// 用途:直接改某个真实模型的等效属性,实时看雷达图灰影与「最接近的模型」怎么变,方便调数值。
+// 只写 MODEL_ATTR_OVERRIDE(localStorage),**不碰** REAL_MODELS / 存档 / 设计文档。
+// 交互:点数值框 → 输数字(最多 3 位)→ 回车确认 / ESC 取消;数字键只更新那一个框,不整页重绘。
+// ponytail: 纯调试面板,没做撤销栈、没做多模型并排;要上线就把整块连同 MODEL_ATTR_OVERRIDE 删掉。
+function drawModelAttrEditor(px, py, pw, ph) {
+  const m = REAL_MODELS[boardPickIdx];
+  if (!m) { boardPickIdx = -1; return; }
+  const w = app.screen.width, h = app.screen.height;
+
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w, h);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  shade.on('pointerdown', () => { boardPickIdx = -1; editingKey = null; layoutScreenPanel(); });
+  attrDetailLayer.addChild(shade);
+
+  // 卡片与面板内容区**同比例**(用户要求):宽占 pw 的 97%、高占 ph 的 97%(留一点缝透气),
+  // 行高随剩余高度均分 9 行,窗口拉高卡片就跟着拉长,字不会挤。
+  const cw = Math.max(560, Math.min(pw * 0.97, 1120));
+  const headH = 62, footH = 36;
+  const rowH = Math.max(36, Math.floor((ph * 0.97 - headH - footH) / RADAR_KEYS.length));
+  const chh = headH + RADAR_KEYS.length * rowH + footH;
+  const cx = px + (pw - cw) / 2;
+  const cy = py + (ph - chh) / 2;
+  // 右栏(与「模型」页一致的能力评价 + 雷达图)宽度的起点;x 皆相对卡片
+  const rightW = Math.min(380, cw * 0.42);
+  const listW = cw - rightW;
+
+  const card = new PIXI.Graphics();
+  card.lineStyle(1, 0xc4b8a8, 0.9);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRoundedRect(cx, cy, cw, headH, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRect(cx, cy + headH - 12, cw, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  // 编辑器标题显示**当前名次**(有效 cap 排序后),不是原始下标 —— 改数值名次会动,标题跟着真实
+  const rankNow = boardOrder().findIndex((e) => e.i === boardPickIdx) + 1;
+  const title = makeText('第 ' + rankNow + ' 名 · ' + m.n, { size: 20, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 22; title.y = cy + 12;
+  attrDetailLayer.addChild(title);
+
+  // 左上角副标题里的截止日期:编辑器改「知识」后跟着变(effectiveCutoff),不是静态 m.k
+  const meta = makeText(m.v + ' · ' + m.t + ' · cap ' + m.cap + ' · ' + effectiveCutoff(m) + ' · ' + m.c + 'k · $' + m.pi + '/' + m.po,
+    { size: 13, color: '#8a7a68' });
+  meta.x = cx + 22; meta.y = cy + 38;
+  attrDetailLayer.addChild(meta);
+
+  const editable = lbDebug;                    // 调试态可改;玩家态只读查看
+  const tip = makeText(editable ? '点数值框输入 · 回车确认 · ESC 取消 · 临时调试' : '查看模型属性',
+    { size: 12, color: '#b0a294', anchor: 1 });
+  tip.x = cx + cw - 22; tip.y = cy + 24;
+  attrDetailLayer.addChild(tip);
+
+  const cur = modelToAttrs(m);                 // 已含覆盖值
+  const cap = modelCapabilityOf(m);            // 与「模型」页同一把尺子量出来的综合评分
+  const ov = MODEL_ATTR_OVERRIDE[m.n] || {};
+  editRef = null;
+
+  // ---- 右栏:与「模型」页一致的能力评价(综合评分块)+ 9 轴雷达图 ----
+  // 左栏改属性 → 右栏实时反映(modelToAttrs 每次重绘都重新算)。布局参考 artificialanalysis:
+  // 榜单选一个模型 → 看「智能指数 + 分项能力图」。
+  const rx = cx + listW;
+  const bw = rightW * 0.84, bh = chh * 0.24;
+  const bx0 = rx + (rightW - bw) / 2, by0 = cy + headH + 12;
+  const block = new PIXI.Graphics();
+  block.beginFill(0xd4a574, 1);
+  block.drawRoundedRect(bx0, by0, bw, bh, 6);
+  block.endFill();
+  attrDetailLayer.addChild(block);
+
+  const scoreLabel = makeText('综合评分', { size: 13, color: '#6a4a24', weight: 'bold' });
+  scoreLabel.x = bx0 + 16; scoreLabel.y = by0 + 7;
+  attrDetailLayer.addChild(scoreLabel);
+
+  const scoreVal = makeText(String(Math.round(cap * 10)), { size: Math.min(48, bh * 0.5), color: '#3a2a14', weight: 'bold' });
+  scoreVal.x = bx0 + 16; scoreVal.y = by0 + bh * 0.30;
+  attrDetailLayer.addChild(scoreVal);
+
+  // cap(0-100 刻度,与榜单一致;含编辑器覆盖的有效值)显示在大数右侧
+  const capTxt = makeText('cap ' + (Math.round(effectiveCap(m) * 10) / 10), { size: 16, color: '#6a4a24', weight: 'bold' });
+  capTxt.x = scoreVal.x + scoreVal.width + 14;
+  capTxt.y = scoreVal.y + scoreVal.height - capTxt.height - 2;
+  attrDetailLayer.addChild(capTxt);
+
+  const scoreMeta = makeText(tokPerSec(cur.speed).toFixed(1) + ' tok/s · 上下文 ' + Math.round(ctxK(cur.longCtx)) + 'k',
+    { size: 13, color: '#6a4a24' });
+  scoreMeta.x = bx0 + 16; scoreMeta.y = by0 + bh - 24;
+  attrDetailLayer.addChild(scoreMeta);
+
+  // 半径按"评分块下缘 → 页脚上缘"的竖向空间倒推:上下两根轴的标签还要占 r+29
+  const zoneTop = by0 + bh + 14, zoneBottom = cy + chh - footH - 6;
+  const radarR = Math.max(30, Math.min(rightW * 0.36, (zoneBottom - zoneTop - 58) / 2));
+  // 画在右栏下半部;模型页的动画只在「模型」页播(编辑器里 radarAnim 已被消费,不会重播)
+  drawRadar(rx + rightW / 2, zoneTop + 29 + radarR, radarR, cur, null, attrDetailLayer, 12);
+
+  // ---- 左栏:9 项属性的可编辑列表(原样式) ----
+  RADAR_KEYS.forEach((k, i) => {
+    const ry = cy + headH + i * rowH;
+    if (i > 0) {
+      const line = new PIXI.Graphics();
+      line.lineStyle(1, 0xc4b8a8, 0.28);
+      line.moveTo(cx + 20, ry); line.lineTo(cx + listW - 16, ry);
+      attrDetailLayer.addChild(line);
+    }
+    const editing = editingKey === k;
+    const changed = ov[k] !== undefined;
+
+    const nm = makeText(ATTR_NAMES[k], { size: 16, color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 22; nm.y = ry + (rowH - 22) / 2;
+    attrDetailLayer.addChild(nm);
+
+    // 数值框:调试态点一下进入输入态;玩家态只展示数值(不挂事件)
+    const bx = cx + 116, bw2 = 68, bh2 = 26, by = ry + (rowH - bh2) / 2;
+    const box = new PIXI.Graphics();
+    box.lineStyle(editing ? 2 : 1, editing ? 0xe86a3a : 0xc4b8a8, editing ? 1 : 0.8);
+    box.beginFill(editing ? 0xfff0dc : 0xfffaf2, 1);
+    box.drawRoundedRect(bx, by, bw2, bh2, 5);
+    box.endFill();
+    if (editable) {
+      box.eventMode = 'static';
+      box.cursor = 'text';
+      box.hitArea = new PIXI.Rectangle(bx, by, bw2, bh2);
+      box.on('pointerdown', () => {
+        editingKey = k;
+        editBuf = String(Math.round(cur[k]));
+        layoutScreenPanel();
+      });
+    }
+    attrDetailLayer.addChild(box);
+
+    const vt = makeText(editing ? editBuf : String(Math.round(cur[k])),
+      { size: 15, color: editable && changed ? '#c05a2a' : '#3a2f22', weight: 'bold', anchor: 0.5 });
+    vt.x = bx + bw2 / 2; vt.y = by + bh2 / 2;
+    attrDetailLayer.addChild(vt);
+    if (editing) editRef = vt;                  // 敲键只改这一个 Text
+
+    if (editable && changed) {
+      const dot = makeText('已改', { size: 11, color: '#e86a3a' });
+      dot.x = bx + bw2 + 8; dot.y = by + 5;
+      attrDetailLayer.addChild(dot);
+    }
+
+    const desc = makeText(ATTR_DESC[k], { size: 13, color: '#8a7a68' });
+    desc.style.wordWrap = true;
+    desc.style.breakWords = true;
+    desc.style.wordWrapWidth = listW - 220 - 26;
+    desc.x = cx + 220; desc.y = ry + (rowH - desc.height) / 2;
+    attrDetailLayer.addChild(desc);
+  });
+
+  // 左右栏分隔线(画在雷达图之前,别压住内容)
+  const vline = new PIXI.Graphics();
+  vline.lineStyle(1, 0xc4b8a8, 0.4);
+  vline.moveTo(rx - 4, cy + headH + 6);
+  vline.lineTo(rx - 4, cy + chh - footH - 4);
+  attrDetailLayer.addChild(vline);
+
+  if (lbDebug) {   // 调试态专用:已改计数 + 重置/清空/导出/导入/保存到文档(玩家态只读,全部隐藏)
+  // 已改计数挪到页脚中间,别和右栏雷达图/轴标签重叠
+  const cnt = makeText('已改 ' + Object.keys(MODEL_ATTR_OVERRIDE).length + ' 个模型 · 只存在本机浏览器里',
+    { size: 12, color: '#b0a294', anchor: 0.5 });
+  cnt.x = cx + listW + (rightW - 200) / 2 + 40;
+  cnt.y = cy + chh - footH / 2 - 7;
+  attrDetailLayer.addChild(cnt);
+
+  // 页脚:重置本模型 + 清空全部(调试用,免得一个个删)
+  const footY = cy + headH + RADAR_KEYS.length * rowH;
+  const mkBtn = (label, bx, onTap) => {
+    const bw = 108, bh = 26, by = footY + 4;
+    const g = new PIXI.Graphics();
+    g.lineStyle(1, 0xc4b8a8, 0.9);
+    g.beginFill(0xe8e0d4, 1);
+    g.drawRoundedRect(bx, by, bw, bh, 6);
+    g.endFill();
+    g.eventMode = 'static';
+    g.cursor = 'pointer';
+    g.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+    g.on('pointerdown', onTap);
+    attrDetailLayer.addChild(g);
+    const t = makeText(label, { size: 12, color: '#5a4632', weight: 'bold', anchor: 0.5 });
+    t.x = bx + bw / 2; t.y = by + bh / 2;
+    attrDetailLayer.addChild(t);
+  };
+  mkBtn('重置本模型', cx + 22, () => {
+    delete MODEL_ATTR_OVERRIDE[m.n];
+    saveModelOverrides();
+    editingKey = null;
+    layoutScreenPanel();
+  });
+  mkBtn('清空全部', cx + 138, () => {
+    // 清空前自动落一份备份文件 —— 覆盖层一清,没导出的调整就真没了(吃过一次亏)
+    const n = Object.keys(MODEL_ATTR_OVERRIDE).length;
+    if (n) {
+      const blob = new Blob([JSON.stringify(MODEL_ATTR_OVERRIDE, null, 1)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dshgame-adjustments-backup.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+    MODEL_ATTR_OVERRIDE = {};
+    saveModelOverrides();
+    editingKey = null;
+    layoutScreenPanel();
+    if (n) spawnFloatText('已清空(清空前的备份已下载)', cx + 192, footY - 10);
+  });
+  // 调整值只存在浏览器 localStorage 里(不进存档/文件),给个导入导出防丢:
+  // 换浏览器、清缓存、或者让我跑构建测试之前,先「导出」留一份。
+  if (listW >= 520) {
+    // 一键导出:自动下载 dshgame-adjustments.json + 复制到剪贴板(双保险)。
+    // 调整值按"打开方式"隔离在各自的 localStorage 里,换窗口/换浏览器就靠这对按钮搬家。
+    mkBtn('导出调整', cx + 254, () => {
+      const n = Object.keys(MODEL_ATTR_OVERRIDE).length;
+      if (!n) { spawnFloatText('当前没有调整,无需导出', cx + 320, footY - 10); return; }
+      const json = JSON.stringify(MODEL_ATTR_OVERRIDE, null, 1);
+      const blob = new Blob([json], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'dshgame-adjustments.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      try { navigator.clipboard.writeText(JSON.stringify(MODEL_ATTR_OVERRIDE)); } catch (e) { /* file:// 等场景可能拒绝,下载已兜底 */ }
+      spawnFloatText('已下载备份 + 已复制 ' + n + ' 个模型', cx + 320, footY - 10);
+    });
+    // 一键导入:选一个之前导出的 json 文件
+    // 「保存到文档」:把当前覆盖 POST 给本地服务(server.py),自动写进设计文档 §3.1 并重建 ——
+    // 不用再导出/导入。要求用 127.0.0.1:8765 打开且 server.py 在跑;file:// 或服务未启动时走导出兜底。
+    if (listW >= 640) mkBtn('保存到文档', cx + 502, () => {
+      const n = Object.keys(MODEL_ATTR_OVERRIDE).length;
+      if (!n) { spawnFloatText('当前没有调整', cx + 556, footY - 10); return; }
+      spawnFloatText('正在写入设计文档…', cx + 556, footY - 10);
+      // payload 附带有效 cap(__cap)与截止日期(__k):不然属性固化了、cap 会退回静态值(踩过的坑)
+      const payload = {};
+      for (const [name, kv] of Object.entries(MODEL_ATTR_OVERRIDE)) {
+        const m = REAL_MODELS.find((x) => x.n === name);
+        payload[name] = Object.assign({}, kv);
+        if (m) {
+          payload[name].__cap = Math.round(effectiveCap(m) * 10) / 10;
+          payload[name].__k = effectiveCutoff(m);
+        }
+      }
+      fetch('/api/save-overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        .then((r2) => r2.json())
+        .then((j) => {
+          MODEL_ATTR_OVERRIDE = {};
+          saveModelOverrides();
+          editingKey = null;
+          layoutScreenPanel();
+          spawnFloatText('已固化 ' + (j.updated || []).length + ' 个模型,按 F5 刷新读新数据', cx + 556, footY - 10);
+        })
+        .catch(() => spawnFloatText('保存失败:需用 127.0.0.1:8765 打开且 server.py 在跑', cx + 556, footY - 10));
+    });
+    mkBtn('导入调整', cx + 386, () => {
+      const inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = '.json,application/json';
+      inp.onchange = () => {
+        const f = inp.files && inp.files[0];
+        if (!f) return;
+        const rd = new FileReader();
+        rd.onload = () => {
+          try {
+            const obj = JSON.parse(String(rd.result));
+            if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+              MODEL_ATTR_OVERRIDE = obj;
+              saveModelOverrides();
+              editingKey = null;
+              layoutScreenPanel();
+              spawnFloatText('已导入 ' + Object.keys(obj).length + ' 个模型的调整', cx + 452, footY - 10);
+            } else {
+              spawnFloatText('文件内容不是对象', cx + 452, footY - 10);
+            }
+          } catch (e) { spawnFloatText('解析失败:不是合法 JSON', cx + 452, footY - 10); }
+        };
+        rd.readAsText(f);
+      };
+      inp.click();
+    });
+  }
+  }   // if (lbDebug) 闭合(调试按钮整块)
+}
+
+// 【临时调试】覆盖值落盘(键名 MODEL_ATTR_KEY,见定义处)
+function saveModelOverrides() {
+  try { localStorage.setItem(MODEL_ATTR_KEY, JSON.stringify(MODEL_ATTR_OVERRIDE)); } catch (e) { /* 隐私模式等,忽略 */ }
+}
+
+// 【临时调试】提交一次输入:clamp 0-100 整数,写进覆盖表并重绘
+function commitModelAttrEdit() {
+  if (!editingKey || boardPickIdx < 0) return;
+  const m = REAL_MODELS[boardPickIdx];
+  const v = Math.max(0, Math.min(100, parseInt(editBuf || '0', 10) || 0));
+  if (!MODEL_ATTR_OVERRIDE[m.n]) MODEL_ATTR_OVERRIDE[m.n] = {};
+  MODEL_ATTR_OVERRIDE[m.n][editingKey] = v;
+  saveModelOverrides();
+  editingKey = null; editBuf = ''; editRef = null;
+  layoutScreenPanel();
+}
+
 // 雷达图轴序 = 用户定义的全部 9 项基础属性(推理/知识/长上下文/速度/指令遵循/工具调用/多模态/拟合/参数)。
 // 前 7 项是"越高越好"的能力维度(与相似度算法 ATTR_KEYS 同集合,只是显示顺序更靠前);
 // 「拟合」「参数」不是单调属性,放最后并单独处理:
@@ -1606,7 +2281,10 @@ function drawAttrDetail(px, py, pw, ph) {
 //   参数 —— 值本身有意义(放大训练收益),照常画。
 // 轴序变化不影响算法:相似度与叠影对照都是按 key 取值的。
 const RADAR_KEYS = ['reasoning', 'knowledge', 'longCtx', 'speed', 'instruct', 'toolCall', 'multimodal', 'fit', 'params'];
-function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
+function drawRadar(cx, cy, r, myAttrs, theirAttrs, parent, labelSize) {
+  // parent/labelSize 缺省 = 模型页用法;榜单编辑器传 attrDetailLayer + 小号字,把图画进卡片右侧
+  parent = parent || panelContentArea;
+  labelSize = labelSize || 12;
   const n = RADAR_KEYS.length;
   const angle = (i) => -Math.PI / 2 + i * 2 * Math.PI / n;   // 第一条轴朝正上
   const at = (i, v) => {
@@ -1614,6 +2292,7 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
     return [cx + Math.cos(angle(i)) * rr, cy + Math.sin(angle(i)) * rr];
   };
 
+  // 网格与轴线是"边界",完全静止(用户定稿:多边形边界不要动);动的只有内部线圈的范围和数字。
   const grid = new PIXI.Graphics();
   // 5 层同心多边形网格
   for (let lv = 1; lv <= 5; lv++) {
@@ -1632,7 +2311,24 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
     const [ex, ey] = at(i, 100);
     grid.lineTo(ex, ey);
   }
-  panelContentArea.addChild(grid);
+  parent.addChild(grid);
+
+  // ---- 数据层(数据线圈出的范围 + 拟合最优点刻度)从中心长出来 ----
+  // 网格不动,只有这一层做 0→1 的缩放;每帧重画这层 Graphics 太贵,缩放容器最省。
+  const dataLayer = new PIXI.Container();
+  dataLayer.pivot.set(cx, cy);
+  dataLayer.position.set(cx, cy);
+  parent.addChild(dataLayer);
+  if (radarAnim) {
+    dataLayer.scale.set(0.01);
+    // tween 的第二个参数是**增量**:从 0.01 长到 1 要写 0.99,写 1 会停在 1.01。
+    // 打 __radar 标记给 radarTicker 找进度用。
+    dataLayer.scale.__radar = true;
+    tween(dataLayer.scale, { x: 0.99, y: 0.99 }, 0.45);
+    radarCounters.clear();          // 上一次动画的旧 Text 都被清出面板了,计数器一并作废
+    radarCounting = true;
+    radarAnim = false;
+  }
 
   // 单个多边形(叠影对照 / 我的模型共用)
   const polyOf = (attrs, color, alpha, lineW) => {
@@ -1645,7 +2341,7 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
     }
     g.closePath();
     g.endFill();
-    panelContentArea.addChild(g);
+    dataLayer.addChild(g);
   };
   if (theirAttrs) polyOf(theirAttrs, 0x8a8a8a, 0.16, 1);   // 对照:最接近的真实模型(灰)
   polyOf(myAttrs, 0xe86a3a, 0.22, 2);                       // 我的模型(暖橙)
@@ -1658,43 +2354,83 @@ function drawRadar(cx, cy, r, myAttrs, theirAttrs) {
   mk.lineStyle(2, 0x3a8a4a, 1);
   mk.moveTo(ox + Math.cos(perp) * 7, oy + Math.sin(perp) * 7);
   mk.lineTo(ox - Math.cos(perp) * 7, oy - Math.sin(perp) * 7);
-  panelContentArea.addChild(mk);
+  dataLayer.addChild(mk);   // 跟着数据圈一起长出来;下面那行文字留在外面(缩放会把字拉变形)
   const optT = makeText('最优 ' + CAP_FIT_OPT, { size: 10, color: '#3a8a4a', weight: 'bold', anchor: 0.5 });
   optT.x = ox + Math.cos(perp) * 26;
   optT.y = oy + Math.sin(perp) * 26;
-  panelContentArea.addChild(optT);
+  parent.addChild(optT);
 
   // 轴标签 + 数值(9 条轴,全部属性都要能看到值)
   for (let i = 0; i < n; i++) {
     const k = RADAR_KEYS[i];
     const a = angle(i);
-    const t = makeText(ATTR_NAMES[k] + ' ' + Math.round(myAttrs[k]),
-      { size: 12, color: '#2a2118', weight: 'bold' });
+    const label = ATTR_NAMES[k] + ' ';
+    const t = makeText(label + Math.round(myAttrs[k]),
+      { size: labelSize, color: '#2a2118', weight: 'bold' });
     // 左右两侧的标签贴圆外缘对齐(anchor 0/1),避免 9 轴下标签互相压字或压到左侧评分块
     t.anchor.set(Math.cos(a) > 0.2 ? 0 : (Math.cos(a) < -0.2 ? 1 : 0.5), 0.5);
     t.x = cx + Math.cos(a) * (r + 12);
     t.y = cy + Math.sin(a) * (r + 20);
-    panelContentArea.addChild(t);
+    parent.addChild(t);
+    // 数字从 0 滚到当前值(动画期间每帧只改这 9 个 Text 的 text,不重绘面板)
+    radarCounters.set(t, {
+      from: 0, to: Math.round(myAttrs[k]), prefix: label,
+      apply(v) { t.text = this.prefix + v; },
+    });
+  }
+  // 动画进行中才逐帧推进数字;不动了就把计数器清掉,平常一帧的开销为 0
+  if (tweens.some((tw) => tw.target === dataLayer.scale)) radarCounting = true;
+  else if (!tweens.some((t) => t.target && t.target.__radar)) {
+    // 没动画也没补间在跑(非动画重绘):计数器直接定格在目标值,别留下半截状态
+    for (const c of radarCounters.values()) c.apply(c.to);
+    radarCounters.clear();
   }
 }
 
+// 轴标签数字的滚动计数器(drawRadar 注册;radarTicker 每帧消费)
+// key = Text 对象,value = { from, to, prefix, apply(v) }。动画结束统一清空。
+const radarCounters = new Map();
+let radarCounting = false;
+function radarTicker() {
+  if (!radarCounting) return;
+  // 找到还在跑的雷达缩放补间,用它的缓动进度同步数字 —— 图形长多少,数字就滚多少
+  const tw = tweens.find((t) => t.target && t.target.__radar);
+  if (!tw) {
+    radarCounting = false;
+    for (const c of radarCounters.values()) c.apply(c.to);
+    radarCounters.clear();
+    return;
+  }
+  const p = Math.min(tw.elapsed / tw.duration, 1);
+  const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;   // 与 updateTweens 同一条缓动
+  for (const c of radarCounters.values()) c.apply(Math.round(c.from + (c.to - c.from) * e));
+}
+
 // ---------- 内容页:榜单(全部在售模型的数据) ----------
-// 数据源就是 REAL_MODELS(由《中转站设计.md》§3.1 生成),这里只读不写。
+// 数据源就是 REAL_MODELS(由《中转站设计.md》§3.1 生成)。
 // ⚠️ 型号、性能、价格全部是**虚构设定**(设计文档 §3.1 顶部有同样的声明),所以页脚必须带上免责提示。
-// 退役模型已从源表整行移除,所以榜单里不再有灰色行;行数放不下一屏时用 boardScroll 滚轮翻页。
+// 显示顺序 = boardOrder()(有效 cap 降序):编辑器改数值 → 名次实时跟着变(用户要求,方便调榜)。
+// 价格只显示一列(用户要求):入价/出价合并成一个「价$」= 混合价(取入:出 ≈ 1:3 的常用加权),
+// 只是榜单速览用,后台定价仍读 §3.1 的 pi/po 两个字段。
 const BOARD_COLS = [
   // [标题, 从左起算的 x 占比, 取值函数]
   ['#',    0.00, (m, i) => String(i + 1)],
   ['模型', 0.045, (m) => m.n],
-  ['厂商', 0.30, (m) => m.v],
-  ['档位', 0.44, (m) => m.t],
-  ['截止', 0.51, (m) => m.k],
-  ['上下文', 0.60, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
-  // 价格列是给「后台定价」当参考的虚构值,不追求和真实行情一致(用户明确)
-  ['入价$', 0.70, (m) => String(m.pi)],
-  ['出价$', 0.79, (m) => String(m.po)],
-  ['cap',  0.90, (m) => String(m.cap)],
+  ['厂商', 0.29, (m) => m.v],
+  ['档位', 0.42, (m) => m.t],
+  ['截止', 0.49, (m) => effectiveCutoff(m)],   // 编辑器改「知识」后这里跟着变
+  ['上下文', 0.57, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
+  // 游戏内自洽的 tokens/s(速度属性 × 3),不是外部榜单的实测值
+  ['tokens/s', 0.66, (m) => Math.round(m.ts)],   // AA 实测输出速度(与编辑器速度属性×3 一致)
+  ['价$', 0.77, (m) => blendPrice(m)],
+  ['cap',  0.89, (m) => String(Math.round(effectiveCap(m) * 10) / 10)],
 ];
+// 单一参考价($/M tokens):出价为主、入价加权 —— 真实用量里输出 token 通常只有输入的 ~1/3,
+// 但计费上输出贵 3~4 倍,两边占比差不多,取 (pi + po*3) / 4 四舍五入。
+function blendPrice(m) {
+  const v = (m.pi + m.po * 3) / 4;
+  return v >= 10 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
+}
 
 function drawLeaderboardPage(x, y, w, h) {
   const padX = w * 0.04;
@@ -1702,13 +2438,67 @@ function drawLeaderboardPage(x, y, w, h) {
   title.x = x + padX; title.y = y + h * 0.04;
   panelContentArea.addChild(title);
 
-  const sub = makeText('全部 ' + REAL_MODELS.length + ' 个在售模型 · 按综合能力(cap)排序 · 滚轮翻页',
+  const sub = makeText('全部 ' + REAL_MODELS.length + ' 个在售模型 · 按综合能力(cap)排序 · 滚轮翻页'
+    + (lbDebug ? ' · 调试模式:点行编辑/保存' : ' · 点行查看模型属性'),
     { size: 12, color: '#8a7a68' });
   sub.x = x + padX; sub.y = title.y + title.height + 5;
   panelContentArea.addChild(sub);
 
+  // 右上角:导出全榜 CSV(带 BOM,Excel 打开中文不乱码)。数据 = REAL_MODELS 基准值,不含编辑器覆盖。
+  const exp = new PIXI.Graphics();
+  exp.lineStyle(1, 0xc4b8a8, 0.9);
+  exp.beginFill(0xe8e0d4, 1);
+  exp.drawRoundedRect(x + w - 160, y + 4, 150, 26, 8);
+  exp.endFill();
+  exp.eventMode = 'static';
+  exp.cursor = 'pointer';
+  exp.hitArea = new PIXI.Rectangle(x + w - 160, y + 4, 150, 26);
+  exp.on('pointerdown', () => {
+    // 导出"修改后"的数据:属性/截止/cap 取有效值(含编辑器覆盖),另加「手改项」列标明你动了哪些。
+    // 名次按实时排序(tokens/s 列除外,它固定显示 AA 实测原值)。
+    const modalNames = ['文', '文图', '文图视', '文图视PDF'];
+    const head = '名次,模型,厂商,档位,知识截止,上下文(k),tokens/s,价$,cap,模态,工具,'
+      + '推理,知识,长上下文,速度,多模态,指令遵循,工具调用,拟合,参数,手改项';
+    const lines = boardOrder().map((e, i) => {
+      const m = e.m;
+      const a = modelToAttrs(m);                      // 已含覆盖 = 修改后的值
+      const ov = MODEL_ATTR_OVERRIDE[m.n];
+      const dirty = ov ? RADAR_KEYS.filter((k) => ov[k] !== undefined).join('+') : '';
+      return [
+        i + 1, '"' + m.n + '"', '"' + m.v + '"', '"' + m.t + '"', effectiveCutoff(m), m.c,
+        Math.round(m.ts), blendPrice(m), Math.round(effectiveCap(m) * 10) / 10,
+        '"' + (modalNames[m.m] || '文') + '"', m.tools ? '✓' : '✗',
+        Math.round(a.reasoning), Math.round(a.knowledge), Math.round(a.longCtx), Math.round(a.speed),
+        Math.round(a.multimodal), Math.round(a.instruct), Math.round(a.toolCall),
+        Math.round(a.fit), Math.round(a.params),
+        '"' + dirty + '"',
+      ].join(',');
+    });
+    const csv = '\ufeff' + head + '\n' + lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dshgame-leaderboard.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+  panelContentArea.addChild(exp);
+  const expT = makeText('导出全榜 CSV', { size: 12, color: '#5a4632', weight: 'bold', anchor: 0.5 });
+  expT.x = x + w - 85; expT.y = y + 17;
+  panelContentArea.addChild(expT);
+
+  // 搜索框(DOM input 叠在画布上;见 ensureLbDom / handleLbSearch / tryAdmodel)
+  const lbDom = ensureLbDom();
+  const sy = sub.y + sub.height + 6;
+  const sw = Math.min(360, w * 0.4);
+  lbDom.inp.style.left = (x + padX) + 'px';
+  lbDom.inp.style.top = sy + 'px';
+  lbDom.inp.style.width = (sw - 20) + 'px';
+  lbDom.inp.style.display = 'block';
+  lbSearchGeom = { x: x + padX, y: sy + 30, w: sw };
+
   // 表头
-  const headY = sub.y + sub.height + 12;
+  const headY = sy + 36;
   const colW = w - padX * 2;
   const head = new PIXI.Graphics();
   head.beginFill(0xe8e0d4, 1);
@@ -1716,11 +2506,14 @@ function drawLeaderboardPage(x, y, w, h) {
   head.endFill();
   panelContentArea.addChild(head);
   for (const [label, fx] of BOARD_COLS) {
-    const t = makeText(label, { size: 12, color: '#6a5a48', weight: 'bold' });
+    const t = makeText(label, { size: 13, color: '#6a5a48', weight: 'bold' });
     t.x = x + padX + 8 + colW * fx;
     t.y = headY + (BOARD_ROW_H - t.height) / 2;
     panelContentArea.addChild(t);
   }
+
+  // 显示顺序:有效 cap 降序(改数值实时重排)。原始下标跟着行走,点行编辑用它。
+  const ordered = boardOrder();
 
   // 可视行数:表头以下到底部提示文字之上的空间
   const listTop = headY + BOARD_ROW_H + 4;
@@ -1729,8 +2522,12 @@ function drawLeaderboardPage(x, y, w, h) {
   boardScroll = Math.max(0, Math.min(REAL_MODELS.length - maxRows, boardScroll));
   const end = Math.min(REAL_MODELS.length, boardScroll + maxRows);
 
+  // 悬停描边(共享一块,哪行 hover 就挪到哪行;行循环里的事件负责画,这里只创建)
+  const hoverRect = new PIXI.Graphics();
+  hoverRect.visible = false;
+
   for (let i = boardScroll; i < end; i++) {
-    const m = REAL_MODELS[i];
+    const { m, i: srcIdx } = ordered[i];
     const ry = listTop + (i - boardScroll) * BOARD_ROW_H;
     // 斑马纹:奇数行浅色底,长列表横向读的时候不容易串行
     if ((i - boardScroll) % 2 === 1) {
@@ -1744,7 +2541,7 @@ function drawLeaderboardPage(x, y, w, h) {
       const [label, fx, get] = BOARD_COLS[c];
       const isCap = label === 'cap';
       const t = makeText(get(m, i), {
-        size: 12,
+        size: 13,
         color: isCap ? '#c05a2a' : '#3a2f22',
         weight: isCap ? 'bold' : 'normal',
       });
@@ -1752,7 +2549,44 @@ function drawLeaderboardPage(x, y, w, h) {
       t.y = ry + (BOARD_ROW_H - t.height) / 2;
       panelContentArea.addChild(t);
     }
+    // 搜索跳转蓝框:常驻显示,移动鼠标后消失(jumpToModel 设置,一次性 pointermove 清除)
+    if (i === searchHitIdx) {
+      const sh = new PIXI.Graphics();
+      sh.lineStyle(2, 0x7ab8d4, 0.9);
+      sh.drawRoundedRect(x + padX + 1, ry + 1, colW - 2, BOARD_ROW_H - 2, 4);
+      panelContentArea.addChild(sh);
+    }
+    {
+      // 整行点击 → 打开该模型的属性面板(玩家态只读查看;/admodel 调试态可改数值)。
+      // 用透明 Graphics 当热区,比给每段文字都挂事件省事;盖在文字上层才能接到点击。
+      const hit = new PIXI.Graphics();
+      hit.beginFill(0xffffff, 0.001);   // 必须非 0:alpha=0 的 Graphics 仍可命中,但显式给个极小值更稳
+      hit.drawRect(x + padX, ry, colW, BOARD_ROW_H);
+      hit.endFill();
+      hit.eventMode = 'static';
+      hit.cursor = 'pointer';
+      hit.hitArea = new PIXI.Rectangle(x + padX, ry, colW, BOARD_ROW_H);
+      // 悬停高亮:淡蓝描边告诉用户当前选中的是哪一行。
+      // 一块共享的 hoverRect 画在文字层之上、热区之下,谁 hover 谁负责把描边挪到自己位置。
+      hit.on('pointerover', () => {
+        hoverRect.clear();
+        hoverRect.lineStyle(2, 0x7ab8d4, 0.9);       // 淡蓝描边
+        hoverRect.drawRoundedRect(x + padX + 1, ry + 1, colW - 2, BOARD_ROW_H - 2, 4);
+        hoverRect.visible = true;
+      });
+      hit.on('pointerout', () => { hoverRect.visible = false; });
+      hit.on('pointerdown', () => {
+        boardPickIdx = srcIdx;      // 存原始下标,编辑器/覆盖表都按 REAL_MODELS 下标寻址
+        editingKey = null;
+        layoutScreenPanel();
+      });
+      panelContentArea.addChild(hit);
+    }
   }
+
+  // 悬停描边层要盖住斑马纹和文字,又不能挡热区命中 —— 在行循环前声明、循环里 addChild 不到它,
+  // 这里统一插到最上层(热区 alpha≈0 不遮视线,但 hoverRect 必须在文字上面才看得清)。
+  panelContentArea.addChild(hoverRect);
 
   // 底部:左边滚动提示,右边虚构声明(和设计文档 §3.1 顶部那条是同一件事)
   const hint = boardScroll + maxRows >= REAL_MODELS.length
@@ -1765,6 +2599,106 @@ function drawLeaderboardPage(x, y, w, h) {
   const note = makeText('非真实榜单 · 型号与数值均为虚构', { size: 11, color: '#b0a294', anchor: 1 });
   note.x = x + padX + colW; note.y = y + h - 20;
   panelContentArea.addChild(note);
+}
+
+// ---- 榜单搜索框(DOM input 叠在画布上)与 /admodel 调试开关 ----
+// 玩家:输入关键字 → 下拉列出命中模型 → 点击跳转该行并显示蓝框(移动鼠标消失)。
+// 调试:输入 /admodel 回车 → 切换调试态(行可点开编辑器、显示已改标记)。入口不写在任何玩家可见文案里。
+function ensureLbDom() {
+  let inp = document.getElementById('lbSearch');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.id = 'lbSearch';
+    inp.placeholder = '搜索模型 / 厂商…';
+    inp.style.cssText = 'position:fixed;display:none;z-index:20;padding:3px 10px;border-radius:8px;'
+      + 'border:1px solid #c4b8a8;background:#fffaf2;color:#3a2f22;font-size:16px;outline:none;'
+      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+    document.body.appendChild(inp);
+    inp.addEventListener('input', () => handleLbSearch(inp.value));
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        if (!tryAdmodel(inp.value)) {
+          const hits = lbHits(inp.value);
+          if (hits.length) jumpToModel(hits[0].i);
+        }
+      }
+      if (e.key === 'Escape') { inp.value = ''; handleLbSearch(''); inp.blur(); }
+    });
+  }
+  let drop = document.getElementById('lbSearchDrop');
+  if (!drop) {
+    drop = document.createElement('div');
+    drop.id = 'lbSearchDrop';
+    drop.style.cssText = 'position:fixed;display:none;z-index:20;background:#fffaf2;border:1px solid #c4b8a8;'
+      + 'border-radius:8px;max-height:240px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.25);'
+      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+    document.body.appendChild(drop);
+  }
+  return { inp, drop };
+}
+
+function lbHits(v) {
+  v = v.trim().toLowerCase();
+  if (!v) return [];
+  const hits = [];
+  REAL_MODELS.forEach((m, i) => {
+    if (m.n.toLowerCase().includes(v) || m.v.toLowerCase().includes(v)) hits.push({ m, i });
+  });
+  return hits;
+}
+
+function handleLbSearch(v) {
+  const dom = ensureLbDom();
+  const hits = lbHits(v);
+  if (!hits.length) { dom.drop.style.display = 'none'; return; }
+  dom.drop.innerHTML = '';
+  hits.slice(0, 10).forEach(({ m, i }) => {
+    const d = document.createElement('div');
+    d.textContent = (i + 1) + '. ' + m.n + ' · ' + m.v + ' · cap ' + m.cap;
+    d.dataset.i = i;
+    d.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:14px;color:#3a2f22;';
+    d.addEventListener('pointerenter', () => { d.style.background = '#f0e6d8'; });
+    d.addEventListener('pointerleave', () => { d.style.background = ''; });
+    d.addEventListener('click', () => jumpToModel(i));
+    dom.drop.appendChild(d);
+  });
+  if (hits.length > 10) {
+    const d = document.createElement('div');
+    d.textContent = '…共 ' + hits.length + ' 条';
+    d.style.cssText = 'padding:4px 12px;font-size:12px;color:#b0a294;';
+    dom.drop.appendChild(d);
+  }
+  if (lbSearchGeom) {
+    dom.drop.style.left = lbSearchGeom.x + 'px';
+    dom.drop.style.top = lbSearchGeom.y + 'px';
+    dom.drop.style.width = lbSearchGeom.w + 'px';
+  }
+  dom.drop.style.display = 'block';
+}
+
+function jumpToModel(i) {
+  if (!Number.isFinite(i)) return;
+  const dom = ensureLbDom();
+  boardScroll = Math.max(0, Math.min(i - 2, REAL_MODELS.length - 1));
+  searchHitIdx = i;
+  layoutScreenPanel();
+  dom.drop.style.display = 'none';
+  dom.inp.value = '';
+  dom.inp.blur();
+  // 移动鼠标后蓝框消失:一次性 pointermove 监听
+  const clear = () => { searchHitIdx = -1; layoutScreenPanel(); window.removeEventListener('pointermove', clear); };
+  window.addEventListener('pointermove', clear, { once: true });
+}
+
+function tryAdmodel(v) {
+  if (v.trim().toLowerCase() !== '/admodel') return false;
+  lbDebug = !lbDebug;
+  const dom = ensureLbDom();
+  dom.inp.value = '';
+  dom.drop.style.display = 'none';
+  layoutScreenPanel();
+  spawnFloatText(lbDebug ? '调试模式已开启' : '调试模式已关闭', app.screen.width / 2, 90);
+  return true;
 }
 
 // ---------- 内容页:社区(热点报道 + 公告) 占位 ----------
@@ -1788,26 +2722,434 @@ function drawCommunityPage(x, y, w, h) {
   });
 }
 
-// ---------- 内容页:后台(号池 + 定价) 占位 ----------
-// 机制设计见 中转站设计.md 第 6 节;此处只放静态说明文字,未接任何逻辑。
+// ---------- 内容页:后台(经营 v1,设计文档 §14) ----------
+// 顶部资源条 + 标榜/定价;号池三档与热点仍占位。
+let backendLive = null;      // 活字引用(每帧 updateRelayBusiness 原地更新,不整页重绘)
+let backendPickScroll = 0;   // 选型列表滚动
+let backendSelIdx = -1;      // 选型列表中悬停/高亮的行(-1 无)
+let backendPriceBuf = '';    // 价格输入缓冲(空 = 显示当前价)
+let backendEditingPrice = false;
+let backendDetailOpen = false; // 「数据详情」弹层
+
+// 后台「数据详情」的说明文案:信誉 / 用户量 各是什么、怎么涨怎么跌。
+// 和模型页 ATTR_DESC 同一套口语风格,玩家扫一眼就懂。
+const BACKEND_DETAIL_ROWS = [
+  ['信誉', '影响用户续约与新增概率;过低会难涨用户', '↑ 每 10 游戏时:有效相似≥80 结算上升(>100% 只小幅升) · ↓ 有效相似<80 越低越狠 · ↓ 服务中断每小时 -1'],
+  ['用户量', '当前在站付费用户;直接决定 token 消耗与刀乐收入', '↑ 定价≤官方参考价 80% 时按概率新增(基于基础用户量) · ↑ 到期时定价≤官价 110% 且信誉尚可会续约 · ↓ 到期未续约就离开'],
+  ['有效相似', '属性距离相似度 × 能力倍率(我的cap/标榜cap,^0.4 软化);可 >100', '↑ 能力溢出标榜模型(高配低标/「灰测」感)会把倍率拉高 · ↓ 弱很多却标强模型 → 倍率压到 0.4 → 信誉崩'],
+  ['能力倍率', '(我的cap/标榜cap)^0.4,范围约 0.4~1.5;乘进有效相似', '比值 1→1.0  2→约1.32  0.5→约0.76;属性只有 80% 但能力强一倍 → 有效相似约 106%,用户当「变强了」而信任'],
+  ['用户时长', '每个用户在站存活 2~6 游戏时(信誉越高上限越高,+信誉/50)', '到期离开或续约;游戏 1 分 = 现实 1 分钟,2~6 时即 2~6 分钟'],
+  ['服务中断', 'tokens 库存见底时无法供给,收入归零', '↑ 库存回满自动恢复 · ↓ 中断期间每满 1 游戏时信誉 -1'],
+];
+
 function drawBackendPage(x, y, w, h) {
-  const title = makeText('后台', { size: Math.min(32, w * 0.06), color: '#2a2118', weight: 'bold' });
-  title.x = x + w * 0.06; title.y = y + h * 0.05;
+  backendLive = null;
+  const R = state.relay;
+  const listed = relayListedModel();
+  const padX = w * 0.04;
+
+  const title = makeText('后台', { size: Math.min(30, w * 0.055), color: '#2a2118', weight: 'bold' });
+  title.x = x + padX; title.y = y + h * 0.04;
   panelContentArea.addChild(title);
 
-  const lines = [
-    '号池:廉价池(官价×0.25,掉线率高)/ 标准池(×0.45)/ 优质池(×0.80)',
-    '定价三条线:官方价 · 市场价(官价×折扣)· 我的价',
-    '顾客量 = 基础流量 × 能力吸引力(指数1.6) × 价格吸引力(指数0.7) × 声誉因子 × 热点',
-    '人数上限由「工具调用」决定(工具100 → 120 人/天)',
-    '',
-    '—— 待实现,设计见 中转站设计.md 第 6 节 ——',
+  // 右上角「数据详情」(与模型页同款按钮)
+  drawBackendDetailButton(x + w, y);
+
+  const clockStr = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0');
+  const rateStr = (listed && R.price > 0)
+    ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
+    : '未标榜';
+
+  // ===== 资源条(6 格) =====
+  const barY = y + h * 0.12;
+  const barH = h * 0.13;
+  const cols = [
+    ['刀乐', '$' + formatNum(R.dollars), 'dollars', '#c05a2a'],
+    ['tokens 库存', formatNum(state.tokens), 'tokens', '#4a3c2c'],
+    ['信誉', R.reputation.toFixed(1), 'rep', '#4a3c2c'],
+    ['用户量', String(R.users), 'users', '#4a3c2c'],
+    ['游戏时钟', clockStr, 'clock', '#2a5a8a'],
+    ['收益速率', rateStr, 'rate', '#2a7a3a'],
   ];
-  lines.forEach((s, i) => {
-    const t = makeText(s, { size: 14, color: i >= 4 ? '#b0a294' : '#4a3c2c' });
-    t.x = x + w * 0.06; t.y = y + h * 0.18 + i * 28;
-    panelContentArea.addChild(t);
+  backendLive = {};
+  const gap = 6;
+  const colW = (w - padX * 2 - gap * (cols.length - 1)) / cols.length;
+  cols.forEach(([label, val, key, color], i) => {
+    const cx = x + padX + i * (colW + gap);
+    const card = new PIXI.Graphics();
+    card.beginFill(0xe8e0d4, 0.7);
+    card.drawRoundedRect(cx, barY, colW, barH, 6);
+    card.endFill();
+    panelContentArea.addChild(card);
+    const lt = makeText(label, { size: 11, color: '#8a7a68' });
+    lt.x = cx + 8; lt.y = barY + 6;
+    panelContentArea.addChild(lt);
+    const vt = makeText(val, { size: Math.min(18, colW * 0.14), color, weight: 'bold' });
+    vt.x = cx + 8; vt.y = barY + barH * 0.42;
+    panelContentArea.addChild(vt);
+    backendLive[key] = vt;
   });
+
+  // 相似度行:选中行优先,否则当前标榜;≥80 绿 / <80 红。口径 = 有效相似(属性×能力倍率)
+  {
+    let simM = null;
+    if (backendSelIdx >= 0) simM = REAL_MODELS[backendSelIdx];
+    else if (listed) simM = listed;
+    let st;
+    if (simM) {
+      const raw = rawSimilarityTo(R.ability, simM);
+      const mul = capMulTo(R.ability, simM);
+      const sv = similarityTo(R.ability, simM);
+      const tag = (backendSelIdx >= 0 && listed && simM.n !== listed.n) ? '(选中)'
+        : (listed && simM.n === listed.n) ? '(标榜)' : '';
+      st = makeText('有效相似 ' + sv.toFixed(0) + '% ' + tag + '  ·  ' + simM.n
+        + '  ·  属性' + raw.toFixed(0) + '% × 能力' + mul.toFixed(2) + '×',
+        { size: 12, color: (sv >= 80 || sv > 100) ? '#2a7a3a' : '#c05a2a', weight: 'bold' });
+    } else {
+      st = makeText('未标榜 · 点下方列表选一个模型', { size: 12, color: '#b0a294' });
+    }
+    st.x = x + padX; st.y = barY + barH + 4;
+    panelContentArea.addChild(st);
+    backendLive.sim = st;
+  }
+
+  // ===== 标榜信息 / 定价 =====
+  const infoY = y + h * 0.30;
+  if (listed) {
+    const official = officialPriceOf(listed);
+    const rawL = rawSimilarityTo(R.ability, listed);
+    const mulL = capMulTo(R.ability, listed);
+    const simL = similarityTo(R.ability, listed);
+    const lines = [
+      '当前标榜模型:' + listed.n + '  (' + listed.v + ' · ' + listed.t + ' · cap ' + listed.cap + ')',
+      '官方参考价 $' + blendPrice(listed) + ' /M tokens',
+      '我的定价:$' + R.price + ' /M  ·  你的速度属性 ' + R.ability.speed + ' → 每用户 ' + R.ability.speed + ' tok/s',
+      '有效相似 ' + simL.toFixed(0) + '%  =  属性' + rawL.toFixed(0) + '% × 能力' + mulL.toFixed(2)
+        + '×  (我的 cap ' + modelCapability(R.ability).toFixed(1) + ' / 标榜 ' + listed.cap + ')'
+        + (simL >= 80 || simL > 100 ? '  → 偏涨' : '  → 会被发现掺水'),
+    ];
+    if (R.serviceDown) lines.push('⚠ 库存见底 · 服务中断中(每小时信誉 -1)');
+    lines.forEach((s, i) => {
+      const isSimLine = i === 3;
+      const t = makeText(s, {
+        size: 13,
+        color: isSimLine ? ((simL >= 80 || simL > 100) ? '#2a7a3a' : '#c05a2a')
+          : (i >= 4 ? '#c05a2a' : '#4a3c2c'),
+        weight: isSimLine ? 'bold' : 'normal',
+      });
+      t.x = x + padX; t.y = infoY + i * 22;
+      panelContentArea.addChild(t);
+    });
+  } else {
+    const t = makeText('尚未标榜 · 在下方列表点选模型,设好价格后点「标榜上架」', { size: 13, color: '#8a7a68' });
+    t.x = x + padX; t.y = infoY;
+    panelContentArea.addChild(t);
+  }
+
+  // 价格输入(DOM,叠画布)—— 布局末尾统一显隐
+  const priceY = infoY + (listed ? 22 * (R.serviceDown ? 5 : 4) : 22) + 8;
+  const priceLabel = makeText('定价($/M):', { size: 13, color: '#4a3c2c' });
+  priceLabel.x = x + padX; priceLabel.y = priceY + 4;
+  panelContentArea.addChild(priceLabel);
+
+  // 标榜上架 / 下架 按钮
+  const btnY = priceY;
+  const btnW = 100, btnH = 30;
+  const listBtn = new PIXI.Graphics();
+  listBtn.lineStyle(1, 0xc4b8a8, 0.9);
+  listBtn.beginFill(0xd4a574, 1);
+  listBtn.drawRoundedRect(x + w - padX - btnW, btnY, btnW, btnH, 6);
+  listBtn.endFill();
+  listBtn.eventMode = 'static';
+  listBtn.cursor = 'pointer';
+  listBtn.hitArea = new PIXI.Rectangle(x + w - padX - btnW, btnY, btnW, btnH);
+  listBtn.on('pointerdown', () => {
+    if (backendEditingPrice) return;
+    const p = parseFloat(backendPriceDom().inp.value);
+    if (!isFinite(p) || p <= 0) { flashBackendHint('请输入大于 0 的价格'); return; }
+    if (!listed && backendSelIdx < 0) { flashBackendHint('请先在列表里选一个模型'); return; }
+    R.price = Math.round(p * 100) / 100;
+    if (backendSelIdx >= 0) {
+      R.listedModel = REAL_MODELS[backendSelIdx].n;
+    }
+    saveGame();
+    layoutScreenPanel();
+  });
+  panelContentArea.addChild(listBtn);
+  const listBtnT = makeText(listed ? '更新标榜' : '标榜上架', { size: 13, color: '#3a2f22', weight: 'bold', anchor: 0.5 });
+  listBtnT.x = x + w - padX - btnW / 2; listBtnT.y = btnY + btnH / 2;
+  panelContentArea.addChild(listBtnT);
+
+  if (listed) {
+    const delW = 70;
+    const delX = x + w - padX - btnW - 8 - delW;
+    const del = new PIXI.Graphics();
+    del.lineStyle(1, 0xc4b8a8, 0.9);
+    del.beginFill(0xe8e0d4, 1);
+    del.drawRoundedRect(delX, btnY, delW, btnH, 6);
+    del.endFill();
+    del.eventMode = 'static';
+    del.cursor = 'pointer';
+    del.hitArea = new PIXI.Rectangle(delX, btnY, delW, btnH);
+    del.on('pointerdown', () => {
+      if (backendEditingPrice) return;
+      R.listedModel = null;
+      R.price = 0;
+      R.serviceDown = false;
+      saveGame();
+      layoutScreenPanel();
+    });
+    panelContentArea.addChild(del);
+    const delT = makeText('下架', { size: 13, color: '#4a3c2c', anchor: 0.5 });
+    delT.x = delX + delW / 2; delT.y = btnY + btnH / 2;
+    panelContentArea.addChild(delT);
+  }
+
+  // ===== 模型选型列表(点击选中,配合上方按钮标榜) =====
+  const listTitle = makeText('可标榜模型(点击选中 · 按 cap 降序)', { size: 12, color: '#8a7a68' });
+  listTitle.x = x + padX; listTitle.y = btnY + btnH + 14;
+  panelContentArea.addChild(listTitle);
+
+  const listY = listTitle.y + 20;
+  const listH = y + h - listY - 16;
+  const rowH = 26;
+  const maxRows = Math.max(3, Math.floor(listH / rowH));
+  const order = boardOrder();
+
+  backendPickScroll = Math.max(0, Math.min(order.length - 1, backendPickScroll));
+  const hover = new PIXI.Graphics();
+
+  for (let r = 0; r < maxRows; r++) {
+    const oi = backendPickScroll + r;
+    if (oi >= order.length) break;
+    const { m, i: srcIdx } = order[oi];
+    const ry = listY + r * rowH;
+    if (r % 2 === 0) {
+      const zebra = new PIXI.Graphics();
+      zebra.beginFill(0xe8e0d4, 0.35);
+      zebra.drawRect(x + padX, ry, w - padX * 2, rowH);
+      zebra.endFill();
+      panelContentArea.addChild(zebra);
+    }
+    const isSel = srcIdx === backendSelIdx;
+    const isCur = listed && m.n === listed.n;
+    const nameCol = isCur ? '#2a7a3a' : (isSel ? '#c05a2a' : '#2a2118');
+    // 每行右侧:有效相似(选中或当前标榜时高亮颜色)
+    const rowRaw = rawSimilarityTo(R.ability, m);
+    const rowMul = capMulTo(R.ability, m);
+    const rowSim = similarityTo(R.ability, m);
+    const showSim = isSel || isCur;
+    const simCol = rowSim >= 80 || rowSim > 100 ? '#2a7a3a' : '#c05a2a';
+    const parts = [
+      [m.n, 0.00, nameCol],
+      [m.v, 0.30, '#8a7a68'],
+      [m.t, 0.44, '#8a7a68'],
+      ['cap ' + (Math.round(effectiveCap(m) * 10) / 10), 0.52, '#4a3c2c'],
+      ['官 $' + (officialPriceOf(m) >= 10 ? officialPriceOf(m).toFixed(0) : officialPriceOf(m).toFixed(1)), 0.64, '#4a3c2c'],
+    ];
+    if (showSim) parts.push(['相似 ' + rowSim.toFixed(0) + '%(×' + rowMul.toFixed(2) + ')', 0.74, simCol]);
+    if (isCur) parts.push(['● 标榜中', 0.90, '#2a7a3a']);
+    for (const [s, fx, c] of parts) {
+      const t = makeText(s, { size: 12, color: c, weight: (isSel || isCur || showSim) ? 'bold' : 'normal' });
+      t.x = x + padX + 8 + fx * (w - padX * 2 - 16);
+      t.y = ry + 5;
+      panelContentArea.addChild(t);
+    }
+    const hit = new PIXI.Graphics();
+    hit.beginFill(0xffffff, 0.001);
+    hit.drawRect(x + padX, ry, w - padX * 2, rowH);
+    hit.endFill();
+    hit.eventMode = 'static';
+    hit.cursor = 'pointer';
+    hit.hitArea = new PIXI.Rectangle(x + padX, ry, w - padX * 2, rowH);
+    hit.on('pointerover', () => {
+      hover.clear();
+      hover.lineStyle(2, 0x7ab8d4, 0.9);
+      hover.drawRoundedRect(x + padX + 1, ry + 1, w - padX * 2 - 2, rowH - 2, 4);
+      hover.visible = true;
+    });
+    hit.on('pointerout', () => { hover.visible = false; });
+    hit.on('pointerdown', () => {
+      backendSelIdx = srcIdx;
+      const pd = backendPriceDom();
+      if (!isCur) {
+        const op = officialPriceOf(m);
+        pd.inp.value = String(op >= 10 ? Math.round(op) : Math.round(op * 10) / 10);
+      }
+      layoutScreenPanel();
+    });
+    panelContentArea.addChild(hit);
+  }
+  panelContentArea.addChild(hover);
+
+  const hint = backendPickScroll + maxRows >= order.length
+    ? '已到底 · 共 ' + order.length + ' 个'
+    : '↓ 滚轮继续 · ' + (backendPickScroll + maxRows) + ' / ' + order.length;
+  const ht = makeText(hint, { size: 11, color: '#b0a294' });
+  ht.x = x + padX; ht.y = y + h - 12;
+  panelContentArea.addChild(ht);
+
+  // 价格输入框定位到 priceY
+  const pd = backendPriceDom();
+  pd.inp.style.top = (priceY + 2) + 'px';
+  pd.inp.style.left = (x + padX + 96) + 'px';
+  if (!backendEditingPrice) {
+    pd.inp.value = String(R.price > 0 ? R.price
+      : (backendSelIdx >= 0 ? (() => {
+          const op = officialPriceOf(REAL_MODELS[backendSelIdx]);
+          return op >= 10 ? Math.round(op) : Math.round(op * 10) / 10;
+        })() : ''));
+  }
+}
+
+// 后台「数据详情」按钮(与模型页 drawAttrDetailButton 同款样式)
+function drawBackendDetailButton(right, top) {
+  const bw = 108, bh = 30;
+  const bx = right - bw - 16, by = top + 14;
+  const btn = new PIXI.Graphics();
+  btn.lineStyle(1, 0xc4b8a8, 0.9);
+  btn.beginFill(backendDetailOpen ? 0xd4a574 : 0xe8e0d4, 1);
+  btn.drawRoundedRect(bx, by, bw, bh, 8);
+  btn.endFill();
+  drawPaperIcon(btn, bx + 13, by + 8, 14);
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+  btn.on('pointerdown', () => { backendDetailOpen = !backendDetailOpen; layoutScreenPanel(); });
+  panelContentArea.addChild(btn);
+  const label = makeText('数据详情', { size: 12, color: '#5a4632', weight: 'bold' });
+  label.x = bx + 34;
+  label.y = by + (bh - 12) / 2 - 2;
+  panelContentArea.addChild(label);
+}
+
+// 后台数据详情弹层:信誉 / 用户量 / 相似度 / 时长 / 中断 的涨跌说明
+function drawBackendDetail(px, py, pw, ph) {
+  const w = app.screen.width, h = app.screen.height;
+
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w, h);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  shade.on('pointerdown', () => { backendDetailOpen = false; layoutScreenPanel(); });
+  attrDetailLayer.addChild(shade);
+
+  const rows = BACKEND_DETAIL_ROWS;
+  const rowH = 58, headH = 58, footH = 24;
+  const cw = Math.min(pw * 0.86, 780);
+  const chh = headH + rows.length * rowH + footH;
+  const cx = px + (pw - cw) / 2;
+  const cy = py + (ph - chh) / 2;
+
+  const card = new PIXI.Graphics();
+  card.lineStyle(1, 0xc4b8a8, 0.9);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRoundedRect(cx, cy, cw, headH, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRect(cx, cy + headH - 12, cw, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('经营数据详情', { size: 17, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 20; title.y = cy + 17;
+  attrDetailLayer.addChild(title);
+
+  const tip = makeText('点卡片外任意处关闭', { size: 11, color: '#8a7a68' });
+  tip.x = cx + cw - tip.width - 20; tip.y = cy + 21;
+  attrDetailLayer.addChild(tip);
+
+  rows.forEach(([name, what, how], i) => {
+    const ry = cy + headH + i * rowH;
+    if (i > 0) {
+      const line = new PIXI.Graphics();
+      line.lineStyle(1, 0xc4b8a8, 0.28);
+      line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
+      attrDetailLayer.addChild(line);
+    }
+    const nm = makeText(name, { size: 14, color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 10;
+    attrDetailLayer.addChild(nm);
+
+    const wt = makeText(what, { size: 12, color: '#4a3c2c' });
+    wt.style.wordWrap = true;
+    wt.style.breakWords = true;
+    wt.style.wordWrapWidth = cw - 148 - 20;
+    wt.x = cx + 100; wt.y = ry + 8;
+    attrDetailLayer.addChild(wt);
+
+    const ht2 = makeText(how, { size: 11, color: '#8a7a68' });
+    ht2.style.wordWrap = true;
+    ht2.style.breakWords = true;
+    ht2.style.wordWrapWidth = cw - 148 - 20;
+    ht2.x = cx + 100; ht2.y = ry + 32;
+    attrDetailLayer.addChild(ht2);
+  });
+}
+
+// 价格 DOM input(和榜单搜索同一套路:叠画布、按面板开关显隐)
+function backendPriceDom() {
+  let inp = document.getElementById('backendPrice');
+  if (!inp) {
+    inp = document.createElement('input');
+    inp.id = 'backendPrice';
+    inp.placeholder = '0';
+    inp.style.cssText = 'position:fixed;display:none;z-index:20;width:88px;padding:3px 8px;border-radius:8px;'
+      + 'border:1px solid #c4b8a8;background:#fffaf2;color:#3a2f22;font-size:14px;outline:none;'
+      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+    document.body.appendChild(inp);
+    inp.addEventListener('focus', () => { backendEditingPrice = true; });
+    inp.addEventListener('blur', () => { backendEditingPrice = false; });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { inp.blur(); }
+      e.stopPropagation(); // 别把键传给全局(设置面板/编辑器)
+    });
+  }
+  return { inp };
+}
+
+function flashBackendHint(msg) {
+  // 轻提示:改相似度行的文案 1.5s
+  if (!backendLive || !backendLive.sim) return;
+  backendLive.sim.text = msg;
+  backendLive.sim.style.fill = '#c05a2a';
+  setTimeout(() => {
+    if (backendLive && backendLive.sim) layoutScreenPanel();
+  }, 1500);
+}
+
+// ---------- 中转站顶栏 HUD(与生产 tokens 同一位置,盖在 topbar 之上但不进 screenPanel) ----------
+// 面板占屏 88%×85% 会盖到 y≈(1-0.85)/2*h,顶栏区(y=12 起)露在面板上方;
+// HUD 挂在 layers.topbar 最上层,与 tokenLabel 同一套坐标逻辑,不会被 panel 遮住(panel 在 topbar 之下)。
+const relayHud = new PIXI.Container();
+relayHud.visible = false;
+layers.topbar.addChild(relayHud);
+let relayHudLine1 = null, relayHudLine2 = null;
+
+function layoutRelayHud() {
+  const w = app.screen.width;
+  const old = relayHud.removeChildren();
+  setTimeout(() => { for (const c of old) if (!c.destroyed) c.destroy({ children: true }); }, 0);
+  // 与 layoutTopbar 同一几何:居中胶囊,避免和设置按钮(右上角)打架
+  const bw = Math.min(420, w * 0.55);
+  const bh = 52;
+  const x = (w - bw) / 2;
+  const y = 12;
+  const bg = new PIXI.Graphics();
+  roundRect(bg, x, y, bw, bh, 14, 0x2a1f16, 0.78);
+  relayHud.addChild(bg);
+  relayHudLine1 = makeText('', { size: 15, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
+  relayHudLine1.x = w / 2; relayHudLine1.y = y + 18;
+  relayHudLine2 = makeText('', { size: 12, color: '#d4c4a8', anchor: 0.5 });
+  relayHudLine2.x = w / 2; relayHudLine2.y = y + 38;
+  relayHud.addChild(relayHudLine1, relayHudLine2);
 }
 
 // 行走人物(在椅子之前添加,这样椅子在人物上层,有前后层次感)
@@ -2117,12 +3459,14 @@ function openRelayScene() {
   relayScene.visible = true;
   setProductionLayersVisible(false);
   layoutRelayScene();
+  if (relayHud) relayHud.visible = true;
   if (screenPanelOpen) layoutScreenPanel();
 }
 
 function closeRelayScene() {
   relaySceneOpen = false;
   relayScene.visible = false;
+  if (relayHud) relayHud.visible = false;
   if (screenPanelOpen) closeScreenPanel(); // 切回生产时自动关闭电脑面板
   setProductionLayersVisible(true);
   // 立即刷新购买面板(中转站期间token可能增加,按钮状态需同步)
@@ -2131,25 +3475,38 @@ function closeRelayScene() {
 
 // ---- 调教场景(训练系统,UI 占位;设计与接口见 中转站设计.md 第 10 节) ----
 // 训练系统本身尚未实现,这里只把"第三个场景"的位置占住,保证底部标签是均匀三个。
+// 背景:tune_bg(教室黑板,2026-09-12 压入;1920 宽 WebP q85 ≈115KB)。
 const tuneScene = new PIXI.Container();
 tuneScene.visible = false;
 app.stage.addChildAt(tuneScene, app.stage.getChildIndex(layers.topbar));
 let tuneSceneOpen = false;
-const tuneBg = new PIXI.Graphics();
+const tuneBgSprite = PIXI.Sprite.from(ASSETS.tune_bg);
+tuneScene.addChild(tuneBgSprite);
+// 文字可读性:全屏半透明压暗(教室窗光偏亮,标题浮在黑板上方区域)
+const tuneShade = new PIXI.Graphics();
+tuneScene.addChild(tuneShade);
 const tuneTitle = makeText('调教', { size: 28, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
 const tuneHint1 = makeText('训练系统 · 施工中', { size: 18, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
-const tuneHint2 = makeText('设计草案见 中转站设计.md 第 10 节;属性与雷达图见中转站→电脑屏幕→模型', { size: 13, color: '#d4c4a8', anchor: 0.5 });
-tuneScene.addChild(tuneBg, tuneTitle, tuneHint1, tuneHint2);
+const tuneHint2 = makeText('设计草案见 中转站设计.md 第 10 节;属性与雷达图见中转站→电脑屏幕→模型', { size: 13, color: '#e8dcc8', anchor: 0.5 });
+tuneScene.addChild(tuneTitle, tuneHint1, tuneHint2);
 
 function layoutTuneScene() {
   const w = app.screen.width, h = app.screen.height;
-  tuneBg.clear();
-  tuneBg.beginFill(0x14100c, 1);
-  tuneBg.drawRect(0, 0, w, h);
-  tuneBg.endFill();
-  tuneTitle.x = w / 2; tuneTitle.y = h * 0.30;
-  tuneHint1.x = w / 2; tuneHint1.y = h * 0.44;
-  tuneHint2.x = w / 2; tuneHint2.y = h * 0.52;
+  // cover 铺满,与中转站背景同一套(纹理未就绪时用默认尺寸防除零)
+  const tw = tuneBgSprite.texture.width > 1 ? tuneBgSprite.texture.width : 1920;
+  const th = tuneBgSprite.texture.height > 1 ? tuneBgSprite.texture.height : 1081;
+  const s = Math.max(w / tw, h / th);
+  tuneBgSprite.scale.set(s);
+  tuneBgSprite.x = (w - tw * s) / 2;
+  tuneBgSprite.y = (h - th * s) / 2;
+  tuneShade.clear();
+  tuneShade.beginFill(0x0a0806, 0.28);
+  tuneShade.drawRect(0, 0, w, h);
+  tuneShade.endFill();
+  // 文案压在黑板中下部,避开窗光与顶部标语
+  tuneTitle.x = w / 2; tuneTitle.y = h * 0.42;
+  tuneHint1.x = w / 2; tuneHint1.y = h * 0.54;
+  tuneHint2.x = w / 2; tuneHint2.y = h * 0.62;
 }
 
 function openTuneScene() {
@@ -2254,12 +3611,13 @@ function layoutRelayScene() {
 }
 
 function updateRelayTabVisibility() {
-  tabOf('relay').container.visible = state.machines.server.count > 0;
-  if (!tabOf('relay').container.visible && relaySceneOpen) {
+  // 中转站标签 2026-09-11 起常显(未解锁点击只提示,见 switchScene),这里不再管可见性;
+  // 剩下的职责是兜底:万一服务器没了而中转站还开着(读旧档/未来出卖出服务器),把场景拉回生产。
+  if (state.machines.server.count <= 0 && relaySceneOpen) {
     closeRelayScene();
     navScene = 'production';
   }
-  layoutNavTabs(); // 可见标签数量变了,重新均匀分布(位置只在 layoutNavTabs 里算)
+  layoutNavTabs();
 }
 
 // ==================== 顶部信息栏 ====================
@@ -2466,12 +3824,33 @@ function createSlider(x, y, w, value, onChange) {
   return container;
 }
 
-// ESC 打开设置
+// ESC 打开设置(临时调试:榜单属性编辑器在输入时,键盘归它,见 editingKey)
 window.addEventListener('keydown', (e) => {
+  if (editingKey) return;
   if (e.key === 'Escape') {
     if (layers.settings.visible) closeSettings();
     else openSettings();
   }
+});
+
+// 【临时调试】榜单属性编辑器的键盘输入:数字追加、退格、回车提交、ESC 取消。
+// 上面那个 ESC「打开设置」的 handler 开头有 `if (editingKey) return;`,输入时不会误弹设置。
+window.addEventListener('keydown', (e) => {
+  if (!editingKey) return;
+  if (e.key >= '0' && e.key <= '9') {
+    if (editBuf.length < 3) editBuf += e.key;      // 属性上限 100,3 位够了
+  } else if (e.key === 'Backspace') {
+    editBuf = editBuf.slice(0, -1);
+  } else if (e.key === 'Enter') {
+    commitModelAttrEdit(); e.preventDefault(); return;
+  } else if (e.key === 'Escape') {
+    editingKey = null; editBuf = ''; editRef = null;
+    layoutScreenPanel(); e.preventDefault(); return;
+  } else {
+    return;                                         // 其他键不吞,交回给游戏
+  }
+  if (editRef) editRef.text = editBuf || '0';       // 只更新当前框,不整页重绘
+  e.preventDefault();
 });
 
 // ==================== 游戏状态 ====================
@@ -2497,13 +3876,20 @@ const state = {
     miracle: false,
   },
   relay: {
-    // 中转站:模型养成玩法。属性和数值全部待定稿,见 中转站设计.md;
-    // 这里先落一份初值,便于雷达图/最接近模型立刻有东西可显示。
+    // 中转站:模型养成 + 经营 v1。属性见 中转站设计.md §2;经营见 §14(拍板 §14.10)。
     ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,   // 标榜的真实模型名(未上架 = null)
-    price: 0,            // 自定售价(token / 百万 token)
-    pool: 'standard',    // 号池档位
-    reputation: 50,      // 站信誉 0~100
+    price: 0,            // 自定售价(刀乐 / 百万 tokens)
+    pool: 'standard',    // 号池档位(v1 占位)
+    reputation: 1,       // §14 定稿初始 1(旧稿 50 已废)
+    dollars: 0,          // 刀乐
+    users: 2,            // §14 定稿初始 2
+    userSlots: [{ leftH: 2 + Math.random() * 4 }, { leftH: 2 + Math.random() * 4 }], // 每个在站用户剩余小时数
+    activeCoef: 0.65,    // 活跃系数 0.3~1.0 随机游走
+    gameHour: 0,         // 游戏时钟 0~24
+    hourAccum: 0, repAccum: 0,
+    serviceDown: false,  // 库存见底 = 服务中断
+    totalTokensSold: 0, totalDollarsEarned: 0,
   },
   waterCoolingTimer: 0,
   waterCoolingNextTrigger: 10,
@@ -2575,6 +3961,30 @@ function loadGame() {
     if (data.relay && typeof data.relay === 'object') {
       Object.assign(state.relay, data.relay);
       Object.assign(state.relay.ability, data.relay.ability || {});
+      // 经营 v1 迁移:老存档(无 dollars)的 reputation=50 是旧稿初值,按 §14 重置
+      if (data.relay.dollars === undefined) {
+        state.relay.reputation = 1;
+        state.relay.users = 2;
+        state.relay.userSlots = [];
+        state.relay.listedModel = null;
+        state.relay.price = 0;
+        state.relay.dollars = 0;
+        state.relay.activeCoef = 0.65;
+        state.relay.gameHour = 0;
+        state.relay.hourAccum = 0;
+        state.relay.repAccum = 0;
+        state.relay.serviceDown = false;
+        state.relay.totalTokensSold = 0;
+        state.relay.totalDollarsEarned = 0;
+      }
+      if (!Array.isArray(state.relay.userSlots)) state.relay.userSlots = [];
+      // 初始用户:人数按 slots 补齐
+      while (state.relay.userSlots.length < state.relay.users) {
+        state.relay.userSlots.push({ leftH: 2 + Math.random() * 4 });
+      }
+      if (state.relay.userSlots.length > state.relay.users) {
+        state.relay.userSlots.length = state.relay.users;
+      }
     }
     refreshRelayPanel(); // 属性可能变了,刷新雷达图/最接近模型
     recalcProduction();
@@ -2596,12 +4006,20 @@ function resetGame() {
   state.scripts.autoClick = false;
   state.scripts.miracle = false;
   state.relay = {
-    // 中转站:模型养成玩法。属性和数值全部待定稿,见 中转站设计.md
+    // 中转站:模型养成 + 经营 v1。设计文档 §2 / §14。
     ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,
     price: 0,
     pool: 'standard',
-    reputation: 50,
+    reputation: 1,
+    dollars: 0,
+    users: 2,
+    userSlots: [{ leftH: 2 + Math.random() * 4 }, { leftH: 2 + Math.random() * 4 }],
+    activeCoef: 0.65,
+    gameHour: 0,
+    hourAccum: 0, repAccum: 0,
+    serviceDown: false,
+    totalTokensSold: 0, totalDollarsEarned: 0,
   };
   recalcProduction();
   recalcClickPower();
@@ -2627,6 +4045,7 @@ function layoutAll() {
   initPurchasePanel();
   layoutPurchasePanel();
   layoutNavTabs();
+  layoutRelayHud();
   if (relaySceneOpen) layoutRelayScene();
   if (tuneSceneOpen) layoutTuneScene();
   updateTokenDisplay();
@@ -2667,6 +4086,8 @@ app.ticker.add(() => {
   const dt = Math.min((now - lastFrameTime) / 1000, 0.5);
   lastFrameTime = now;
   updateTweens(dt);
+  // 雷达图轴标签数字滚动(只在雷达开启动画的 0.45s 内有活,平时直接 return)
+  radarTicker();
   // 中转站行走人物AI(不受暂停影响)
   updateWalkerAI();
   // 电脑屏幕描边呼吸动画(4s周期:0.4s出现+1.2s保持+0.4s消失+2s等待,悬停常驻)
@@ -2747,6 +4168,9 @@ app.ticker.add(() => {
       saveAccum = 0;
       saveGame();
     }
+
+    // 中转站经营 v1:时钟 + 卖 token 换刀乐 + 小时/信誉刷新(§14;生产中也跑,不依赖场景)
+    updateRelayBusiness(dt);
   }
 });
 
@@ -2779,6 +4203,7 @@ charOpen.texture.on('update', () => { safeRelayout(); });
 pcCase.texture.on('update', () => { safeRelayout(); });
 relayBg.texture.on('update', () => { safeRelayout(); });
 chairSprite.texture.on('update', () => { safeRelayout(); });
+tuneBgSprite.texture.on('update', () => { safeRelayout(); });
 
 window.addEventListener('load', () => { setTimeout(safeRelayout, 0); });
 

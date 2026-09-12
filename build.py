@@ -37,6 +37,7 @@ ASSET_FILES = {
     "walker_sit": ("assets/compressed_webp/walker_sit.webp", "image/webp"),
     "chair_outline": ("assets/compressed_webp/chair_outline.webp", "image/webp"),
     "panel_logo": ("assets/compressed_webp/panel_logo.webp", "image/webp"),
+    "tune_bg": ("assets/compressed_webp/tune_bg.webp", "image/webp"),
 }
 
 DIST_MODE = "--dist" in sys.argv

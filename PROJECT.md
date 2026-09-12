@@ -15,6 +15,8 @@ DSHgame/
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
 │                            **中转站相关的数值与机制一律以这份文档为准**
+├── 社区日报池.md            社区日报文案草稿池(用户改这里;定稿后再进代码 NEWS_POOL)
+├── server.py                本地服务 + POST /api/save-overrides(编辑器「保存到文档」)
 ├── recompress_assets.py   ★ 资产重压缩:compressed/* → compressed_webp/*.webp(PNG 与背景大图都走这里)
 ├── cut_chair.py             椅子专用:从 raw 高清原图裁剪 → compressed_webp/chair_hi.webp
 ├── process_assets.py        早期资产批量处理(仍在用的活脚本之一)
@@ -23,11 +25,11 @@ DSHgame/
 │   ├── raw/                 原始素材(来源,不参与构建)。⚠️ 已加进 .gitignore,但其中 16 个文件
 │   │                        在早期被跟踪过、仍在版本库里(walk_video.mp4 等关键原始素材已入库)
 │   ├── compressed/          第一代压缩(png/jpg)。**build.py 已不引用**;仍是 recompress_assets.py 的输入
-│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用的全部 18 张都在这里)
+│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用的全部 19 张都在这里,含 tune_bg)
 ```
 
-★ = 当前有效流水线 = 根目录只有这 7 个脚本是活的:
-`build.py`、`sync_models.py`、`server.js`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
+★ = 当前有效流水线 = 根目录这些脚本是活的:
+`build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
 
@@ -66,7 +68,32 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - 18 个内联素材**已全部是 WebP**(2026-09-10 完成背景迁移,不再有 JPG)。
 - 修改 compressed/ 原图后必须重跑 recompress 才会影响构建。
 
-## 当前进度(2026-09-10)
+## 当前进度(2026-09-12)
+
+### 协作约定(用户)
+- **文档写法**:用户累于严格格式,内容偏口头交流、不一定分类。读用户改的 md 时**按语义理解**,不要苛求章节/字段齐全;我这边仍可维护结构化章节。
+- 日报文案用户改 `社区日报池.md`;机制以 `中转站设计.md` §15 为准。
+
+### 调教场景背景(2026-09-12,已嵌入)
+- `tune_bg.webp`:教室黑板图,1920×1081 WebP q85 ≈**115KB**(源 PNG 1672×941 备份在 `assets/raw/tune_bg.png`)。
+- 单文件 index.html 约 **2219KB**(含 tune_bg base64 +155KB)。运行时一张全屏 Sprite,关场景 visible=false,性能影响可忽略。
+- `layoutTuneScene`:cover 铺满 + 28% 压暗;文案在黑板中下部。
+
+### 中转站经营玩法 v1(已落地最小闭环 + 后续修正)
+- **§14 / §14.10 / §14.11**:刀乐、1 现实秒=1 游戏分、信誉初始 1、用户初始 2、tokens 单池、后台页上架。
+- **有效相似度**:`rawSimilarityTo × capMulTo`(`capMul=(myCap/listCap)^0.4`,0.4~1.5);可 >100。属性距离 0% 是「完全不像」不是 bug。
+- **无市场价**(2026-09-12):只留官方参考价 `blendPrice`;增长 ≤ 官价×0.8,续约 ≤ 官价×1.1。
+- **速度属性**:一般 ≤100;Mercury 2 / Celeris-1 的 **tokens/s 顶 ≤120 且不同**(100 与 120),速度属性 33/40,cap 与名次未动。
+- **UI**:标榜文案、选中即显有效相似(绿≥80/红<80)、后台「数据详情」(信誉/用户怎么涨跌)、中转站顶栏 HUD(刀乐/用户/时钟)不遮面板。
+- **存档迁移**:老存档无 dollars → reputation=1、users=2。
+- **相关代码**:`RELAY_BIZ`、`updateRelayBusiness`、`similarityTo`/`rawSimilarityTo`/`capMulTo`、`drawBackendPage`、`relayHud`。
+
+### 社区日报(设计完成,未实现)
+- **§15 + §15.1**:每 6 游戏时一篇、活 24 时、最多 3 条;类型 price/traffic/station/pool/gossip;收集册 x/n。
+- **去重**:同 id 活跃期禁止再抽;price 同目标**覆盖不叠乘**;型号级覆盖厂商级。
+- **文风**:厂商直写;**创始人只用戏称**(奥特曼/梁子→梁圣/a//哈基米/老马/唐哥);body=`主体。【画外音】`。
+- **文案池**:见 `社区日报池.md`(约 39 条草稿,用户继续改);定稿后再进 `NEWS_POOL`。
+- **IP**:若收赞助,建议全链路模型化名(如 Kimi→Kity),目前未改。
 
 ### 中转站行走动画(已完成)
 - **人物精灵图**:6帧行走动画,从用户提供的绿幕视频提取中间6帧(第40/48/56/64/72/80帧),用户自行抠绿幕后提供最终精灵图(4320×1280)。
@@ -134,28 +161,99 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **行走动画**详见上方"中转站行走动画"章节;相关入口 `relayScene`/`openRelayScene`/`closeRelayScene`、`layoutRelayScene`、`updateWalkerAI`、`makeWalkFrames`。
 - **代码里已落地的算法最小集**(在 `// ========== 中转站模型养成(设计草案) ==========` 注释块内,改数值只改这里):
   - `ATTR_KEYS` / `ATTR_NAMES` — 9 项基础属性(推理/知识/长上下文/速度/多模态/指令遵循/工具调用/拟合/参数)。
-  - `REAL_MODELS` — 真实模型锚点生成物(**56 条在售**),由 `python sync_models.py --write` 从设计文档 §3.1 生成,**勿手改**。
+  - `REAL_MODELS` — 真实模型锚点生成物(**59 条在售**),由 `python sync_models.py --write` 从设计文档 §3.1 生成,**勿手改**。
     退役模型已按用户要求从源表整行移除(原先 51 条含 25 条退役),`legacy` 字段保留但全部为 0。
     v0.3 参考 `wycode.cn/gaokao` 补了一批大众型号(排除 Meta 与该榜名次 ≥70 的),名次/cap 未照抄该榜,按讨论热度与厂商定位重排。
     v0.4 补 Hunyuan Hy4 / Agnes 2.5 Pro & Flash,`DeepSeek V4.1` → `V4.1 Flash` 并改原生多模态(cap 62,排在 V4 Pro 之上)。
+    v0.5(2026-09-12)**速度全面校准**:43 条 tok/s 按 Artificial Analysis 输出速度中位数覆写,新增
+    `Gemini 3.5 Flash-Lite`(346 t/s)/ `Mercury 2`(750 t/s)/ `Celeris-1`(1370 t/s,全场最快)3 条;
+    字节/腾讯/百度/华为/商汤/Qwen2.5-7B 站上无数据维持粗估(详见设计文档 §3.2)。数据快照存 `_aa_data.json`。
+    v0.6(2026-09-12)**cap 顺序按 AA 智能指数重排**:47 条有 ii 的模型贪心重定 cap(37 条调整,
+    如 `GPT-5.5` 73→33、`Gemini 3.8 Flash` 61→37),13 条 AA 查无数据的保持原 cap(清单见设计文档 §3.2)。
+    ⚠️ 只动了 cap,**速度/知识截止两列未改**(用户明令);派生属性(推理/指令/速度锚点)随 cap 自动变化。
+    v0.7(2026-09-12)**§13.11 落地:属性搬进数组**——设计属性列升 9 维(补拟合/参数),
+    全 59 行按用户游戏内调参成果(导出全榜 CSV)写入,`sync` 生成 `ax` 字段(9 元数组,顺序同列);
+    `deriveModelAttrs` **优先采用 ax**,无 ax 的行才退回 cap 推导。至此类属性是第一手数据,
+    调它要改 §3.1 设计属性列再 `--write`,cap/名次不再牵动属性。
     ⚠️ **档位 `t` 按「厂商内部定位」分,不代表绝对强度** —— 一条 `轻量` 的 Flash 可能强过别家的 `中端`(见设计文档 §3.4)。
     ⚠️ **型号 / 性能 / 价格均为虚构设定**,设计文档 §3.1 顶部与榜单页页脚都有声明;要商业化前先看 §13 的 IP 风险条目。
   - `ctxK()` / `tokPerSec()` / `cutoffMonths()` / `modelCapability(a)` — 四组派生量公式(与属性值互逆)。
+    2026-09-11 数值定稿:① 上下文区间改 **0k~1000k**(平移对数 `ctxK = 1000*(50^(LC/100)-1)/49`,新增精确逆映射 `ctxAttr()`;原 20k 起步会把 8k 小模型顶死在 0);② **速度 1 分 = 3 tok/s**(`TOK_PER_SPEED_POINT = 3`,原 2);
+    ③★ **知识乘区也受推理闸门**(2026-09-12 用户定稿):`knowMul = 1 + ±25% × (推理/100)` ——
+    推理越高知识倍率越大,推理 0 时知识不起作用。**排序零变化**(排序键是静态 cap,公式只影响综合评分显示);
+    同轮把第 10 名之后相邻 cap 差压缩到 ≤ 2.5(11 条上调、顺序不变,见设计文档 §3.2 v0.8)。
+    ③ **能力公式加三项**(用户定稿,都 × 推理/100 闸门):速度 0.06、长上下文 0.06/0.09(60 分两档)、
+    多模态 0.10/0.04/0.13(<40 / 40-60 / >60 三档,文图档最小、真全模态最高)。
+    权重常量在 `CAP_SPEED_W` / `CAP_CTX_W_LO·HI` / `CAP_MM_W_LOW·MID·HIGH`;高档配置会顶到 100 上限,调权重见设计文档 §12。
+    ④ **速度锚定 AA 实测值(2026-09-12 最终态,一天内三改)**:速度属性 = `ts / 3`(§3.1 的 AA 实测 tok/s),
+    榜单 tokens/s 列 = `ts` 原值。经历:接进 ts/3 → 撤回改 cap 反推 → cap 重排把速度拖着变,
+    用户重申"不要轻易修改速度属性"→ **最终锚定回 ts**。此后速度只随 §3.1 数据变,cap/名次怎么调都不影响;
+    能力公式速度项 0.06×推理闸门,锚定切换单项影响 <1 分。⚠️ 属性上限 100 = 300 tok/s,
+    超速模型(Celeris-1 1370 等)属性记 100、榜单显示 AA 原值。
+    ⑤★ **面板重绘必须 destroy(坑52,2026-09-12)**:`layoutScreenPanel` 每次新建一两百个 Text/Graphics,
+    清空时只 removeChildren 会泄漏纹理 → 编辑器里反复改数值越用越卡。已改为「延迟销毁」
+    (removeChildren 后 setTimeout(0) 逐个 destroy,避开事件派发途中析构);同轮清 radarCounters/editRef。
+    新增往面板容器里加内容的人注意:这个销毁模式对你是透明的,但要记得别把池化对象(如 floatTexts)放进这三个容器。
+    ⑤ **知识截止日期联动**(2026-09-12):编辑器改「知识」后,编辑卡片左上角与榜单截止列都按
+    `effectiveCutoff()`(= `monthsStr(cutoffMonths(有效知识))`)实时跟着变;⚠️ `monthsStr` 的月份是
+    **1-indexed**(年*12+月),曾按 0-indexed 还原导致所有日期显示差一个月(坑51)。
   - `modelToAttrs(m)` / `modelCapabilityOf(m)` — 真实模型 → 等效属性(用于雷达图叠影与距离计算)。
     ⚠️ 坑:`knowledge` 曾写成 `5 + (m.k ? 5 : 0)`,`m.k` 是 `'YYYY-MM'` 字符串恒为真 → **每个模型知识恒 10**,
     `closestModel` 的「知识不如它新 +0.35」门槛连模型对自己都触发,53 条里 34 条最近邻都是 Qwen2.5-7B。
     2026-09-11 改为用 `monthsFromStr(m.k)` 反推(与 `cutoff()` 互逆),实测 56/56 各自命中自己,新手锚点不变。改这块前先看设计文档 §3.5。
   - `closestModel(a)` — 7 维加权距离 + 2 个硬门槛(知识截止、模态档位),返回"最接近的真实模型"与相似度。
+  - `deriveModelAttrs(m)` / `modelToAttrs(m)` — 拆成两层:前者是纯推导(不含覆盖),后者在末尾合并 `MODEL_ATTR_OVERRIDE`;
+    **不要**把覆盖合并搬回 deriveModelAttrs —— `effectiveCap` 的 Δ 要分别算"改前/改后"两次能力。
+    ⚠️ v0.7 起推导顺序:**`m.ax`(9 维,来自 §3.1 设计属性列)优先**,无 ax 才走 cap 推导;
+    ax 的 9 元顺序 = 列内顺序(推理/知识/长上下/速度/多模态/指令/工具/拟合/参数),与 RADAR_KEYS 顺序不同,取值时按下标映射,别按 RADAR_KEYS 顺序读。
+  - `effectiveCap(m)` / `boardOrder()` — 【临时调试】榜单实时重排:有效 cap = 静态 cap + 覆盖引起的派生能力 Δ;
+    `boardOrder()` 按 有效 cap 降序(平手按原表序),drawLeaderboardPage 按它渲染,`#` 列 = 实时名次。
+    Δ 方案(而非直接按派生值排)是为了刻度对齐:没改的模型 Δ=0,顺序与 §3.1 完全一致,改多少挪多少。
+  - `blendPrice(m)` — 榜单单列价 = `(pi + po*3)/4`(混合参考价);`REAL_MODELS` 存拆开的 `pi`/`po`,
+    sync_models.py 按「出价=3倍入价」拆回 ⇒ pi=0.4×价、po=1.2×价,**round-trip 保真**(拆完再合恰好还原)。
 - **`state.relay`(存档 v1 已含)**:`{ ability: { 9 项属性 }, listedModel: null, price: 0, pool: 'standard', reputation: 50 }`。
   `saveGame`/`loadGame` 已接上;载入后调 `refreshRelayPanel()` 重绘面板。
   ⚠️ 老存档没有 `relay.ability` 字段时靠 `Object.assign` 合并补默认值,不要改成整体替换。
 - **面板左栏改为可点击标签**(模型 / 榜单 / 社区 / 后台),替换原先的三组纯占位菜单;`panelTab` 决定 `drawModelPage`/`drawLeaderboardPage`/`drawCommunityPage`/`drawBackendPage`。
   内容全部画进 `panelContentArea`,用**绝对屏幕坐标**(该容器自身位移为 0)。
   - **模型页(已实现)**:最接近的真实模型名 + 相似度 + 综合评分块(评分/速度/上下文)+ **9 轴雷达图**。
-  - **榜单页(已实现)**:`REAL_MODELS` 的只读表格(名次/模型/厂商/档位/截止/上下文/入价$/出价$/cap),斑马纹 + cap 橙色加粗。
-    只收在售模型(退役行已从源表移除);56 行一屏放不下(1280×720 实测一屏 15 行),滚轮每格翻 3 行,页脚左边显示进度、**右边固定「非真实榜单 · 型号与数值均为虚构」**。
-    价格列是给后台定价当参考的虚构值,不追求与真实行情一致。
+    - 雷达图带**开启动画(用户定稿:边界不动,内部生长,数字滚动)**:网格/轴线完全静止;两个数据多边形 +
+      拟合最优点刻度画进 pivot 在图心的 `dataLayer`,打开面板或切回模型页时 scale 从 0.01 补间到 1(0.45s)。
+      **轴标签数字同时从 0 滚到当前值**:`radarCounters` 注册 + `radarTicker`(挂主循环)按同一条缓动逐帧推进,
+      播完定格清空;非动画重绘直接定格。平时零开销(ticker 首行 return)。
+    - ⚠️ `tween(target, delta, ...)` 的第二个参数是**增量**,不是目标值:要从 0.01 到 1 得写 `0.99`。
+      `tween` 会把 target 上的 expando(如 `scale.__radar`)透传进补间记录,`radarTicker` 靠它找雷达补间;
+      ⚠️ 页面失焦时 rAF 停摆、补间不推进 —— 自动化测试要手动 `updateTweens(dt)` + `radarTicker()` 推帧。
+  - **榜单页(已实现)**:`REAL_MODELS` 的表格(名次/模型/厂商/档位/**截止**/上下文/**tokens/s**/价$/cap,共 9 列),斑马纹 + cap 橙色加粗。
+    右上角「**导出全榜 CSV**」按钮(2026-09-12):下载 `dshgame-leaderboard.csv`(带 BOM,Excel 直开)。
+    **搜索框**(榜单上方,DOM input 叠画布):输模型/厂商关键字 → 下拉命中(前 10 条)→ 点击跳转该行 +
+    淡蓝描边(移动鼠标消失);**输入 `/admodel` 回车切换调试态**——调试态下行可点开编辑器(可改数值、
+    已改标记、保存到文档等),玩家态(默认)行只打开只读属性面板、零调试痕迹。入口不写在玩家可见文案里。
+    内容 = **修改后的有效值**(2026-09-12 用户要求):名次按实时排序,截止/cap 取有效值,
+    并新增 9 列属性(推理…参数,均含编辑器覆盖)+「手改项」列标明动了哪些;
+    唯例外是 tokens/s 列固定显示 AA 实测原值(不随覆盖变)。
+    **截止列显示有效日期**(编辑器改「知识」后跟着变,`effectiveCutoff`);
+    **tokens/s 列**(2026-09-12)= 游戏内自洽速度(属性 ×3),**不是** §3.1 的 AA 外部实测值(那列是留痕);
+    **价$ 单列**(2026-09-11 用户要求简化):混合参考价 `blendPrice = (pi + po×3)/4`,与设计文档 §3.1 同公式;
+    `REAL_MODELS` 仍存拆开的 `pi`/`po`(sync 按「出价≈3倍入价」拆回),后台定价读拆分值。价格是虚构参考,不追求真实行情。
+    只收在售模型(退役行已从源表移除);行高 30 / 字号 13(用户要求放宽),56 行一屏放不下(1280×720 实测一屏 13 行),滚轮每格翻 3 行,页脚左边显示进度、**右边固定「非真实榜单 · 型号与数值均为虚构」**。
+    **悬停高亮(用户要求)**:鼠标在哪行,那行就出现淡蓝描边(`#7ab8d4`);一块共享 `hoverRect`,行热区 `pointerover/out` 负责画/藏。
+    **排名实时跟随编辑器数值(2026-09-11 用户要求,推翻前版"不重排")**:显示顺序 = `boardOrder()` 按
+    **有效 cap** 降序(`effectiveCap()` = 静态 cap + 覆盖值引起的派生能力 Δ),cap 列同步显示有效值(一位小数);
+    Δ 方案保证没改的模型 Δ=0、顺序与 §3.1 完全一致,改多少挪多少。`REAL_MODELS` 数组不动,`closestModel` 不受影响。
+    调榜工作流:游戏里试数值 → 誊回 §3.1 → `sync_models.py --write` 固化。
     ⚠️ 滚轮**挂在 `app.view` 的 DOM `wheel` 上**(`screenPanel.on('wheel')` 实测收不到真实浏览器 wheel),`{ passive: true }`,且只在「面板开着 + 榜单页」时生效。
+  - **榜单行点击 → 模型属性编辑器(⚠️ 临时调试工具,上线前必须删)**:点行打开 `drawModelAttrEditor`
+    覆层(复用 `attrDetailLayer`),**左右分栏**(参考 artificialanalysis 信息架构),卡片与面板内容区**同比例、
+    占满 97%**(实测 1093×593 vs 内容区 1126×612),行高随窗口高度均分 9 行(≥36),
+    标题 20px / 属性名 16px / 说明 13px;标题里的「第 N 名」是 boardOrder() 的实时名次:
+    左栏 9 项属性各一个可点数值框(输入数字 → 回车提交);**右栏与「模型」页同款** —— 综合评分块 +
+    9 轴雷达图(`drawRadar` 直传 `attrDetailLayer`,不播开启动画),左栏改数值右栏实时变。
+    值写进 `MODEL_ATTR_OVERRIDE`(localStorage,key = 模型名),`modelToAttrs()` 末尾合并覆盖值,
+    于是**雷达图灰影 + closestModel + 榜单名次实时变**。不碰 `REAL_MODELS`(生成物)、不进存档。
+    敲键只更新当前 `Text`(`editRef`)不整页重绘;输入中 ESC handler 先 `if (editingKey) return;`。
+    撤销点(全部标了 `【临时调试】`):`MODEL_ATTR_OVERRIDE` 定义块 / `modelToAttrs` 末尾合并(`deriveModelAttrs` 拆分)/
+    `effectiveCap`·`boardOrder` / 榜单行 `hit`+悬停描边 / `drawModelAttrEditor`·`saveModelOverrides`·`commitModelAttrEdit` / keydown 的 `editingKey` 段。
   - 社区页 / 后台页:**静态文字占位**,机制设计见设计文档 7、8 节,尚未接逻辑。
 - **底部标签栏收拢 + 左移**(2026-09-11):`layoutNavTabs()` 用 104×42 / 间距 18,先按屏宽居中再整体左移,
   上限是「人物左缘 - 16px」(人物宽按 `min(340, 屏高*0.4)` 估,同 `layoutCharacters`)。原因:旧版均分整屏宽,最后一个标签正好压在右下角人物身上(生产界面最明显)。
@@ -358,17 +456,41 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 8. 发布成功后回传 CLI 输出的作品链接。
 
 
-## 仓库状态与提交(2026-09-10)
+## 仓库状态与提交
 
-### 已完成(按时间顺序)
+### 2026-09-11(当天提交 3 笔 + 本轮未提交)
+- `52a529e`:榜单去掉退役模型 + 底部导航按钮收拢左移(间距 18)。
+- `37a7d09`:模型库扩到 53 条(参考 wycode 高考榜选型)+ 修 `modelToAttrs` 知识恒 10 的 bug(坑43)。
+- `770f820`:补 Hy4/Agnes + DeepSeek V4.1 Flash 原生多模态 + 档位改厂商内部定位 + 榜单加价与虚构声明(共 56 条)。
+- **本轮(未提交)**:面板交互大轮 —— 榜单 9 列(价$ 单列 + AA 实测速列)+ 行悬停淡蓝描边 + 行点击打开属性编辑器
+  (临时调试,localStorage 覆盖值)+ 榜单实时重排(`effectiveCap`/`boardOrder`,Δ 方案)+
+  雷达开启动画(边界不动/数据层生长/数字滚动,`radarTicker`)+ 能力公式加速度/长上下/多模态三项(推理闸门)+
+  上下文区间 0k~1000k + 速度 1分=3tok/s + GPT-6 价 20 + sync_models.py 适配 14 列价$ 与保真拆分(pi=0.4p/po=1.2p)
+  + 速度数据源换成 AA 实测(`ts` 字段,59 条)+ 中转站标签常显(未解锁点击冒提示)+ 模型库扩到 59 条(v0.5)
+  + **§13.11 落地(v0.7)**:9 维设计属性进数组(`ax` 字段,来自用户调参导出的全榜 CSV),`deriveModelAttrs` 优先采用;
+    面板重绘改延迟 destroy 修掉"越改越卡"的纹理泄漏(坑52);编辑器加导出/导入调整 + 导出全榜 CSV 按钮。
+  + **「保存到文档」+ server.py(2026-09-12,用户要求"直接修改数据,不需要反复导入导出")**:
+    新增 `server.py`(静态服务 + `POST /api/save-overrides`),启动方式 `python server.py [端口,默认8765]`,
+    只监听 127.0.0.1。编辑器页脚「保存到文档」把当前覆盖(payload 附带有效 `__cap`/`__k`)POST 给它,
+    服务端把属性合并进 §3.1 设计属性列、cap/截止写入对应列,自动 `sync --write` + `build.py`,前端 F5 即固化。
+    ⚠️ 双击 file:// 打开时该按钮不可用(fetch 受限)→ 用导出/导入;`__cap` 必须随属性一起落库,
+    否则属性固化了 cap 会退回静态值(用户报告过)。同轮:cap 支持一位小数(sync float 解析/`%g` 渲染)。
+  + 新增小米 `MiMo-X Flash Preview`(cap 56.5,DeepSeek V4 Pro 之下)/ `MiMo-X Pro Preview`(cap 55,GPT-5.5 之下)
+    —— **flash 不一定比 pro 弱**(用户定稿);AA 查无数据全列粗估;同轮修正 `Qwen3.8-27B` 速度 66→39(校准漏网)、
+    `Mercury 2` 750→734(以接口值为准)。61 条。
+  + 「中转站暂未解锁」提示改**原地保持 1.6s → 缓慢淡出 1.2s**(用户要求不要一闪而过);
+    「清空全部」现在会**先自动下载备份 json 再清**(覆盖层一清没导出的调整就真没了)。
+
+### 2026-09-10 深夜收尾(此前记为"本轮未提交",已随 `0c20c0d`/`1bb8872` 入库)
+- `build.py --dist` 双模式、方案 A 分辨率 + `touch-action:none`、背景 WebP 重压、中转站椅子独立图层、行走动画素材。
+
+### 2026-09-10 及以前
 - `5d9bfc7`:新版大肥鱼站 logo + 面板关闭逻辑优化 + 清理临时脚本(**本次失误见下节**)。
 - `dc2a079`:修复 `5d9bfc7` 误删的三个活脚本(`recompress_assets.py`/`cut_chair.py`/`process_assets.py`),
   重建 `check_syntax.js`,并从 `.gitignore` 移除误加的那行。
 - `418e33a`:清理 3 个真死素材(`compressed/chair.png`、`compressed/relay_bg.jpg`、`compressed_webp/chair.webp`);
   修 `process_assets.py` 写死的绝对路径与 ffmpeg 路径。
 - `c8a2275`:补 VibeHub 发布调研 + 背景 WebP 迁移实测数据进文档。
-- **本轮(未提交)**:`build.py --dist` 双模式、`index_template.html` 方案 A 分辨率 + `touch-action:none`、
-  `recompress_assets.py` 增加背景 WebP、`server.js` 目录补 `index.html`、4 张新背景 WebP、文档更新。
 
 ### ⚠️ 这次清理出过一次事故(已修复,详见坑36)——以后做同类清理务必先读这节
 提交 `5d9bfc7` 声称"清理一次性临时脚本、仅保留 build.py",实际误删了流水线里的**三个活脚本**
