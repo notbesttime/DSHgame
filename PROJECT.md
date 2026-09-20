@@ -70,14 +70,30 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 
 ## 当前进度(2026-09-12)
 
+> 本轮还包含:全局鲸鱼光标、调教道具/鞭子、课桌落座、Q 版 idle、日报文案闭源修正等,细节见下「调教场景」与「社区日报」。
+
 ### 协作约定(用户)
 - **文档写法**:用户累于严格格式,内容偏口头交流、不一定分类。读用户改的 md 时**按语义理解**,不要苛求章节/字段齐全;我这边仍可维护结构化章节。
 - 日报文案用户改 `社区日报池.md`;机制以 `中转站设计.md` §15 为准。
 
-### 调教场景背景(2026-09-12,已嵌入)
-- `tune_bg.webp`:教室黑板图,1920×1081 WebP q85 ≈**115KB**(源 PNG 1672×941 备份在 `assets/raw/tune_bg.png`)。
-- 单文件 index.html 约 **2219KB**(含 tune_bg base64 +155KB)。运行时一张全屏 Sprite,关场景 visible=false,性能影响可忽略。
-- `layoutTuneScene`:cover 铺满 + 28% 压暗;文案在黑板中下部。
+### 调教场景(2026-09-12,与中转站同步解锁 + 双人物 + 课桌/道具/光标)
+- **解锁**:买服务器后与中转站一起放行;未买时点「调教」提示「暂未解锁 · 购买服务器后开放」。
+- **占位文案已删**;背景 `tune_bg.webp`(1920 宽 q85 ≈115KB)。
+- **人物架构**:`createWalkerRig(idleKey?, sitKey?)` 工厂 + **两套独立实例**:
+  - `relayWalker`:插在椅子下层(坐椅人在椅后)。
+  - `tuneWalker`:首次进调教创建;停顿/坐桌用 **`tune_idle` Q 版**(不用背影 `walker_sit`);走路 6 帧;开场直接走。
+  - **禁止 reparent 同一 container**(会打乱椅子/课桌层级,坑54)。
+- **地面边界(调教)**:上沿 0.74 · 站立线 0.90 · 初始 0.83。中转站 0.70 / 贴底。
+- **朝向坑(坑55)**:`syncWalkFacing` 开场/落地/idle→walk/每帧校正。
+- **课桌**:`tune_desk.webp` 居中约屏宽 18%;**人物图层在课桌之下**(桌盖人,2026-09-12 用户定稿;勿再改回“人前桌后”)。层级:bg → shade → 人物 → 课桌 → UI;拖入桌宽范围**直接落座**(不起落体),显示 Q 版 idle,不走动。**坐高**:`floorY - min(deskH*0.35, 72)`(地面～桌面之间,腿在桌后);头顶若仍被桌沿挡,再微调到高出桌沿 ≥2% 屏高。**勿抬到桌面**(用户反馈太高)。
+- **消失坑(2026-09-12 已修,坑56)**:调教人物「走到边缘/过一会儿/坐上桌会持续消失」有两个叠加根因,改 `applyWalkerMetrics` / `layoutTuneScene` 时别回退:
+  1. **行走边界按背景矩形算**。背景是 cover 缩放(超宽屏/非16:9 会比屏幕大并被裁切),`maxY`/`sitY` 可能算到 `y > h` → 人走进屏幕外或坐到屏外。边界必须再与屏幕 `[0,w]×[0,h]` 求交;`floorY`/`deskSeat.sitY` 同样夹回屏内。
+  2. **`tune_idle` 纹理未解码时 `height=0/1`**,`scale = 目标高 / texture.height` 得到 Infinity/NaN → 停顿/坐桌切到 idle 贴图整张画不出来(走路帧用常量 `WALK_FRAME_H` 所以 walking 时正常,一 idle/坐下就“消失”)。缩放走 `safeSpriteScale`(height≤1 用 fallback);启动就 `Texture.from(ASSETS.tune_idle)`,并在 `texture.on('update')` 时重跑 `layoutTuneScene`。
+- **道具抽屉**:右侧 48×92 窄条(对齐生产「购买」),展开向左;第一件「鞭子」。
+- **鞭子**:仅调教空白区生效;指到道具/面板/底栏/设置/电脑面板 → 鲸鱼光标;点击挥鞭(whip_idle↔whip_crack 短暂切换);光标锚点与缩放可调。
+- **全局鲸鱼光标**:默认跟随(图1常态/按下图2);`custom-cursor` CSS `!important` 盖 Pixi 写回;先隐藏待首次 pointermove。
+- **性能**:`updateWalkerAI` 只推进打开场景的 rig。
+- **相关代码**:搜 `createWalkerRig` / `tuneDeskSprite` / `deskSeat` / `tune_idle` / `isOverUIChrome` / `whaleCursor` / `whipCursor`。
 
 ### 中转站经营玩法 v1(已落地最小闭环 + 后续修正)
 - **§14 / §14.10 / §14.11**:刀乐、1 现实秒=1 游戏分、信誉初始 1、用户初始 2、tokens 单池、后台页上架。
@@ -88,12 +104,18 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - **存档迁移**:老存档无 dollars → reputation=1、users=2。
 - **相关代码**:`RELAY_BIZ`、`updateRelayBusiness`、`similarityTo`/`rawSimilarityTo`/`capMulTo`、`drawBackendPage`、`relayHud`。
 
-### 社区日报(设计完成,未实现)
-- **§15 + §15.1**:每 6 游戏时一篇、活 24 时、最多 3 条;类型 price/traffic/station/pool/gossip;收集册 x/n。
-- **去重**:同 id 活跃期禁止再抽;price 同目标**覆盖不叠乘**;型号级覆盖厂商级。
-- **文风**:厂商直写;**创始人只用戏称**(奥特曼/梁子→梁圣/a//哈基米/老马/唐哥);body=`主体。【画外音】`。
-- **文案池**:见 `社区日报池.md`(约 39 条草稿,用户继续改);定稿后再进 `NEWS_POOL`。
+### 社区日报 v1(2026-09-12 已实现逻辑 + UI)
+- **§15 + §15.1**:每 6 游戏时一篇、活 24 时、最多 3 条;类型 price/traffic/station/pool/gossip。
+- **代码**:`NEWS_POOL`(文案从《社区日报池.md》整理)、`spawnNews`/`newsTick`/`applyNewsFx`、`officialPriceOf` 含活跃 price 系数。
+- **去重**:同 id 活跃期禁止再抽;price 同目标**覆盖不叠乘**;型号级优先厂商级。
+- **社区页**:列表滚轮;点进详情(全文+效果;赞/转/藏生成时随机假数据);右上角「发帖」。
+- **发帖(占位)**:引导 → 同厂下一篇权重 ×2.2(12 游时);中和 → 负面有概率立刻缓解(信誉回一半/提前撤稿)。
+- **后台**:有调价时显示 原价划线 → 现价(降绿/涨红);增长/续约线也吃有效官价。
+- **文风**:厂商直写;创始人戏称(奥特曼/梁子→梁圣/a//哈基米/老马/唐哥);body=`主体。【画外音】`。
+- **未做**:评论、配图、独立收集册弹窗(列表已显示收集 x/n)。
+- **文案**:用户继续改 `社区日报池.md`,定稿后同步 `NEWS_POOL`。
 - **IP**:若收赞助,建议全链路模型化名(如 Kimi→Kity),目前未改。
+- **相关代码**:搜 `NEWS_POOL` / `spawnNews` / `drawCommunityPage` / `handleCommunityPost`。
 
 ### 中转站行走动画(已完成)
 - **人物精灵图**:6帧行走动画,从用户提供的绿幕视频提取中间6帧(第40/48/56/64/72/80帧),用户自行抠绿幕后提供最终精灵图(4320×1280)。
@@ -139,6 +161,9 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - antialias 关闭;灯效层 `bgDark` 用 visible 切换代替 alpha=0(不参与渲染批次)。
 - 浮字对象池(上限池 40 / 同时在屏 30),替代每次点击 new PIXI.Text。
 - token 顶栏文字去重(setText 仅在变化时);resize/safeRelayout 用 rAF 节流。
+- **经营活字节流(2026-09-13)**:`updateRelayBusiness` 里的后台页活字(6 条 Text)与中转站 HUD(2 条)
+  从每帧 set 改为 **0.25s 节流**(`relayUiAccum`,模块级变量不进存档)——卖出进行时 dollars 每帧都变,
+  不节流的话这些 PIXI.Text 每帧都重栅格化(与购买按钮每帧重绘同类的问题)。改动别回退。
 - **中转站场景性能优化(2026-09-10)**:
   - 中转站时**不暂停生产逻辑**(token增加/自动点击/水冷触发/存档继续运行),切回生产时token已增加,不损失收益。
   - 中转站时**隐藏生产场景所有渲染元素**(layers.bg/clickArea/characters/scene/ui/fx 全部 visible=false),PixiJS 跳过这些对象的渲染批次,GPU开销大幅降低。
@@ -457,6 +482,13 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 
 
 ## 仓库状态与提交
+
+### 2026-09-12 调教消失修复(本轮未提交)
+- **坑56**:调教人物走到边缘 / 停顿 idle / 坐上桌持续消失 → `applyWalkerMetrics` 边界与屏幕求交 + `safeSpriteScale` 防 texture.height=0/1 把 scale 算成 Infinity;启动预载 `tune_idle` 并在 `texture.on('update')` 重布局。
+- **底部标签栏**:三标签同一套选中逻辑(`layoutNavTabs`: `navScene===key ? on : off`)。生产 off `0x2a1f16`;中转站/调教 off 曾误用 `0x6a3a2a`(≈生产 on)导致未选中不显暗,已改为 `0x3d2818`。
+- **图层定稿**:人物在课桌**下**(桌盖人),层级 `bg → shade → 人物 → 课桌 → UI`;layout 固定人物 index=2、课桌 index=3;落座 `wi>di→di` / `wi<di-1→di-1`,勿改回人前桌后。
+- **坐高定稿**:`deskSeat.sitY = floorY - min(deskH*0.35, 72)`(地面～桌面之间;贴地挡头、坐桌面太高,都已否掉)。
+- 改动文件:`index_template.html`(修复 + 图层 + 坐高 + 标签色)、`PROJECT.md`、`踩过的坑(人看的).docx`(坑56 + 图层/坐高/标签补充);已跑 `node check_syntax.js` + `python build.py`。
 
 ### 2026-09-11(当天提交 3 笔 + 本轮未提交)
 - `52a529e`:榜单去掉退役模型 + 底部导航按钮收拢左移(间距 18)。

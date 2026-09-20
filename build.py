@@ -38,6 +38,12 @@ ASSET_FILES = {
     "chair_outline": ("assets/compressed_webp/chair_outline.webp", "image/webp"),
     "panel_logo": ("assets/compressed_webp/panel_logo.webp", "image/webp"),
     "tune_bg": ("assets/compressed_webp/tune_bg.webp", "image/webp"),
+    "whip_idle": ("assets/compressed_webp/whip_idle.webp", "image/webp"),
+    "whip_crack": ("assets/compressed_webp/whip_crack.webp", "image/webp"),
+    "whale_cursor": ("assets/compressed_webp/whale_cursor.webp", "image/webp"),
+    "whale_cursor_down": ("assets/compressed_webp/whale_cursor_down.webp", "image/webp"),
+    "tune_desk": ("assets/compressed_webp/tune_desk.webp", "image/webp"),
+    "tune_idle": ("assets/compressed_webp/tune_idle.webp", "image/webp"),
 }
 
 DIST_MODE = "--dist" in sys.argv

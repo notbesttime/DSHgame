@@ -15,6 +15,9 @@
   }
   #game { width: 100%; height: 100%; }
   canvas { display: block; touch-action: none; }
+  /* 自定义光标模式:盖过 Pixi InteractionManager 写回的 inline cursor */
+  canvas.whip-cursor, canvas.whip-cursor *,
+  canvas.custom-cursor, canvas.custom-cursor * { cursor: none !important; }
 
   /* 手机横屏引导 */
   #rotatePrompt {
@@ -939,13 +942,16 @@ addPressFeedback(purchaseBtn);
 // ==================== 底部标签栏(生产 / 中转站 / 调教) ====================
 // 标签是**收拢成一组**的:layoutNavTabs() 只对「当前可见」的标签算位置。
 // 中转站 2026-09-11 起常显:没买服务器也展示,点击只提示"暂未解锁"(见 switchScene)。
+// 调教同规则:买服务器后与中转站同步解锁(2026-09-12 用户要求)。
 const TABS = [
+  // on/off 同一套逻辑(layoutNavTabs: navScene===key ? on : off)。
+  // off 必须比 on 明显暗一档 —— 曾因中转站/调教 off=0x6a3a2a(≈生产 on)导致未选中几乎看不出变暗。
   { key: 'production', label: '生产', on: 0x6a3a2a, off: 0x2a1f16 },
-  { key: 'relay', label: '中转站', on: 0x9a5a3a, off: 0x6a3a2a },
-  { key: 'tune', label: '调教', on: 0x9a5a3a, off: 0x6a3a2a },
+  { key: 'relay', label: '中转站', on: 0x9a5a3a, off: 0x3d2818 },
+  { key: 'tune', label: '调教', on: 0x9a5a3a, off: 0x3d2818 },
 ];
 let navScene = 'production';
-let relayHint = null;   // 「中转站暂未解锁」提示条引用(连点不叠加)
+let sceneHint = null;   // 「暂未解锁」提示条引用(连点不叠加;中转站/调教共用)
 let lbDebug = false;    // 调试模式(/admodel 回车切换):开启后点行进编辑器、显示已改标记
 let searchHitIdx = -1;  // 搜索跳转后常驻的蓝框行下标(移动鼠标后清除)
 for (const t of TABS) {
@@ -960,8 +966,7 @@ for (const t of TABS) {
   t.container.on('pointerdown', () => switchScene(t.key));
 }
 const tabOf = (key) => TABS.find(t => t.key === key);
-// 中转站:常显,未购买服务器时点击只冒提示(旧版整个藏掉,用户根本不知道有这个玩法);
-// 调教:一直显示(训练系统设计中,见 中转站设计.md 第10节)
+// 中转站/调教:常显,未购买服务器时点击只冒提示
 
 function layoutNavTabs() {
   const w = 104, h = 42, gap = 18;
@@ -985,19 +990,18 @@ function layoutNavTabs() {
 
 // ---- 场景切换:底部标签,点击切换 ----
 function switchScene(name) {
-  // 中转站常显但未解锁:买了服务器才放行。点击冒提示 —— 原地保持 1.6s 再缓慢淡出
-  // (2026-09-12 用户要求:不要一闪而过;不走浮字池,浮字池是"上飘快消"的动线)
-  if (name === 'relay' && state.machines.server.count <= 0) {
-    const tb = tabOf('relay').container;
-    if (relayHint) { relayHint.destroy(); relayHint = null; }
+  // 中转站/调教常显但未解锁:买了服务器才放行。点击冒提示 —— 原地保持 1.6s 再缓慢淡出
+  if ((name === 'relay' || name === 'tune') && state.machines.server.count <= 0) {
+    const tb = tabOf(name).container;
+    if (sceneHint) { sceneHint.destroy(); sceneHint = null; }
     const hint = makeText('暂未解锁 · 购买服务器后开放', { size: 15, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
     hint.x = tb.x + 52;
     hint.y = tb.y - 34;
     floatTexts.addChild(hint);
-    relayHint = hint;
+    sceneHint = hint;
     setTimeout(() => {
-      if (relayHint !== hint) return;
-      tween(hint, { alpha: 0 }, 1.2, () => { hint.destroy(); relayHint = null; });
+      if (sceneHint !== hint) return;
+      tween(hint, { alpha: 0 }, 1.2, () => { hint.destroy(); sceneHint = null; });
     }, 1600);
     return;
   }
@@ -1161,7 +1165,7 @@ const REAL_MODELS = [
   { n: 'GPT-5 nano',               v: 'OpenAI',    t: '廉价',   k: '2025-08', c: 400, pi: 0.08, po: 0.24, ts: 138, m: 1, tools: 0, cap: 5, ax: [8, 51, 77, 46, 45, 9, 12, 71, 10],  },
   { n: 'Mercury 2',                v: 'Inception', t: '廉价',   k: '2026-02', c: 128, pi: 0.24, po: 0.72, ts: 100, m: 0, tools: 0, cap: 4, ax: [7, 73, 51, 33, 10, 8, 12, 70, 9],  },
   { n: 'Celeris-1',                v: 'Celeris',   t: '廉价',   k: '2026-07', c: 131, pi: 0.24, po: 0.72, ts: 120, m: 1, tools: 0, cap: 3, ax: [6, 92, 51, 40, 45, 7, 12, 70, 8],  },
-  { n: 'Mistral 7B',               v: 'Mistral',   t: '廉价',   k: '2024-07', c: 8, pi: 0.0, po: 0.0, ts: 87, m: 0, tools: 0, cap: 2, ax: [5, 0, 8, 29, 10, 6, 12, 70, 7],  },
+  { n: 'Mistral 7B',               v: 'Mistral',   t: '廉价',   k: '2024-07', c: 8, pi: 0.04, po: 0.12, ts: 87, m: 0, tools: 0, cap: 2, ax: [5, 0, 8, 29, 10, 6, 12, 70, 7],  },
 ];
 
 // 属性 → 派生量。三处互逆:ctxK() ↔ 长上下文属性、cutoffMonths() ↔ 知识属性。
@@ -1298,9 +1302,7 @@ const RELAY_BIZ = {
 };
 
 function blendPriceNum(m) { return (m.pi + m.po * 3) / 4; }
-// 2026-09-12 用户要求:删除「市场价」概念,经营对比只保留官方参考价(blendPrice)。
-// CHEAP_LINE / RENEW_LINE 直接乘官价;旧 marketPriceOf() 已废除。
-function officialPriceOf(m) { return blendPriceNum(m); }
+// officialPriceOf 在社区日报块末尾定义(含活跃 price 系数)
 function findModelByName(n) {
   if (!n) return null;
   for (const m of REAL_MODELS) if (m.n === n) return m;
@@ -1332,6 +1334,323 @@ function similarityTo(a, m) {
   const mul = capMulTo(a, m);
   return Math.min(140, raw * mul);
 }
+// ========== 社区日报 v1(设计 §15;文案源《社区日报池.md》) ==========
+// 每 6 游戏时抽 1 篇;活跃最多 3;存活 24 游戏时;同 id 活跃期禁止再抽;
+// price 同目标覆盖不叠乘。发帖(引导/中和)为 v1 占位,可影响立即结果或下一篇权重。
+const NEWS_MAX_ACTIVE = 3;
+const NEWS_LIFE_H = 24;
+const NEWS_INTERVAL_H = 6;
+const NEWS_TYPE_NAME = { price: '调价', traffic: '客流', station: '行业', pool: '号池', gossip: '八卦' };
+const NEWS_TYPE_COLOR = { price: '#c05a2a', traffic: '#2a7a3a', station: '#8a5a20', pool: '#5a6a7a', gossip: '#8a7a68' };
+
+// effect 结构:
+//   { kind:'price', mul, model?, vendor?, text }           官价系数,24h
+//   { kind:'users', pct, ifListed:true, model?, vendor?, text }  标榜命中才一次性
+//   { kind:'usersAll', pct, text }                         全站一次性用户
+//   { kind:'rep', v, text }                                信誉一次性
+//   { kind:'usersRoll', up, down, ifListed:true, model?, vendor?, text }  命中时掷骰
+const NEWS_POOL = [
+  // ---- price ----
+  { id: 'price_ds_flash_cut', type: 'price', rare: 1, title: '梁圣又把 Flash 价格打到骨折',
+    body: 'DeepSeek 系某型官价下调。【告诉你梁圣叔叔,闭源模型在哪里?】',
+    fx: { kind: 'price', mul: 0.70, vendor: 'DeepSeek', model: 'DeepSeek V4.1 Flash', text: 'DeepSeek Flash 官价 ×0.70' } },
+  { id: 'price_oai_flagship_up', type: 'price', rare: 0.8, title: '奥特曼表示旗舰要「对齐价值」',
+    body: 'OpenAI 旗舰线上调官价。【贵有贵的道理——吧?】',
+    fx: { kind: 'price', mul: 1.25, vendor: 'OpenAI', text: 'OpenAI 旗舰官价 ×1.25' } },
+  { id: 'price_google_flash_sale', type: 'price', rare: 1, title: '哈基米 Flash 系放水',
+    body: 'Google 轻量线限时折扣,识图需求被点着了。',
+    fx: { kind: 'price', mul: 0.80, vendor: 'Google', text: 'Google 轻量线官价 ×0.80' } },
+  { id: 'price_anthropic_hold', type: 'price', rare: 0.5, title: 'a/ 称「我们封禁了一些来自华夏的账号」',
+    body: 'Anthropic 官价纹丝不动,但发了三页安全声明。',
+    fx: { kind: 'price', mul: 1.0, vendor: 'Anthropic', text: 'Anthropic 官价不变' } },
+  { id: 'price_xai_chaos', type: 'price', rare: 0.7, title: '老马发推:新用户给予限时特价福利',
+    body: 'Grok 新模型取得突破,下一代旗舰有望达到 K3 水准。',
+    fx: { kind: 'price', mul: 0.85, vendor: 'xAI', text: 'Grok 系官价 ×0.85' } },
+  { id: 'price_zhipu_glm', type: 'price', rare: 0.9, title: '唐哥把又送鸡蛋了?',
+    body: '今日上线 zcode 可领取 3 亿 token。【C 端用户狂欢】',
+    fx: { kind: 'price', mul: 0.90, vendor: '智谱', text: 'GLM 官价 ×0.90' },
+    fx2: { kind: 'usersAll', pct: -0.05, text: '全站用户量 −5%' } },
+  { id: 'price_kimi_longctx', type: 'price', rare: 0.8, title: 'Kimi 把长上下文卖出白菜价',
+    body: '月之暗面长文本线降价,好模型不能因价格而无法普及众人。',
+    fx: { kind: 'price', mul: 0.75, vendor: '月之暗面', text: 'Kimi 长文本线官价 ×0.75' } },
+  { id: 'price_qwen_flash', type: 'price', rare: 1, title: '千问师兄跟了一手',
+    body: 'Qwen 轻量线同步下调,开源区又开始晒账单。',
+    fx: { kind: 'price', mul: 0.80, vendor: '阿里', text: 'Qwen 轻量线官价 ×0.80' } },
+  { id: 'price_global_shock', type: 'price', rare: 0.25, title: '一夜之间,大家都在涨',
+    body: '多家旗舰同步上调,社区哀嚎「算力又不够了」。',
+    fx: { kind: 'price', mul: 1.15, vendor: '*', text: '全网旗舰官价 ×1.15' } },
+  { id: 'price_ds_sage', type: 'price', rare: 0.2, title: '梁圣显灵',
+    body: 'DeepSeek 某中端型官价近乎腰斩,「像不像」已经不重要了,先抢流量。',
+    fx: { kind: 'price', mul: 0.55, model: 'DeepSeek V4 Pro', vendor: 'DeepSeek', text: 'DeepSeek V4 Pro 官价 ×0.55' },
+    fx2: { kind: 'usersAll', pct: 0.12, text: '全站用户量 +12%' } },
+  // ---- traffic ----
+  { id: 'traffic_google_mm', type: 'traffic', rare: 1, title: '哈基米发布「全民多模态」白皮书',
+    body: '谷谷哥哥用户量上浮。识图、视频需求被官方带节奏。',
+    fx: { kind: 'users', pct: 0.15, ifListed: true, vendor: 'Google', text: '标榜 Google 系列模型 → 用户量 +15%' } },
+  { id: 'traffic_ds_value', type: 'traffic', rare: 1, title: '「疑似 DeepSeek 新卡到货?」',
+    body: '愿意使用 deepsleep 的人越来越多。',
+    fx: { kind: 'users', pct: 0.12, ifListed: true, vendor: 'DeepSeek', text: '标榜 DeepSeek 系列模型 → 用户量 +12%' } },
+  { id: 'traffic_anthropic_safety', type: 'traffic', rare: 0.8, title: 'a/ 又在测评里拿了满分',
+    body: '安全榜刷屏,企业客户闻着味来了。',
+    fx: { kind: 'users', pct: 0.08, ifListed: true, vendor: 'Anthropic', text: '标榜 Anthropic 系列模型 → 用户量 +8%' } },
+  { id: 'traffic_oai_noisy', type: 'traffic', rare: 0.7, title: '奥特曼这周开了三次新模型发布会',
+    body: '有人夸有人骂,但流量是实的。',
+    fx: { kind: 'usersRoll', up: 0.10, down: 0.08, ifListed: true, vendor: 'OpenAI', text: '标榜 OpenAI 系列模型 → 用户量 +10% 或 −8%' } },
+  { id: 'traffic_xai_meme', type: 'traffic', rare: 0.6, title: '老马把 Grok 推上了热榜',
+    body: '整活视频全网转,尝鲜用户涌入。',
+    fx: { kind: 'users', pct: 0.18, ifListed: true, vendor: 'xAI', text: '标榜 xAI 系列模型 → 用户量 +18%' } },
+  { id: 'traffic_zhipu_b2b', type: 'traffic', rare: 0.9, title: '唐哥那边企业询盘变多',
+    body: '政企项目偏爱「稳」,GLM 用户更黏。',
+    fx: { kind: 'users', pct: 0.06, ifListed: true, vendor: '智谱', text: '标榜 GLM 系列模型 → 用户量 +6%' } },
+  { id: 'traffic_kimi_papers', type: 'traffic', rare: 0.8, title: '论文季,Ki 党出动',
+    body: '长文献总结需求暴涨。',
+    fx: { kind: 'users', pct: 0.14, ifListed: true, vendor: '月之暗面', text: '标榜 Kimi 系列模型 → 用户量 +14%' } },
+  { id: 'traffic_qwen_fest', type: 'traffic', rare: 0.7, title: '千问又开源了一批权重',
+    body: '社区自部署党欢呼,中转站流量被分走一点。',
+    fx: { kind: 'users', pct: -0.08, ifListed: true, vendor: '阿里', text: '标榜 Qwen 系列模型 → 用户量 −8%' } },
+  { id: 'traffic_blackbox_skeptic', type: 'traffic', rare: 0.25, title: '有人做了个「你是哪家模型」投票',
+    body: '用户开始交叉测各家。像不像、硬不硬,一测便知。',
+    fx: { kind: 'users', pct: 0.10, ifListed: true, text: '有效相似≥80 更吃香;否则可能 −15%' } },
+  // ---- station ----
+  { id: 'station_rumor_exit', type: 'station', rare: 1, title: '社区疯传「中转站连夜跑路」',
+    body: '假的,但用户信了。信誉挨一记闷棍。',
+    fx: { kind: 'rep', v: -5, text: '全站信誉 −5' } },
+  { id: 'station_audit', type: 'station', rare: 0.7, title: '「合规抽查」通知贴满了论坛',
+    body: '不知道查谁,反正大家先把差评写好了。',
+    fx: { kind: 'rep', v: -3, text: '全站信誉 −3' },
+    fx2: { kind: 'usersAll', pct: -0.05, text: '全站用户量 −5%' } },
+  { id: 'station_reviewgate', type: 'station', rare: 0.6, title: '有人扒出某站「好评返 tokens」',
+    body: '行业污名,所有中转站连坐。',
+    fx: { kind: 'rep', v: -4, text: '全站信誉 −4' } },
+  { id: 'station_techweek', type: 'station', rare: 0.8, title: '全网都在晒「我是怎么搭中转的」',
+    body: '注意力来了。信誉微涨,新用户探头。',
+    fx: { kind: 'rep', v: 2, text: '全站信誉 +2' },
+    fx2: { kind: 'usersAll', pct: 0.05, text: '全站用户量 +5%' } },
+  { id: 'station_giant_fall', type: 'station', rare: 0.3, title: '某头部中转站被实锤掺水',
+    body: '行业信任探底。小站也可能被误伤。',
+    fx: { kind: 'rep', v: -6, text: '全站信誉 −6' },
+    fx2: { kind: 'usersAll', pct: -0.10, text: '全站用户量 −10%' } },
+  { id: 'station_blackfriday', type: 'station', rare: 0.3, title: '不知道谁发起的「中转黑五」',
+    body: '全网比价日。定价有竞争力的站吃肉。',
+    fx: { kind: 'usersAll', pct: 0.15, text: '全站用户量 +15%(定价贵则可能 −5%)' } },
+  // ---- pool ----
+  { id: 'pool_sea_minute', type: 'pool', rare: 1, title: '传闻某东南亚池改按分钟计费',
+    body: '号池玩家吵翻了。你这边号池还没开,先记在小本本上。', fx: null },
+  { id: 'pool_free_tight', type: 'pool', rare: 1, title: '又一家收紧免费额度',
+    body: '白嫖时代的眼泪。号池接入成本可能要变。', fx: null },
+  { id: 'pool_premium_uptime', type: 'pool', rare: 0.8, title: '某优质池晒出 99.99% 可用性',
+    body: '贵是有原因的。等号池玩法开了再看这条有没有用。', fx: null },
+  { id: 'pool_blackmarket', type: 'pool', rare: 0.7, title: '「我有一个朋友的号池特别稳」',
+    body: '社区暗语满天飞。真假不重要,氛围到位了。', fx: null },
+  // ---- gossip ----
+  { id: 'gossip_anthropic_debate', type: 'gossip', rare: 1, title: 'a/ 员工在内部论坛吵了三天「要不要支持视频」',
+    body: '无事发生。', fx: null },
+  { id: 'gossip_google_rename', type: 'gossip', rare: 1, title: '哈基米把某个功能改名了,然后又改回来',
+    body: '用户:所以现在叫什么?', fx: null },
+  { id: 'gossip_mars_vs_tang', type: 'gossip', rare: 0.7, title: '老马回复了一条关于 GLM 的帖子',
+    body: '唐哥已读不回。世界安静了。', fx: null },
+  { id: 'gossip_liang_commit', type: 'gossip', rare: 0.8, title: '凌晨三点,梁子又提交了',
+    body: 'commit message: fix typo。Star 数 +1k。', fx: null },
+  { id: 'gossip_altman_moon', type: 'gossip', rare: 0.9, title: '奥特曼发了一张月亮照片',
+    body: '社区解读出十七种 AGI 含义。', fx: null },
+  { id: 'gossip_bench_essay', type: 'gossip', rare: 1, title: '又一篇「我们重新测了所有模型」的长文',
+    body: '评论区比正文精彩。', fx: null },
+  { id: 'gossip_prompt_magic', type: 'gossip', rare: 1, title: '「加一句你是专家,分数暴涨」',
+    body: '信则有,不信则调 temperature。', fx: null },
+  { id: 'gossip_gpu_meme', type: 'gossip', rare: 0.9, title: '「我的 4090 在挖矿还是在推理?」',
+    body: '网友:都在,都在。', fx: null },
+  { id: 'gossip_leadership_war', type: 'gossip', rare: 0.8, title: '三家同时宣布自己是「第一」',
+    body: '用了四种不同的「第一」定义。', fx: null },
+  { id: 'gossip_secret_beta', type: 'gossip', rare: 0.3, title: '有人收到了「下一代」内测邀请',
+    body: '截图打了二十七层码。真假未知,期待拉满。', fx: null },
+];
+
+function newsEffectLabel(fx) {
+  if (!fx) return '';
+  return fx.text || '';
+}
+
+function newsTargetVendor(entry) {
+  const fx = entry.fx || {};
+  return fx.vendor || null;
+}
+
+// 帖子加成:{ vendor, kind:'guide'|'neutral', untilH, weight } —— 影响下一篇同厂抽中权重 / 或对当前负面做一次冲销
+function newsBoosts(R) {
+  if (!R.news) R.news = newsDefaults();
+  return R.news.boosts || (R.news.boosts = []);
+}
+
+function newsDefaults() {
+  return {
+    totalH: 0,
+    nextSpawnH: NEWS_INTERVAL_H,
+    active: [],          // [{ key, id, type, title, body, fxText, bornH, expireH, fx, fx2, likes, shares, favs, vendor }]
+    collected: {},       // id -> true
+    boosts: [],          // [{ vendor, kind, untilH }]
+  };
+}
+
+function applyNewsFx(fx) {
+  if (!fx) return;
+  const R = state.relay;
+  if (fx.kind === 'price') return; // price 挂在 active 上,不直接改 state
+  if (fx.kind === 'rep') {
+    R.reputation = Math.max(0, Math.min(100, R.reputation + fx.v));
+    return;
+  }
+  if (fx.kind === 'usersAll') {
+    const n = Math.max(0, Math.round(R.users * (1 + fx.pct)));
+    // 重掷部分时长,保持简单:按比例缩放 slots
+    if (fx.pct < 0) {
+      const drop = Math.max(0, R.users - n);
+      for (let i = 0; i < drop && R.userSlots.length > 0; i++) R.userSlots.pop();
+    } else {
+      const add = n - R.users;
+      for (let i = 0; i < add; i++) {
+        R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50) });
+      }
+    }
+    R.users = R.userSlots.length;
+    return;
+  }
+  if (fx.kind === 'users' && fx.ifListed) {
+    const listed = relayListedModel();
+    if (!listed) return;
+    if (fx.vendor && listed.v !== fx.vendor && listed.v.indexOf(fx.vendor) < 0) return;
+    if (fx.model && listed.n !== fx.model) return;
+    applyNewsFx({ kind: 'usersAll', pct: fx.pct });
+    return;
+  }
+  if (fx.kind === 'usersRoll' && fx.ifListed) {
+    const listed = relayListedModel();
+    if (!listed) return;
+    if (fx.vendor && listed.v !== fx.vendor && listed.v.indexOf(fx.vendor) < 0) return;
+    const up = Math.random() < 0.55;
+    applyNewsFx({ kind: 'usersAll', pct: up ? fx.up : -fx.down });
+    return;
+  }
+  // blackbox 特殊:无 vendor 时按相似度
+  if (fx.kind === 'users' && !fx.vendor && !fx.model) {
+    const listed = relayListedModel();
+    if (!listed) return;
+    const sim = similarityTo(R.ability, listed);
+    applyNewsFx({ kind: 'usersAll', pct: sim >= 80 ? 0.10 : -0.15 });
+  }
+}
+
+function newsPriceMulFor(m) {
+  const R = state.relay;
+  if (!R.news || !R.news.active) return 1;
+  let mul = 1;
+  for (const a of R.news.active) {
+    if (a.type !== 'price' || !a.fx || a.fx.kind !== 'price') continue;
+    const fx = a.fx;
+    let hit = false;
+    if (fx.model && m.n === fx.model) hit = true;
+    else if (fx.vendor === '*') hit = true;
+    else if (fx.vendor && (m.v === fx.vendor || m.v.indexOf(fx.vendor) >= 0)) hit = true;
+    if (hit) mul = fx.mul; // 覆盖,不叠乘
+  }
+  return mul;
+}
+
+function spawnNews() {
+  const R = state.relay;
+  if (!R.news) R.news = newsDefaults();
+  // 清过期
+  R.news.active = R.news.active.filter(a => a.expireH > R.news.totalH);
+  if (R.news.active.length >= NEWS_MAX_ACTIVE) return null;
+
+  // 权重抽
+  const boosts = newsBoosts(R).filter(b => b.untilH > R.news.totalH);
+  R.news.boosts = boosts;
+  const cands = [];
+  for (const e of NEWS_POOL) {
+    if (R.news.active.some(a => a.id === e.id)) continue;
+    let w = e.rare || 1;
+    const ven = newsTargetVendor(e);
+    for (const b of boosts) {
+      if (!ven || ven === '*' || (b.vendor && ven.indexOf(b.vendor) >= 0) || (e.fx && e.fx.vendor && b.vendor && e.fx.vendor.indexOf(b.vendor) >= 0)) {
+        if (b.kind === 'guide') w *= 2.2;
+        else if (b.kind === 'neutral') w *= 1.4;
+      }
+    }
+    cands.push({ e, w });
+  }
+  if (!cands.length) return null;
+  let sum = 0;
+  for (const c of cands) sum += c.w;
+  let r = Math.random() * sum;
+  let pick = cands[0].e;
+  for (const c of cands) {
+    r -= c.w;
+    if (r <= 0) { pick = c.e; break; }
+  }
+
+  const key = pick.id + '#' + Math.floor(R.news.totalH);
+  const likes = Math.floor(8 + Math.random() * (pick.rare < 0.4 ? 800 : 180));
+  const shares = Math.floor(2 + Math.random() * (pick.rare < 0.4 ? 200 : 40));
+  const favs = Math.floor(1 + Math.random() * (pick.rare < 0.4 ? 120 : 30));
+  const item = {
+    key,
+    id: pick.id,
+    type: pick.type,
+    title: pick.title,
+    body: pick.body,
+    fx: pick.fx ? Object.assign({}, pick.fx) : null,
+    fx2: pick.fx2 ? Object.assign({}, pick.fx2) : null,
+    fxText: [newsEffectLabel(pick.fx), newsEffectLabel(pick.fx2)].filter(Boolean).join(' · '),
+    vendor: newsTargetVendor(pick) || (pick.fx && pick.fx.vendor) || null,
+    bornH: R.news.totalH,
+    expireH: R.news.totalH + NEWS_LIFE_H,
+    likes, shares, favs,
+    viewed: false,
+  };
+
+  // price 同目标:覆盖旧的
+  if (item.type === 'price' && item.fx && item.fx.kind === 'price') {
+    R.news.active = R.news.active.filter(a => {
+      if (a.type !== 'price' || !a.fx) return true;
+      const same =
+        (item.fx.model && a.fx.model === item.fx.model) ||
+        (item.fx.vendor === '*') ||
+        (item.fx.vendor && a.fx.vendor === item.fx.vendor) ||
+        (a.fx.vendor === '*');
+      return !same;
+    });
+  }
+
+  // 应用一次性效果
+  applyNewsFx(item.fx);
+  applyNewsFx(item.fx2);
+  // 对「中和」:若抽到负面 station/traffic 且有 neutral 加成,小概率减半(简化:信誉/用户补偿一半)
+  // 已在 apply 后,不再拆;引导主要靠权重
+
+  R.news.active.unshift(item);
+  R.news.collected[item.id] = true;
+  return item;
+}
+
+function newsTick(gameHours) {
+  const R = state.relay;
+  if (!R.news) R.news = newsDefaults();
+  R.news.totalH += gameHours;
+  R.news.active = R.news.active.filter(a => a.expireH > R.news.totalH);
+  while (R.news.totalH >= R.news.nextSpawnH) {
+    R.news.nextSpawnH += NEWS_INTERVAL_H;
+    spawnNews();
+  }
+}
+
+// 官方参考价:基础 blend × 活跃 price 系数(覆盖)
+function officialPriceOf(m) {
+  const base = blendPriceNum(m);
+  const R = state.relay;
+  if (!R.news || !R.news.active) return base;
+  return base * newsPriceMulFor(m);
+}
+
 function relayListedModel() { return findModelByName(state.relay.listedModel); }
 function relayBaseUsers() { return 2 + Math.floor(state.relay.reputation / 25); }
 
@@ -1366,6 +1685,18 @@ function relayHourlyRefresh() {
       }
     }
   }
+  // 保底:用户量归零时,不要求便宜定价,低概率送回 1~2 个尝鲜用户(防「信誉还在却永远没人」死锁)
+  // 已标榜且有价才送(没上架时中转站还没有「服务」可试)
+  if (keep.length === 0 && listed && R.price > 0) {
+    if (Math.random() < 0.35) {
+      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
+      const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + R.reputation / 50;
+      for (let i = 0; i < n; i++) {
+        keep.push({ leftH: tMin + Math.random() * Math.max(0.5, tMax - tMin) });
+      }
+    }
+  }
+  R.userSlots = keep;
   R.users = R.userSlots.length;
   // 服务中断惩罚
   if (R.serviceDown) {
@@ -1398,9 +1729,11 @@ function relayRepSettle() {
 }
 
 // 主循环每帧调用:时钟 + 卖 token 换刀乐 + 到点触发小时/信誉刷新
+let relayUiAccum = 0; // 活字节流累加器(纯 UI 计时,不进存档)
 function updateRelayBusiness(dt) {
   const R = state.relay;
   const gameHours = dt * (RELAY_BIZ.GAME_MIN_PER_REAL_SEC / 60);
+  // 时钟:gameHour 0~24 循环;天数用 news.totalH 累计(存档已有),floor(/24)+1 = 第几天
   R.gameHour = (R.gameHour + gameHours) % 24;
 
   // 活跃系数随机游走(慢,别每帧乱跳)
@@ -1434,14 +1767,22 @@ function updateRelayBusiness(dt) {
     R.repAccum -= RELAY_BIZ.REP_CYCLE_H;
     relayRepSettle();
   }
+  // 社区日报:每 6 游戏时
+  newsTick(gameHours);
 
-  // 后台页开着时原地刷新活字(不整页重绘,避免 destroy 开销)
-  if (screenPanelOpen && panelTab === 'backend' && backendLive) {
+  // 后台页开着时原地刷新活字(不整页重绘,避免 destroy 开销)。
+  // 节流 0.25s:卖出进行时 dollars 每帧都变,不加节流的话这几条 PIXI.Text 每帧都重栅格化
+  // (与购买按钮每帧重绘同类的问题);0.25s 对肉眼足够顺滑,时钟 1 游戏分/秒的精度不受影响。
+  // 累加器是模块级变量,不进 state.relay(避免把纯 UI 计时字段序列化进存档)。
+  relayUiAccum += dt;
+  const uiDue = relayUiAccum >= 0.25;
+  if (uiDue) relayUiAccum = 0;
+  if (screenPanelOpen && panelTab === 'backend' && backendLive && uiDue) {
     backendLive.dollars.text = '$' + formatNum(R.dollars);
     backendLive.tokens.text = formatNum(state.tokens);
     backendLive.rep.text = R.reputation.toFixed(1);
     backendLive.users.text = String(R.users);
-    backendLive.clock.text = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0');
+    backendLive.clock.text = gameClockFull();
     backendLive.rate.text = listed && R.price > 0
       ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
       : '未标榜';
@@ -1464,12 +1805,12 @@ function updateRelayBusiness(dt) {
       backendLive.sim.style.fill = '#b0a294';
     }
   }
-  // 中转站顶栏 HUD(与生产 tokens 同位置,不遮电脑面板)
-  if (relaySceneOpen && relayHudLine1) {
+  // 中转站顶栏 HUD(与生产 tokens 同位置,不遮电脑面板)—— 同上一条节流
+  if (relaySceneOpen && relayHudLine1 && uiDue) {
     const listed2 = relayListedModel();
     relayHudLine1.text = '$' + formatNum(R.dollars) + '   ·   ' + R.users + ' 人   ·   信誉 ' + R.reputation.toFixed(1);
-    relayHudLine2.text = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0')
-      + (listed2 ? '   ·   标榜 ' + listed2.n : '   ·   未标榜')
+    relayHudLine2.text = gameClockFull()
+      + (listed2 ? '   ·   标榜 ' + listed2.n + ' 模型' : '   ·   未标榜')
       + (R.serviceDown ? '   ·   ⚠中断' : '');
   }
 }
@@ -1570,10 +1911,15 @@ let screenPanelOpen = false;
 
 function openScreenPanel() {
   if (screenPanelOpen) return; // 防止重复打开
+  // 面板必须盖在当前场景之上(调教/中转站)、仍在 topbar 之下。
+  // tuneScene 是后插到 topbar 前的,不重新锚定会盖住 panel。
+  app.stage.addChildAt(layers.panel, app.stage.getChildIndex(layers.topbar));
   screenPanelOpen = true;
   screenPanel.visible = true;
   screenGlowHit.eventMode = 'none'; // 打开后禁用屏幕点击,避免重复触发
   radarAnim = true;                 // 每次打开都重新播一次"从中心长出"
+  // 调教场景点「面板」:默认落在「模型」页(与中转站面板同款内容)
+  if (tuneSceneOpen && !relaySceneOpen) panelTab = 'model';
   layoutScreenPanel();
 }
 
@@ -1581,6 +1927,8 @@ function closeScreenPanel() {
   screenPanelOpen = false;
   showAttrDetail = false;
   backendDetailOpen = false;
+  communityDetailKey = null;
+  communityPostOpen = false;
   boardPickIdx = -1;
   editingKey = null;
   screenPanel.visible = false;
@@ -1706,6 +2054,8 @@ function layoutScreenPanel() {
       panelTab = tab.key;
       showAttrDetail = false;
       backendDetailOpen = false;
+      communityDetailKey = null;
+      communityPostOpen = false;
       boardPickIdx = -1;
       editingKey = null;
       if (tab.key === 'model') radarAnim = true;   // 切回模型页也重播一次
@@ -1735,12 +2085,14 @@ function layoutScreenPanel() {
   else if (panelTab === 'community')   drawCommunityPage(cx0, cy0, cw, ch);
   else                                 drawBackendPage(cx0, cy0, cw, ch);
 
-  // 弹层:榜单行点开的是模型属性编辑器(临时调试);模型页是「数据详情」;后台页是经营数据详情
+  // 弹层:榜单编辑器 / 模型数据详情 / 后台经营详情 / 社区发帖
   attrDetailLayer.visible = boardPickIdx >= 0
     || (showAttrDetail && panelTab === 'model')
-    || (backendDetailOpen && panelTab === 'backend');
+    || (backendDetailOpen && panelTab === 'backend')
+    || (communityPostOpen && panelTab === 'community');
   if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
   else if (backendDetailOpen && panelTab === 'backend') drawBackendDetail(px, py, pw, ph);
+  else if (communityPostOpen && panelTab === 'community') drawCommunityPost(px, py, pw, ph);
   else if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
 
   // 搜索框 DOM:只在「面板开着 + 榜单页 + 没打开模型面板」显示
@@ -1774,6 +2126,14 @@ app.view.addEventListener('wheel', (e) => {
     const next = Math.max(0, Math.min(REAL_MODELS.length - 1, backendPickScroll + step));
     if (next === backendPickScroll) return;
     backendPickScroll = next;
+    layoutScreenPanel();
+  } else if (panelTab === 'community') {
+    if (communityDetailKey || communityPostOpen) return;
+    const feed = newsFeedSorted();
+    const step = e.deltaY > 0 ? 2 : -2;
+    const next = Math.max(0, Math.min(Math.max(0, feed.length - 1), communityScroll + step));
+    if (next === communityScroll) return;
+    communityScroll = next;
     layoutScreenPanel();
   }
 }, { passive: true });
@@ -2701,25 +3061,378 @@ function tryAdmodel(v) {
   return true;
 }
 
-// ---------- 内容页:社区(热点报道 + 公告) 占位 ----------
-// 机制设计见 中转站设计.md 第 7、8 节;此处只放静态说明文字,未接任何逻辑。
+// ---------- 内容页:社区(日报流) v1 ----------
+// 列表可滚;点进详情看假互动数;右上角「发帖」占位(引导/中和,影响权重或当前负面)。
+let communityScroll = 0;
+let communityDetailKey = null; // 点开的活跃/归档条目 key
+let communityPostOpen = false;
+let communityLiveCount = null;
+
+function newsFeedSorted() {
+  const R = state.relay;
+  if (!R.news) return [];
+  return R.news.active.slice().sort((a, b) => b.bornH - a.bornH);
+}
+
+// 绝对游时 → 时钟 xx:xx(24 进制循环)
+function gameHourClock(totalH) {
+  const t = ((totalH % 24) + 24) % 24;
+  const hh = Math.floor(t);
+  const mm = Math.floor((t - hh) * 60);
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+}
+
+// 绝对游时 → 「第 N 天」(1-indexed;首日为第 1 天)
+function gameDayLabel(totalH) {
+  const d = Math.floor(Math.max(0, totalH) / 24) + 1;
+  return '第' + d + '天';
+}
+
+// 当前游戏时刻:第 N 天 HH:MM(后台/顶栏共用)
+function gameClockFull() {
+  const totalH = (state.relay && state.relay.news && typeof state.relay.news.totalH === 'number')
+    ? state.relay.news.totalH : 0;
+  // 用 gameHour 显示「当前钟面」,天数用累计;两者同速推进
+  const gh = state.relay ? state.relay.gameHour : 0;
+  const hh = Math.floor(gh);
+  const mm = Math.floor((gh - hh) * 60);
+  const clock = String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  return gameDayLabel(totalH) + ' ' + clock;
+}
+
 function drawCommunityPage(x, y, w, h) {
-  const title = makeText('社区', { size: Math.min(32, w * 0.06), color: '#2a2118', weight: 'bold' });
-  title.x = x + w * 0.06; title.y = y + h * 0.05;
+  communityLiveCount = null;
+  const padX = w * 0.04;
+  const R = state.relay;
+  if (!R.news) R.news = newsDefaults();
+
+  // 详情模式:不画「社区」标题/副标题/发帖钮,整页留给日报
+  if (communityDetailKey) {
+    const item = R.news.active.find(a => a.key === communityDetailKey);
+    if (item) {
+      drawCommunityDetail(item, x, y, w, h);
+      return;
+    }
+    communityDetailKey = null;
+  }
+
+  const title = makeText('社区', { size: Math.min(30, w * 0.055), color: '#2a2118', weight: 'bold' });
+  title.x = x + padX; title.y = y + h * 0.04;
   panelContentArea.addChild(title);
 
-  const lines = [
-    '热点报道:类别(推理 / 多模态 / 长上下文 / Agent / 廉价快模型)× 热度档位(大热~冰),3~10 天',
-    '热度直接乘进顾客量,并把该类别的市场价最高抬 +40%',
-    '公告(公关):诡辩 / 道歉 / 补贴,概率成功;声誉越高越容易成功',
-    '',
-    '—— 待实现,设计见 中转站设计.md 第 7、8 节 ——',
-  ];
-  lines.forEach((s, i) => {
-    const t = makeText(s, { size: 14, color: i >= 3 ? '#b0a294' : '#4a3c2c' });
-    t.x = x + w * 0.06; t.y = y + h * 0.18 + i * 28;
-    panelContentArea.addChild(t);
+  const nCol = Object.keys(R.news.collected || {}).length;
+  const nAll = NEWS_POOL.length;
+  const sub = makeText('日报每 6 游时刷新 · 有效 ' + R.news.active.length + '/' + NEWS_MAX_ACTIVE
+    + ' · 收集 ' + nCol + '/' + nAll, { size: 12, color: '#8a7a68' });
+  sub.x = x + padX; sub.y = title.y + title.height + 4;
+  panelContentArea.addChild(sub);
+  communityLiveCount = sub;
+
+  drawCommunityPostBtn(x + w, y);
+
+  // 列表(卡片加大,不再挤)
+  const listY = y + h * 0.16;
+  const listH = h * 0.78;
+  const rowH = 96;
+  const maxRows = Math.max(2, Math.floor(listH / rowH));
+  const feed = newsFeedSorted();
+  communityScroll = Math.max(0, Math.min(Math.max(0, feed.length - 1), communityScroll));
+
+  const hover = new PIXI.Graphics();
+  if (!feed.length) {
+    const empty = makeText('还没有日报。等 6 游戏时,或先去经营中转站。', { size: 15, color: '#b0a294' });
+    empty.x = x + padX; empty.y = listY + 20;
+    panelContentArea.addChild(empty);
+  }
+
+  for (let r = 0; r < maxRows; r++) {
+    const idx = communityScroll + r;
+    if (idx >= feed.length) break;
+    const item = feed[idx];
+    const ry = listY + r * rowH;
+    const cardH = rowH - 12;
+    const card = new PIXI.Graphics();
+    card.lineStyle(1, 0xc4b8a8, 0.45);
+    card.beginFill(0xe8e0d4, 0.40);
+    card.drawRoundedRect(x + padX, ry, w - padX * 2, cardH, 8);
+    card.endFill();
+    panelContentArea.addChild(card);
+
+    const typeCol = NEWS_TYPE_COLOR[item.type] || '#8a7a68';
+    const tagBg = new PIXI.Graphics();
+    tagBg.beginFill(parseInt(typeCol.slice(1), 16), 1);
+    tagBg.drawRoundedRect(x + padX + 14, ry + 14, 48, 20, 4);
+    tagBg.endFill();
+    panelContentArea.addChild(tagBg);
+    const tag = makeText(NEWS_TYPE_NAME[item.type] || item.type, { size: 12, color: '#fff', weight: 'bold', anchor: 0.5 });
+    tag.x = x + padX + 14 + 24; tag.y = ry + 24;
+    panelContentArea.addChild(tag);
+
+    const tt = makeText(item.title, { size: 17, color: '#2a2118', weight: 'bold' });
+    tt.x = x + padX + 72; tt.y = ry + 12;
+    panelContentArea.addChild(tt);
+
+    const bodyShort = item.body.length > 36 ? item.body.slice(0, 36) + '…' : item.body;
+    const bt = makeText(bodyShort, { size: 14, color: '#5a4a38' });
+    bt.x = x + padX + 72; bt.y = ry + 38;
+    panelContentArea.addChild(bt);
+
+    if (item.fxText) {
+      const ft = makeText(item.fxText, { size: 13, color: typeCol });
+      ft.x = x + padX + 72; ft.y = ry + 62;
+      panelContentArea.addChild(ft);
+    }
+    const meta = makeText('赞 ' + item.likes + ' · 转 ' + item.shares + ' · 藏 ' + item.favs
+      + (item.viewed ? '' : ' · 新'), { size: 12, color: '#b0a294' });
+    meta.x = x + w - padX - 160; meta.y = ry + 64;
+    panelContentArea.addChild(meta);
+
+    const hit = new PIXI.Graphics();
+    hit.beginFill(0xffffff, 0.001);
+    hit.drawRect(x + padX, ry, w - padX * 2, cardH);
+    hit.endFill();
+    hit.eventMode = 'static';
+    hit.cursor = 'pointer';
+    hit.hitArea = new PIXI.Rectangle(x + padX, ry, w - padX * 2, cardH);
+    hit.on('pointerover', () => {
+      hover.clear();
+      hover.lineStyle(2, 0x7ab8d4, 0.9);
+      hover.drawRoundedRect(x + padX + 1, ry + 1, w - padX * 2 - 2, cardH - 2, 7);
+      hover.visible = true;
+    });
+    hit.on('pointerout', () => { hover.visible = false; });
+    hit.on('pointerdown', () => {
+      item.viewed = true;
+      communityDetailKey = item.key;
+      layoutScreenPanel();
+    });
+    panelContentArea.addChild(hit);
+  }
+  panelContentArea.addChild(hover);
+
+  const hint = communityScroll + maxRows >= feed.length
+    ? '已到底 · 共 ' + feed.length + ' 条'
+    : '↓ 滚轮继续 · ' + (communityScroll + maxRows) + ' / ' + feed.length;
+  const ht = makeText(hint, { size: 12, color: '#b0a294' });
+  ht.x = x + padX; ht.y = y + h - 14;
+  panelContentArea.addChild(ht);
+}
+
+function drawCommunityDetail(item, x, y, w, h) {
+  const padX = w * 0.05;
+
+  // 返回:用 Graphics 做完整热区(Text 自身 hitArea 坐标系不对,点不着)
+  const backW = 120, backH = 36;
+  const backX = x + padX;
+  const backY = y + h * 0.03;
+  const backBg = new PIXI.Graphics();
+  backBg.lineStyle(1, 0x9ab8d0, 0.9);
+  backBg.beginFill(0xe8f0f8, 0.95);
+  backBg.drawRoundedRect(backX, backY, backW, backH, 8);
+  backBg.endFill();
+  backBg.eventMode = 'static';
+  backBg.cursor = 'pointer';
+  backBg.hitArea = new PIXI.Rectangle(backX, backY, backW, backH);
+  backBg.on('pointerdown', (e) => {
+    e.stopPropagation();
+    communityDetailKey = null;
+    layoutScreenPanel();
   });
+  panelContentArea.addChild(backBg);
+  const backT = makeText('← 返回列表', { size: 16, color: '#2a5a8a', weight: 'bold', anchor: 0.5 });
+  backT.x = backX + backW / 2;
+  backT.y = backY + backH / 2;
+  panelContentArea.addChild(backT);
+
+  const typeCol = NEWS_TYPE_COLOR[item.type] || '#8a7a68';
+  const tagBg = new PIXI.Graphics();
+  tagBg.beginFill(parseInt(typeCol.slice(1), 16), 1);
+  tagBg.drawRoundedRect(x + padX, backY + backH + 18, 56, 24, 4);
+  tagBg.endFill();
+  panelContentArea.addChild(tagBg);
+  const tag = makeText(NEWS_TYPE_NAME[item.type] || '', { size: 13, color: '#fff', weight: 'bold', anchor: 0.5 });
+  tag.x = x + padX + 28; tag.y = backY + backH + 30;
+  panelContentArea.addChild(tag);
+
+  const title = makeText(item.title, { size: Math.min(28, w * 0.05), color: '#2a2118', weight: 'bold' });
+  title.x = x + padX + 68; title.y = backY + backH + 16;
+  panelContentArea.addChild(title);
+
+  // 互动 + 时间:时钟格式;剩余 ≤0 不显示
+  const eng = makeText('赞 ' + item.likes + '    转发 ' + item.shares + '    收藏 ' + item.favs, {
+    size: 16, color: '#8a7a68',
+  });
+  eng.x = x + padX; eng.y = backY + backH + 52;
+  panelContentArea.addChild(eng);
+
+  const totalH = state.relay.news ? state.relay.news.totalH : 0;
+  const remain = item.expireH - totalH;
+  let metaTxt = '发布于 ' + gameDayLabel(item.bornH) + ' ' + gameHourClock(item.bornH);
+  if (remain > 0) {
+    const rh = Math.ceil(remain);
+    metaTxt += '  ·  剩余 ' + rh;
+  }
+  const meta = makeText(metaTxt, { size: 14, color: '#b0a294' });
+  meta.x = x + padX; meta.y = eng.y + 28;
+  panelContentArea.addChild(meta);
+
+  const bodyY = meta.y + 36;
+  const body = makeText(item.body, { size: 18, color: '#3a2f22' });
+  body.style.wordWrap = true;
+  body.style.breakWords = true;
+  body.style.wordWrapWidth = w - padX * 2;
+  body.lineHeight = 28;
+  body.x = x + padX; body.y = bodyY;
+  panelContentArea.addChild(body);
+
+  if (item.fxText) {
+    const boxY = Math.max(bodyY + body.height + 20, y + h * 0.55);
+    const box = new PIXI.Graphics();
+    box.beginFill(0xe8e0d4, 0.75);
+    box.drawRoundedRect(x + padX, boxY, w - padX * 2, 64, 8);
+    box.endFill();
+    panelContentArea.addChild(box);
+    const ft = makeText('效果 · ' + item.fxText, { size: 16, color: typeCol, weight: 'bold' });
+    ft.style.wordWrap = true;
+    ft.style.wordWrapWidth = w - padX * 2 - 24;
+    ft.x = x + padX + 12; ft.y = boxY + 20;
+    panelContentArea.addChild(ft);
+  }
+
+  const tip = makeText('评论区施工中 · 图片位预留', { size: 14, color: '#b0a294' });
+  tip.x = x + padX; tip.y = y + h - 28;
+  panelContentArea.addChild(tip);
+}
+
+function drawCommunityPostBtn(right, top) {
+  const bw = 72, bh = 28;
+  const bx = right - bw - 16, by = top + 14;
+  const btn = new PIXI.Graphics();
+  btn.lineStyle(1, 0xc4b8a8, 0.9);
+  btn.beginFill(communityPostOpen ? 0xd4a574 : 0xe8e0d4, 1);
+  btn.drawRoundedRect(bx, by, bw, bh, 8);
+  btn.endFill();
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+  btn.on('pointerdown', () => { communityPostOpen = !communityPostOpen; layoutScreenPanel(); });
+  panelContentArea.addChild(btn);
+  const label = makeText('发帖', { size: 13, color: '#5a4632', weight: 'bold', anchor: 0.5 });
+  label.x = bx + bw / 2; label.y = by + bh / 2;
+  panelContentArea.addChild(label);
+}
+
+function drawCommunityPost(px, py, pw, ph) {
+  const w = app.screen.width, h = app.screen.height;
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w, h);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  shade.on('pointerdown', () => { communityPostOpen = false; layoutScreenPanel(); });
+  attrDetailLayer.addChild(shade);
+
+  const cw = Math.min(pw * 0.88, 760);
+  const chh = Math.min(ph * 0.72, 480);
+  const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
+  const card = new PIXI.Graphics();
+  card.lineStyle(1, 0xc4b8a8, 0.9);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('发帖(占位)', { size: 22, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 28; title.y = cy + 22;
+  attrDetailLayer.addChild(title);
+
+  const tip = makeText('选一条活跃日报 → 引导或中和。引导提高同厂下一篇概率;中和有概率立刻缓解负面。\n评论/配图后续再做。',
+    { size: 15, color: '#8a7a68' });
+  tip.style.wordWrap = true;
+  tip.style.wordWrapWidth = cw - 56;
+  tip.lineHeight = 22;
+  tip.x = cx + 28; tip.y = cy + 58;
+  attrDetailLayer.addChild(tip);
+
+  const R = state.relay;
+  const feed = (R.news ? R.news.active : []).slice(0, 6);
+  if (!feed.length) {
+    const e = makeText('当前没有活跃日报。', { size: 16, color: '#b0a294' });
+    e.x = cx + 28; e.y = cy + chh * 0.45;
+    attrDetailLayer.addChild(e);
+    return;
+  }
+  const listTop = cy + 120;
+  const rowH = 52;
+  feed.forEach((item, i) => {
+    const ry = listTop + i * rowH;
+    if (i > 0) {
+      const line = new PIXI.Graphics();
+      line.lineStyle(1, 0xc4b8a8, 0.25);
+      line.moveTo(cx + 24, ry);
+      line.lineTo(cx + cw - 24, ry);
+      attrDetailLayer.addChild(line);
+    }
+    const nm = makeText((item.title.length > 22 ? item.title.slice(0, 22) + '…' : item.title)
+      + (item.vendor ? ' · ' + item.vendor : ''), { size: 15, color: '#3a2f22' });
+    nm.x = cx + 28; nm.y = ry + 14;
+    attrDetailLayer.addChild(nm);
+
+    const mkBtn = (label, bx, kind) => {
+      const bw = 64, bh = 32;
+      const b = new PIXI.Graphics();
+      b.lineStyle(1, 0xc4b8a8, 0.6);
+      b.beginFill(kind === 'guide' ? 0xd4a574 : 0xe8e0d4, 1);
+      b.drawRoundedRect(bx, ry + 10, bw, bh, 6);
+      b.endFill();
+      b.eventMode = 'static';
+      b.cursor = 'pointer';
+      b.hitArea = new PIXI.Rectangle(bx, ry + 10, bw, bh);
+      b.on('pointerdown', () => {
+        handleCommunityPost(item, kind);
+        communityPostOpen = false;
+        layoutScreenPanel();
+      });
+      attrDetailLayer.addChild(b);
+      const t = makeText(label, { size: 14, color: '#3a2f22', weight: 'bold', anchor: 0.5 });
+      t.x = bx + bw / 2; t.y = ry + 10 + bh / 2;
+      attrDetailLayer.addChild(t);
+    };
+    mkBtn('引导', cx + cw - 180, 'guide');
+    mkBtn('中和', cx + cw - 100, 'neutral');
+  });
+}
+
+function handleCommunityPost(item, kind) {
+  const R = state.relay;
+  if (!R.news) R.news = newsDefaults();
+  const ven = item.vendor || '全场';
+  const boosts = newsBoosts(R);
+  boosts.push({ vendor: ven, kind, untilH: R.news.totalH + 12 });
+  R.news.boosts = boosts;
+
+  // 中和:对当前负面有概率立刻缓解
+  if (kind === 'neutral') {
+    let eased = false;
+    if (item.type === 'station' && item.fx && item.fx.kind === 'rep' && item.fx.v < 0 && Math.random() < 0.45) {
+      R.reputation = Math.min(100, R.reputation - item.fx.v * 0.5); // 回一半
+      eased = true;
+    }
+    if ((item.type === 'traffic' || item.type === 'price') && Math.random() < 0.35) {
+      // 提前结束该条
+      R.news.active = R.news.active.filter(a => a.key !== item.key);
+      eased = true;
+    }
+    spawnFloatText(eased ? '中和成功!' : '中和已记账(下一篇更稳)',
+      app.screen.width / 2, app.screen.height * 0.35);
+  } else {
+    spawnFloatText('引导已发出,同厂热度上升',
+      app.screen.width / 2, app.screen.height * 0.35);
+  }
+  saveGame();
 }
 
 // ---------- 内容页:后台(经营 v1,设计文档 §14) ----------
@@ -2735,7 +3448,7 @@ let backendDetailOpen = false; // 「数据详情」弹层
 // 和模型页 ATTR_DESC 同一套口语风格,玩家扫一眼就懂。
 const BACKEND_DETAIL_ROWS = [
   ['信誉', '影响用户续约与新增概率;过低会难涨用户', '↑ 每 10 游戏时:有效相似≥80 结算上升(>100% 只小幅升) · ↓ 有效相似<80 越低越狠 · ↓ 服务中断每小时 -1'],
-  ['用户量', '当前在站付费用户;直接决定 token 消耗与刀乐收入', '↑ 定价≤官方参考价 80% 时按概率新增(基于基础用户量) · ↑ 到期时定价≤官价 110% 且信誉尚可会续约 · ↓ 到期未续约就离开'],
+  ['用户量', '当前在站付费用户;直接决定 token 消耗与刀乐收入', '↑ 定价≤官价 80% 时按概率新增 · ↑ 到期时定价≤官价 110% 会续约 · ↑ 人归零且已标榜时,每时约 35% 概率回来 1~2 个尝鲜用户 · ↓ 到期未续约就离开'],
   ['有效相似', '属性距离相似度 × 能力倍率(我的cap/标榜cap,^0.4 软化);可 >100', '↑ 能力溢出标榜模型(高配低标/「灰测」感)会把倍率拉高 · ↓ 弱很多却标强模型 → 倍率压到 0.4 → 信誉崩'],
   ['能力倍率', '(我的cap/标榜cap)^0.4,范围约 0.4~1.5;乘进有效相似', '比值 1→1.0  2→约1.32  0.5→约0.76;属性只有 80% 但能力强一倍 → 有效相似约 106%,用户当「变强了」而信任'],
   ['用户时长', '每个用户在站存活 2~6 游戏时(信誉越高上限越高,+信誉/50)', '到期离开或续约;游戏 1 分 = 现实 1 分钟,2~6 时即 2~6 分钟'],
@@ -2755,7 +3468,7 @@ function drawBackendPage(x, y, w, h) {
   // 右上角「数据详情」(与模型页同款按钮)
   drawBackendDetailButton(x + w, y);
 
-  const clockStr = String(Math.floor(R.gameHour)).padStart(2, '0') + ':' + String(Math.floor((R.gameHour % 1) * 60)).padStart(2, '0');
+  const clockStr = gameClockFull();
   const rateStr = (listed && R.price > 0)
     ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
     : '未标榜';
@@ -2817,12 +3530,14 @@ function drawBackendPage(x, y, w, h) {
   const infoY = y + h * 0.30;
   if (listed) {
     const official = officialPriceOf(listed);
+    const baseP = blendPriceNum(listed);
+    const mulNow = official / Math.max(baseP, 0.0001);
     const rawL = rawSimilarityTo(R.ability, listed);
     const mulL = capMulTo(R.ability, listed);
     const simL = similarityTo(R.ability, listed);
     const lines = [
-      '当前标榜模型:' + listed.n + '  (' + listed.v + ' · ' + listed.t + ' · cap ' + listed.cap + ')',
-      '官方参考价 $' + blendPrice(listed) + ' /M tokens',
+      '当前标榜:' + listed.n + ' 模型  (' + listed.v + ' · ' + listed.t + ' · cap ' + listed.cap + ')',
+      null, // 价格行单独画(可能带划线)
       '我的定价:$' + R.price + ' /M  ·  你的速度属性 ' + R.ability.speed + ' → 每用户 ' + R.ability.speed + ' tok/s',
       '有效相似 ' + simL.toFixed(0) + '%  =  属性' + rawL.toFixed(0) + '% × 能力' + mulL.toFixed(2)
         + '×  (我的 cap ' + modelCapability(R.ability).toFixed(1) + ' / 标榜 ' + listed.cap + ')'
@@ -2830,6 +3545,38 @@ function drawBackendPage(x, y, w, h) {
     ];
     if (R.serviceDown) lines.push('⚠ 库存见底 · 服务中断中(每小时信誉 -1)');
     lines.forEach((s, i) => {
+      if (s === null) {
+        // 价格:原价划线 + 现价(降绿/涨红)
+        const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
+        const lab = makeText('官方参考价 $', { size: 13, color: '#4a3c2c' });
+        lab.x = x + padX; lab.y = infoY + 22;
+        panelContentArea.addChild(lab);
+        const ox = x + padX + 88;
+        if (Math.abs(mulNow - 1) > 0.01) {
+          const oldT = makeText(fmt(baseP), { size: 13, color: '#8a7a68' });
+          oldT.x = ox; oldT.y = infoY + 22;
+          // 删线:一条细横线压在数字上
+          panelContentArea.addChild(oldT);
+          const strike = new PIXI.Graphics();
+          strike.lineStyle(1, 0x8a7a68, 0.9);
+          strike.moveTo(ox, infoY + 22 + oldT.height * 0.55);
+          strike.lineTo(ox + oldT.width, infoY + 22 + oldT.height * 0.55);
+          panelContentArea.addChild(strike);
+          const sep = makeText(' → ', { size: 13, color: '#8a7a68' });
+          sep.x = ox + oldT.width + 2; sep.y = infoY + 22;
+          panelContentArea.addChild(sep);
+          const newT = makeText('$' + fmt(official) + ' /M', {
+            size: 13, color: mulNow < 1 ? '#2a7a3a' : '#c05a2a', weight: 'bold',
+          });
+          newT.x = ox + oldT.width + 28; newT.y = infoY + 22;
+          panelContentArea.addChild(newT);
+        } else {
+          const t = makeText('$' + fmt(baseP) + ' /M tokens', { size: 13, color: '#4a3c2c' });
+          t.x = ox; t.y = infoY + 22;
+          panelContentArea.addChild(t);
+        }
+        return;
+      }
       const isSimLine = i === 3;
       const t = makeText(s, {
         size: 13,
@@ -3152,12 +3899,12 @@ function layoutRelayHud() {
   relayHud.addChild(relayHudLine1, relayHudLine2);
 }
 
-// 行走人物(在椅子之前添加,这样椅子在人物上层,有前后层次感)
+// 行走人物:工厂创建多实例(中转站 / 调教各一套状态与精灵,共用同一套代码)
+// 中转站人物可在椅子上办公;调教人物只走动。禁止用 reparent 搬同一个 container —— 会打乱椅子层级。
 const WALK_FRAME_W = 158;
 const WALK_FRAME_H = 220;
 const WALK_FRAMES = 6;
 
-// 从精灵图提取6帧纹理(向左/向右各一套)
 function makeWalkFrames(assetKey) {
   const baseTex = PIXI.Texture.from(ASSETS[assetKey]);
   const frames = [];
@@ -3169,273 +3916,343 @@ function makeWalkFrames(assetKey) {
 }
 const walkFramesLeft = makeWalkFrames('walk_left');
 const walkFramesRight = makeWalkFrames('walk_right');
-
-// 行走人物容器(统一控制位置)
-const walkerContainer = new PIXI.Container();
-relayScene.addChild(walkerContainer);
-
-// 行走动画(行走时显示)
-const walker = new PIXI.AnimatedSprite(walkFramesLeft);
-walker.anchor.set(0.5, 1); // 底部中心
-walker.animationSpeed = 0.25;
-walker.visible = false;
-walkerContainer.addChild(walker);
-
-// 休息静态贴图(休息时显示)
 const walkIdleTex = PIXI.Texture.from(ASSETS.walk_idle);
-const walkerIdle = new PIXI.Sprite(walkIdleTex);
-walkerIdle.anchor.set(0.5, 1); // 底部中心
-walkerIdle.visible = true;
-walkerContainer.addChild(walkerIdle);
-
-// 被提起时的贴图(拖拽时显示)
 const walkerLiftTex = PIXI.Texture.from(ASSETS.walker_lift);
-const walkerLift = new PIXI.Sprite(walkerLiftTex);
-walkerLift.anchor.set(0.5, 1); // 底部中心
-walkerLift.visible = false;
-walkerContainer.addChild(walkerLift);
-
-// 坐姿背影贴图(坐在椅子上时显示)
 const walkerSitTex = PIXI.Texture.from(ASSETS.walker_sit);
-const walkerSit = new PIXI.Sprite(walkerSitTex);
-walkerSit.anchor.set(0.5, 1); // 底部中心
-walkerSit.visible = false;
-walkerContainer.addChild(walkerSit);
+// 调教 Q 版 idle:启动即 Texture.from,避免首次进场景才开始解码导致 scale 算错
+const tuneIdleTex = PIXI.Texture.from(ASSETS.tune_idle);
 
-// 统一切换人物贴图:任何状态都一次性设好全部 visible,避免漏设导致旧贴图残留。
-// 新增贴图只需在这里加一行;所有状态切换(含事件处理函数)都必须走这里,不要各自手写四行。
-function showWalker(which) {
-  walker.visible = which === 'walk';
-  walkerIdle.visible = which === 'idle';
-  walkerLift.visible = which === 'lift';
-  walkerSit.visible = which === 'sit';
+// 一套完整人物 rig:容器 + 四张贴图 + AI/拖拽/落体状态
+// idleAssetKey: 可选覆盖 idle; sitAssetKey: 可选覆盖坐姿(调教用同一张 Q 版,避免出现背影)
+function createWalkerRig(idleAssetKey, sitAssetKey) {
+  const container = new PIXI.Container();
+  const walk = new PIXI.AnimatedSprite(walkFramesLeft);
+  walk.anchor.set(0.5, 1);
+  walk.animationSpeed = 0.25;
+  walk.visible = false;
+  const idleTex = idleAssetKey ? PIXI.Texture.from(ASSETS[idleAssetKey]) : walkIdleTex;
+  const idle = new PIXI.Sprite(idleTex);
+  idle.anchor.set(0.5, 1);
+  idle.visible = true;
+  const lift = new PIXI.Sprite(walkerLiftTex);
+  lift.anchor.set(0.5, 1);
+  lift.visible = false;
+  const sitTex = sitAssetKey ? PIXI.Texture.from(ASSETS[sitAssetKey]) : walkerSitTex;
+  const sit = new PIXI.Sprite(sitTex);
+  sit.anchor.set(0.5, 1);
+  sit.visible = false;
+  container.addChild(walk, idle, lift, sit);
+  return {
+    container, walk, idle, lift, sit,
+    ai: {
+      x: 0, y: 0, dx: 0, dy: 0, speed: 1.2,
+      state: 'idle', timer: 0, facing: 'left',
+      bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+    },
+    drag: { isDragging: false, offsetX: 0, offsetY: 0 },
+    physics: { vy: 0, gravity: 0.25, isFalling: false, targetY: 0, sitOnChair: false },
+  };
 }
 
-// 人物拖拽状态
-const walkerDrag = {
-  isDragging: false,
-  offsetX: 0,
-  offsetY: 0,
-};
-// 人物自由落体物理(无碰撞反弹,落地即恢复走路/坐下)
-const walkerPhysics = {
-  vy: 0,
-  gravity: 0.25,  // 重力加速度(较小,避免太快)
-  isFalling: false,
-  targetY: 0,     // 目标落地高度(地面或椅子坐高)
-  sitOnChair: false, // 是否落在椅子上
-};
-// 椅子可坐区域参数(在 layoutRelayScene 中计算)
-const chairSeat = {
-  sitY: 0,        // 坐的高度(人物底部y)
-  minX: 0,        // 可坐区域左边界
-  maxX: 0,        // 可坐区域右边界
-};
+function showWalkerRig(rig, which) {
+  rig.walk.visible = which === 'walk';
+  rig.idle.visible = which === 'idle';
+  rig.lift.visible = which === 'lift';
+  rig.sit.visible = which === 'sit';
+}
 
-// 椅子(高清素材,锚点底部中心,方便按地面线摆放)
+function safeSpriteScale(rigSprite, targetFrameH, fallbackScale) {
+  // 纹理未解码时 height 可能是 0/1,直接除会得到 Infinity/NaN → 贴图整张画不出来
+  const th = rigSprite.texture && rigSprite.texture.height;
+  if (th > 1) rigSprite.scale.set(targetFrameH / th);
+  else rigSprite.scale.set(fallbackScale);
+}
+
+function applyWalkerMetrics(rig, originX, originY, bgW, bgH, floorStart, groundEnd) {
+  const w = app.screen.width;
+  const h = app.screen.height;
+  const walkerScale = (h * 0.32) / WALK_FRAME_H;
+  rig.walk.scale.set(walkerScale);
+  safeSpriteScale(rig.idle, WALK_FRAME_H * walkerScale * 1.12, walkerScale * 1.12);
+  safeSpriteScale(rig.lift, WALK_FRAME_H * walkerScale, walkerScale);
+  safeSpriteScale(rig.sit, WALK_FRAME_H * walkerScale * 1.15, walkerScale * 1.15);
+  const ww = WALK_FRAME_W * walkerScale;
+  const wh = WALK_FRAME_H * walkerScale;
+  // floorStart:活动区上沿(越小越靠上);groundEnd:站立线(可选,默认贴背景底)
+  // ⚠️ 背景是 cover 缩放,可能比屏幕大(超宽/非16:9 会被裁切)。
+  // 若只按背景矩形算边界,人物会走进裁切区 = 走出可视范围后“消失”。
+  // 边界必须再与屏幕求交;锚点是底部中心,脚踩在 [0,h]、头顶至少露出。
+  let minX = originX + ww * 0.6;
+  let maxX = originX + bgW - ww * 0.6;
+  let minY = originY + bgH * floorStart;
+  let maxY = (groundEnd != null) ? originY + bgH * groundEnd : (originY + bgH - wh * 0.12);
+  minX = Math.max(minX, ww * 0.5);
+  maxX = Math.min(maxX, w - ww * 0.5);
+  minY = Math.max(minY, wh * 0.2);
+  maxY = Math.min(maxY, h - 2);
+  if (minX > maxX) { minX = maxX = w * 0.5; }
+  if (minY > maxY) { minY = maxY = h * 0.85; }
+  rig.ai.bounds = { minX, maxX, minY, maxY };
+  if (rig.ai.x !== 0 || rig.ai.y !== 0) {
+    rig.ai.x = Math.max(rig.ai.bounds.minX, Math.min(rig.ai.bounds.maxX, rig.ai.x));
+    rig.ai.y = Math.max(rig.ai.bounds.minY, Math.min(rig.ai.bounds.maxY, rig.ai.y));
+    rig.container.x = rig.ai.x;
+    rig.container.y = rig.ai.y;
+  }
+}
+
+// 椅子可坐区域(仅中转站;layoutRelayScene 计算)
+const chairSeat = { sitY: 0, minX: 0, maxX: 0 };
+// 调教课桌可坐区域(layoutTuneScene 计算)
+const deskSeat = { sitY: 0, minX: 0, maxX: 0 };
+
+// 椅子(高清素材)—— 先建椅子,人物插到椅子下层
 const chairSprite = PIXI.Sprite.from(ASSETS.chair);
 chairSprite.anchor.set(0.5, 1);
 relayScene.addChild(chairSprite);
 
-// 椅子描边图(提起人物时替换椅子原图显示,提示可坐区域)
 const chairOutline = PIXI.Sprite.from(ASSETS.chair_outline);
 chairOutline.anchor.set(0.5, 1);
 chairOutline.visible = false;
 relayScene.addChild(chairOutline);
 
-// 把屏幕点击区域移到最上层(不被walkerContainer/chairSprite等遮挡)
+// 中转站人物:插在椅子之前 → 椅子盖在人上(坐姿时背影露出椅背上沿)
+const relayWalker = createWalkerRig();
+relayScene.addChildAt(relayWalker.container, relayScene.getChildIndex(chairSprite));
+
+// 屏幕点击区保持最上
 relayScene.addChild(screenGlowHit);
 
-// AI 随机行走状态
-const walkerAI = {
-  x: 0, y: 0,           // 当前位置
-  dx: 0, dy: 0,         // 移动方向(归一化)
-  speed: 1.2,            // 移动速度(像素/帧)
-  state: 'idle',         // idle / walking
-  timer: 0,               // 状态持续计时器
-  facing: 'left',         // 朝向
-  bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 }
-};
+// 调教人物:独立实例,只挂进 tuneScene(场景创建在后面,open 时再 addChild)
+let tuneWalker = null; // openTuneScene 首次创建
+
+function bindWalkerDrag(rig, mode) {
+  // mode: 'relay' 可落座换椅子描边; 'tune' 仅落地
+  rig.container.eventMode = 'static';
+  rig.container.cursor = 'pointer';
+  rig.container.on('pointerdown', (e) => {
+    if (mode === 'relay' && !relaySceneOpen) return;
+    if (mode === 'tune' && !tuneSceneOpen) return;
+    // 道具选中时不拖人物(点击交给挥鞭)
+    if (mode === 'tune' && tuneSelectedItem) return;
+    rig.drag.isDragging = true;
+    const pos = e.global;
+    rig.drag.offsetX = pos.x - rig.container.x;
+    rig.drag.offsetY = pos.y - rig.container.y;
+    rig.ai.state = 'idle';
+    rig.ai.timer = 0;
+    rig.physics.isFalling = false;
+    rig.physics.sitOnChair = false;
+    if (rig.walk.playing) { rig.walk.stop(); rig.walk.gotoAndStop(0); }
+    showWalkerRig(rig, 'lift');
+    if (mode === 'relay') {
+      screenGlow.visible = false;
+      screenGlowHit.visible = false;
+      chairSprite.visible = false;
+      chairOutline.visible = true;
+    }
+    rig.container.scale.set(1);
+  });
+  rig.container.on('pointermove', (e) => {
+    if (!rig.drag.isDragging) return;
+    const pos = e.global;
+    rig.container.x = pos.x - rig.drag.offsetX;
+    rig.container.y = pos.y - rig.drag.offsetY;
+    rig.ai.x = rig.container.x;
+    rig.ai.y = rig.container.y;
+  });
+  const endDrag = () => {
+    if (!rig.drag.isDragging) return;
+    rig.drag.isDragging = false;
+    if (mode === 'relay') {
+      chairSprite.visible = true;
+      chairOutline.visible = false;
+    }
+    const atChair = mode === 'relay' &&
+      (rig.ai.x >= chairSeat.minX && rig.ai.x <= chairSeat.maxX && rig.ai.y < chairSeat.sitY);
+    // 调教:可坐课桌。桌宽内即可,高度放宽(站地上丢进桌区也能坐)
+    const atDesk = mode === 'tune' && deskSeat.maxX > deskSeat.minX &&
+      (rig.ai.x >= deskSeat.minX && rig.ai.x <= deskSeat.maxX);
+    rig.physics.vy = 0;
+    rig.physics.isFalling = true;
+    if (atChair) {
+      rig.physics.targetY = chairSeat.sitY;
+      rig.physics.sitOnChair = true;
+    } else if (atDesk) {
+      // 调教坐桌:直接落座,不起落体(落体 + lift 会让人“消失”一瞬或卡住)
+      rig.physics.isFalling = false;
+      rig.physics.vy = 0;
+      rig.physics.sitOnChair = true;
+      rig.ai.state = 'sitting';
+      if (tuneDeskSprite) rig.ai.x = tuneDeskSprite.x;
+      rig.ai.y = Math.min(deskSeat.sitY || (app.screen.height * 0.9), app.screen.height - 2);
+      rig.container.x = rig.ai.x;
+      rig.container.y = rig.ai.y;
+      rig.container.visible = true;
+      rig.container.alpha = 1;
+      showWalkerRig(rig, 'idle');
+      // 人物插到课桌正下方(桌 index 前一格);人在桌后/不相邻时修正
+      if (tuneDeskSprite && tuneScene && rig.container.parent === tuneScene) {
+        const di = tuneScene.getChildIndex(tuneDeskSprite);
+        const wi = tuneScene.getChildIndex(rig.container);
+        if (wi > di) tuneScene.setChildIndex(rig.container, di);
+        else if (wi < di - 1) tuneScene.setChildIndex(rig.container, di - 1);
+      }
+      return;
+    } else {
+      rig.physics.targetY = rig.ai.bounds.maxY || app.screen.height * 0.85;
+      rig.physics.sitOnChair = false;
+      rig.physics.isFalling = true;
+      rig.physics.vy = 0;
+    }
+  };
+  rig.container.on('pointerup', endDrag);
+  rig.container.on('pointerupoutside', endDrag);
+}
+
+function pickWalkDir(ai) {
+  if (Math.random() < 0.5) {
+    ai.dx = Math.random() < 0.5 ? -1 : 1;
+    ai.dy = 0;
+  } else {
+    const angle = Math.random() * Math.PI * 2;
+    ai.dx = Math.cos(angle);
+    ai.dy = Math.sin(angle) * 0.5;
+  }
+}
+
+// 按水平速度同步朝向贴图。⚠️ 任何 pickWalkDir / 落地 / 开场进 walking 之后都要调,
+// 否则会保持默认朝左贴图却向右移动(2026-09-12 调教首次进入踩坑)。
+function syncWalkFacing(ai, rig) {
+  if (Math.abs(ai.dx) <= 0.1) return;
+  const nf = ai.dx > 0 ? 'right' : 'left';
+  if (nf !== ai.facing) {
+    ai.facing = nf;
+    rig.walk.textures = nf === 'left' ? walkFramesLeft : walkFramesRight;
+  }
+  if (ai.state === 'walking' && !rig.walk.playing) rig.walk.play();
+}
+
+// 共用 AI/落体推进。opts.mode = 'relay' | 'tune'
+function updateWalkerRig(rig, mode) {
+  const ai = rig.ai;
+  const ph = rig.physics;
+  const c = rig.container;
+
+  // 调教:允许坐在课桌上(不再强制改回 walking);中转站坐姿逻辑不变
+  // (原先 mode==='tune' && sitting 会立刻踢回走路,课桌落座做不了)
+
+  if (ph.isFalling) {
+    ph.vy += ph.gravity;
+    c.y += ph.vy;
+    ai.y = c.y;
+    if (c.y >= ph.targetY) {
+      c.y = ph.targetY;
+      ai.y = ph.targetY;
+      ph.isFalling = false;
+      ph.vy = 0;
+      if (ph.sitOnChair && mode === 'relay') {
+        ai.state = 'sitting';
+        ai.x = chairSprite.x;
+        c.x = ai.x;
+      } else if (ph.sitOnChair && mode === 'tune') {
+        // 调教坐桌:直接落位,不靠落体动画(避免 lift 卡住/沉进桌图)
+        ai.state = 'sitting';
+        if (tuneDeskSprite) ai.x = tuneDeskSprite.x;
+        // sitY 可能尚未算出/算到屏外,落座前再夹一次
+        ai.y = Math.min(deskSeat.sitY || (app.screen.height * 0.9), app.screen.height - 2);
+        c.x = ai.x;
+        c.y = ai.y;
+        c.visible = true;
+        c.alpha = 1;
+        c.scale.set(1);
+        showWalkerRig(rig, 'idle');
+        // 人物保持在课桌正下方(桌盖人)
+        if (tuneDeskSprite && tuneScene && c.parent === tuneScene) {
+          const di = tuneScene.getChildIndex(tuneDeskSprite);
+          const wi = tuneScene.getChildIndex(c);
+          if (wi > di) tuneScene.setChildIndex(c, di);
+          else if (wi < di - 1) tuneScene.setChildIndex(c, di - 1);
+        }
+        return; // 不再走下面的 lift
+      } else {
+        ai.state = 'walking';
+        ai.timer = 120 + Math.floor(Math.random() * 120);
+        pickWalkDir(ai);
+        syncWalkFacing(ai, rig);
+      }
+    }
+    showWalkerRig(rig, 'lift');
+    return;
+  }
+
+  if (ai.state === 'sitting') {
+    // 调教坐课桌也显示 Q 版 idle,不显示背影
+    if (mode === 'tune') {
+      showWalkerRig(rig, 'idle');
+    } else {
+      showWalkerRig(rig, 'sit');
+    }
+    c.scale.set(1.0);
+    if (mode === 'relay') {
+      screenGlow.visible = true;
+      screenGlowHit.visible = true;
+    }
+    return;
+  }
+  if (mode === 'relay') {
+    if (screenGlow.visible) screenGlow.visible = false;
+    if (screenGlowHit.visible) screenGlowHit.visible = false;
+  }
+  if (c.scale.x !== 1) c.scale.set(1);
+
+  if (rig.drag.isDragging) {
+    showWalkerRig(rig, 'lift');
+    return;
+  }
+
+  ai.timer--;
+  if (ai.state === 'idle') {
+    if (ai.timer <= 0) {
+      ai.state = 'walking';
+      ai.timer = 180 + Math.floor(Math.random() * 180);
+      pickWalkDir(ai);
+      syncWalkFacing(ai, rig);
+    }
+  } else {
+    // 已在 walking:每帧校正朝向(覆盖「开场直接 walking 未切贴图」等路径)
+    syncWalkFacing(ai, rig);
+    ai.x += ai.dx * ai.speed;
+    ai.y += ai.dy * ai.speed;
+    const b = ai.bounds;
+    if (ai.x < b.minX) { ai.x = b.minX; ai.dx = Math.abs(ai.dx); ai.facing = 'right'; rig.walk.textures = walkFramesRight; rig.walk.play(); }
+    if (ai.x > b.maxX) { ai.x = b.maxX; ai.dx = -Math.abs(ai.dx); ai.facing = 'left'; rig.walk.textures = walkFramesLeft; rig.walk.play(); }
+    if (ai.y < b.minY) { ai.y = b.minY; ai.dy = Math.abs(ai.dy); }
+    if (ai.y > b.maxY) { ai.y = b.maxY; ai.dy = -Math.abs(ai.dy); }
+    if (ai.timer <= 0) {
+      ai.state = 'idle';
+      ai.timer = 120 + Math.floor(Math.random() * 120);
+    }
+  }
+
+  c.x = ai.x;
+  c.y = ai.y;
+  if (ai.state === 'idle') {
+    if (rig.walk.playing) { rig.walk.stop(); rig.walk.gotoAndStop(0); }
+    showWalkerRig(rig, 'idle');
+  } else {
+    showWalkerRig(rig, 'walk');
+    if (!rig.walk.playing) rig.walk.play();
+  }
+}
 
 function updateWalkerAI() {
-  if (!relaySceneOpen) return;
-
-  // 自由落体中(无碰撞,落到目标高度后恢复走路或锁定坐姿)
-  if (walkerPhysics.isFalling) {
-    walkerPhysics.vy += walkerPhysics.gravity;
-    walkerContainer.y += walkerPhysics.vy;
-    walkerAI.y = walkerContainer.y;
-    if (walkerContainer.y >= walkerPhysics.targetY) {
-      walkerContainer.y = walkerPhysics.targetY;
-      walkerAI.y = walkerPhysics.targetY;
-      walkerPhysics.isFalling = false;
-      walkerPhysics.vy = 0;
-      if (walkerPhysics.sitOnChair) {
-        // 落在椅子上:锁定坐姿,不再随机走动
-        walkerAI.state = 'sitting';
-        walkerAI.x = chairSprite.x; // 对齐椅子中心
-        walkerContainer.x = walkerAI.x;
-      } else {
-        // 落在地面:恢复走路姿态
-        walkerAI.state = 'walking';
-        walkerAI.timer = 120 + Math.floor(Math.random() * 120);
-        if (Math.random() < 0.5) {
-          walkerAI.dx = Math.random() < 0.5 ? -1 : 1;
-          walkerAI.dy = 0;
-        } else {
-          const angle = Math.random() * Math.PI * 2;
-          walkerAI.dx = Math.cos(angle);
-          walkerAI.dy = Math.sin(angle) * 0.5;
-        }
-        if (Math.abs(walkerAI.dx) > 0.1) {
-          walkerAI.facing = walkerAI.dx > 0 ? 'right' : 'left';
-          walker.textures = walkerAI.facing === 'left' ? walkFramesLeft : walkFramesRight;
-        }
-      }
-    }
-    // 落体时显示提起贴图
-    showWalker('lift');
-    return;
-  }
-
-  // 坐姿锁定:不随机走动,显示背影,电脑屏幕显示草绿色描边
-  if (walkerAI.state === 'sitting') {
-    showWalker('sit'); // 坐姿背影
-    walkerContainer.scale.set(1.0); // 背影本身已放大,不需要额外缩放
-    screenGlow.visible = true; // 人物坐下,电脑屏幕描边显示
-    screenGlowHit.visible = true;
-    return;
-  }
-  // 非坐姿时隐藏屏幕描边
-  if (screenGlow.visible) screenGlow.visible = false;
-  if (screenGlowHit.visible) screenGlowHit.visible = false;
-  // 非坐姿时恢复正常大小
-  if (walkerContainer.scale.x !== 1) walkerContainer.scale.set(1);
-
-  if (walkerDrag.isDragging) {
-    // 拖拽中:显示提起贴图,暂停AI;椅子保持描边图显示
-    showWalker('lift');
-    return;
-  }
-
-  walkerAI.timer--;
-
-  if (walkerAI.state === 'idle') {
-    // 休息结束,开始行走
-    if (walkerAI.timer <= 0) {
-      walkerAI.state = 'walking';
-      walkerAI.timer = 180 + Math.floor(Math.random() * 180); // 3-6秒(60fps)
-      // 随机方向(8方向)
-      if (Math.random() < 0.5) {
-        walkerAI.dx = Math.random() < 0.5 ? -1 : 1;
-        walkerAI.dy = 0;
-      } else {
-        const angle = Math.random() * Math.PI * 2;
-        walkerAI.dx = Math.cos(angle);
-        walkerAI.dy = Math.sin(angle) * 0.5;
-      }
-      // 更新朝向
-      if (Math.abs(walkerAI.dx) > 0.1) {
-        const newFacing = walkerAI.dx > 0 ? 'right' : 'left';
-        if (newFacing !== walkerAI.facing) {
-          walkerAI.facing = newFacing;
-          walker.textures = newFacing === 'left' ? walkFramesLeft : walkFramesRight;
-          walker.play();
-        }
-      }
-    }
-  } else {
-    // 行走中
-    walkerAI.x += walkerAI.dx * walkerAI.speed;
-    walkerAI.y += walkerAI.dy * walkerAI.speed;
-
-    // 碰到边界反弹
-    const b = walkerAI.bounds;
-    if (walkerAI.x < b.minX) { walkerAI.x = b.minX; walkerAI.dx = Math.abs(walkerAI.dx); walkerAI.facing = 'right'; walker.textures = walkFramesRight; walker.play(); }
-    if (walkerAI.x > b.maxX) { walkerAI.x = b.maxX; walkerAI.dx = -Math.abs(walkerAI.dx); walkerAI.facing = 'left'; walker.textures = walkFramesLeft; walker.play(); }
-    if (walkerAI.y < b.minY) { walkerAI.y = b.minY; walkerAI.dy = Math.abs(walkerAI.dy); }
-    if (walkerAI.y > b.maxY) { walkerAI.y = b.maxY; walkerAI.dy = -Math.abs(walkerAI.dy); }
-
-    // 行走结束,休息
-    if (walkerAI.timer <= 0) {
-      walkerAI.state = 'idle';
-      walkerAI.timer = 120 + Math.floor(Math.random() * 120); // 2-4秒休息(60fps)
-    }
-  }
-
-  walkerContainer.x = walkerAI.x;
-  walkerContainer.y = walkerAI.y;
-  // 休息时显示静态贴图,行走时播放动画
-  if (walkerAI.state === 'idle') {
-    if (walker.playing) { walker.stop(); walker.gotoAndStop(0); }
-    showWalker('idle');
-  } else {
-    showWalker('walk');
-    if (!walker.playing) walker.play();
-  }
+  // 性能:两场景都关时不跑
+  if (relaySceneOpen) updateWalkerRig(relayWalker, 'relay');
+  if (tuneSceneOpen && tuneWalker) updateWalkerRig(tuneWalker, 'tune');
 }
 
-// ========== 人物拖拽(无物理碰撞,松开恢复走路) ==========
-function startWalkerDrag(e) {
-  if (!relaySceneOpen) return;
-  walkerDrag.isDragging = true;
-  const pos = e.global;
-  walkerDrag.offsetX = pos.x - walkerContainer.x;
-  walkerDrag.offsetY = pos.y - walkerContainer.y;
-  walkerAI.state = 'idle';
-  walkerAI.timer = 0;
-  walkerPhysics.isFalling = false;
-  walkerPhysics.sitOnChair = false;
-  if (walker.playing) { walker.stop(); walker.gotoAndStop(0); }
-  // 立即切到提起贴图(不能等 updateWalkerAI,拖拽分支会提前return,坐姿背影会残留)
-  showWalker('lift');
-  screenGlow.visible = false; // 从椅子上拖起,隐藏屏幕描边
-  screenGlowHit.visible = false;
-  // 提起人物时椅子换成描边图,提示可坐区域
-  chairSprite.visible = false;
-  chairOutline.visible = true;
-  walkerContainer.scale.set(1); // 拖拽时恢复正常大小
-}
-
-function updateWalkerDrag(e) {
-  if (!walkerDrag.isDragging) return;
-  const pos = e.global;
-  walkerContainer.x = pos.x - walkerDrag.offsetX;
-  walkerContainer.y = pos.y - walkerDrag.offsetY;
-  walkerAI.x = walkerContainer.x;
-  walkerAI.y = walkerContainer.y;
-}
-
-function endWalkerDrag(e) {
-  if (!walkerDrag.isDragging) return;
-  walkerDrag.isDragging = false;
-  // 恢复椅子原图
-  chairSprite.visible = true;
-  chairOutline.visible = false;
-
-  // 判断是否在椅子可坐区域内松开
-  const atChair = (walkerAI.x >= chairSeat.minX && walkerAI.x <= chairSeat.maxX &&
-                   walkerAI.y < chairSeat.sitY); // 在坐高上方松开
-  walkerPhysics.vy = 0;
-  walkerPhysics.isFalling = true;
-  if (atChair) {
-    // 落在椅子上:目标高度=坐高
-    walkerPhysics.targetY = chairSeat.sitY;
-    walkerPhysics.sitOnChair = true;
-  } else {
-    // 落在地面:目标高度=行走区域下边界
-    walkerPhysics.targetY = walkerAI.bounds ? walkerAI.bounds.maxY : h * 0.85;
-    walkerPhysics.sitOnChair = false;
-  }
-}
-
-// 人物可拖拽(事件绑定到容器,三个子元素都能触发)
-walkerContainer.eventMode = 'static';
-walkerContainer.cursor = 'pointer';
-walkerContainer.on('pointerdown', startWalkerDrag);
-walkerContainer.on('pointermove', updateWalkerDrag);
-walkerContainer.on('pointerup', endWalkerDrag);
-walkerContainer.on('pointerupoutside', endWalkerDrag);
+bindWalkerDrag(relayWalker, 'relay');
 
 // 注:玩法(货币/升级/交互)后续安排,当前只放背景和椅子占位。
 let relaySceneOpen = false;
@@ -3458,6 +4275,7 @@ function openRelayScene() {
   relaySceneOpen = true;
   relayScene.visible = true;
   setProductionLayersVisible(false);
+  // 人物始终在 relayScene 里(不 reparent),只是随场景显隐
   layoutRelayScene();
   if (relayHud) relayHud.visible = true;
   if (screenPanelOpen) layoutScreenPanel();
@@ -3473,26 +4291,370 @@ function closeRelayScene() {
   updateAllBuyButtons();
 }
 
-// ---- 调教场景(训练系统,UI 占位;设计与接口见 中转站设计.md 第 10 节) ----
-// 训练系统本身尚未实现,这里只把"第三个场景"的位置占住,保证底部标签是均匀三个。
-// 背景:tune_bg(教室黑板,2026-09-12 压入;1920 宽 WebP q85 ≈115KB)。
+// ---- 调教场景(训练系统尚未实现;买服务器后与中转站同步解锁) ----
+// 背景:tune_bg(教室黑板)。人物:tuneWalker 独立实例,与中转站 relayWalker 共用工厂代码、不共享状态。
+// 课桌:tune_desk,居中;人物可拖上桌坐下(人物在桌图层**下**,桌盖人;坐下不走动)。
 const tuneScene = new PIXI.Container();
 tuneScene.visible = false;
 app.stage.addChildAt(tuneScene, app.stage.getChildIndex(layers.topbar));
 let tuneSceneOpen = false;
 const tuneBgSprite = PIXI.Sprite.from(ASSETS.tune_bg);
 tuneScene.addChild(tuneBgSprite);
-// 文字可读性:全屏半透明压暗(教室窗光偏亮,标题浮在黑板上方区域)
+// 轻压暗,保证人物在亮窗区仍可辨识(不挡人物)
 const tuneShade = new PIXI.Graphics();
 tuneScene.addChild(tuneShade);
-const tuneTitle = makeText('调教', { size: 28, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
-const tuneHint1 = makeText('训练系统 · 施工中', { size: 18, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
-const tuneHint2 = makeText('设计草案见 中转站设计.md 第 10 节;属性与雷达图见中转站→电脑屏幕→模型', { size: 13, color: '#e8dcc8', anchor: 0.5 });
-tuneScene.addChild(tuneTitle, tuneHint1, tuneHint2);
+// 课桌(创建后由 layout 保证在人物之上、UI 之下)
+const tuneDeskSprite = PIXI.Sprite.from(ASSETS.tune_desk);
+tuneDeskSprite.anchor.set(0.5, 1); // 底部中心,方便按地面线摆
+tuneScene.addChild(tuneDeskSprite);
+
+// 调教右上「面板」+ 右侧「道具」抽屉(与生产「购买」同款:窄条按钮 + 向左展开)
+let tunePanelBtn = null;
+let tunePropDrawer = null;
+let tunePropBtn = null;
+let tunePropContent = null;
+let tunePropExpanded = false;
+// 道具选中:null | 'whip'。鞭子:光标替换 + 点击挥鞭(图1↔图2)
+let tuneSelectedItem = null;
+let whipCursor = null;
+let whipIdleTex = null, whipCrackTex = null;
+let whipShowingCrack = false;
+let whipCrackTimer = 0;
+
+// ---- 全局鲸鱼光标(图1常态 / 按下图2);调教选中鞭子时由 whip 接管 ----
+let whaleCursor = null;
+let whaleCursorReady = false;
+let whaleCursorDown = false;
+
+function ensureWhaleCursor() {
+  if (whaleCursorReady) return;
+  whaleCursorReady = true;
+  const idle = PIXI.Sprite.from(ASSETS.whale_cursor);
+  idle.anchor.set(0.08, 0.30); // anchor.y↑ 整体贴鼠标更靠上
+  idle.name = 'idle';
+  const down = PIXI.Sprite.from(ASSETS.whale_cursor_down);
+  down.anchor.set(0.08, 0.30);
+  down.name = 'down';
+  down.visible = false;
+  whaleCursor = new PIXI.Container();
+  whaleCursor.eventMode = 'none';
+  whaleCursor.addChild(idle, down);
+  // 先藏起来,等第一次 pointermove 再出现,避免钉在左上角
+  whaleCursor.visible = false;
+  whaleCursor.x = app.screen.width / 2;
+  whaleCursor.y = app.screen.height / 2;
+  app.stage.addChild(whaleCursor);
+}
+
+function isNodeIn(root, node) {
+  let n = node;
+  while (n) {
+    if (n === root) return true;
+    n = n.parent;
+  }
+  return false;
+}
+
+// 是否落在矩形内(pixi 全局坐标)
+function ptInRect(p, x, y, w, h) {
+  return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
+}
+
+// 容器全局包围盒(含展开子节点)
+function ptInObj(p, obj) {
+  if (!obj || obj.destroyed || obj.visible === false) return false;
+  try {
+    const b = obj.getLocalBounds();
+    // 子对象可能有偏移:用 getBounds 更稳(含位置)
+    const g = obj.getBounds();
+    return ptInRect(p, g.x, g.y, g.width, g.height);
+  } catch (e) {
+    return false;
+  }
+}
+
+// 鞭子不出现的区域:电脑面板打开、底部标签、左上设置、调教「面板」钮、右侧「道具」抽屉(含展开)
+function isOverUIChrome(p) {
+  if (!p) return false;
+  // 电脑面板开着:整屏都算 UI(面板几乎全屏,简化处理)
+  if (screenPanelOpen) return true;
+  // 设置按钮(左上 48×48 @14,14)
+  if (ptInRect(p, 14, 14, 48, 48)) return true;
+  // 底部标签条(约底 70px,避开标签间隙误伤场景也可接受)
+  if (p.y >= app.screen.height - 70) return true;
+  // 调教「面板」按钮
+  if (tunePanelBtn && ptInObj(p, tunePanelBtn)) return true;
+  // 道具抽屉:窄条 + 展开面板
+  if (tunePropDrawer && ptInObj(p, tunePropDrawer)) return true;
+  // 若展开内容是 drawer 子节点,getBounds 已覆盖
+  if (tunePropContent && ptInObj(p, tunePropContent)) return true;
+  if (tunePropBtn && ptInObj(p, tunePropBtn)) return true;
+  return false;
+}
+
+// 鲸鱼是否接管光标:未选道具,或选了道具但指在 UI 上
+function whaleCursorActive(p) {
+  if (!(tuneSceneOpen && tuneSelectedItem)) return true;
+  if (!p) return true;
+  return isOverUIChrome(p);
+}
+
+function setWhaleCursorDown(down) {
+  whaleCursorDown = !!down;
+  if (!whaleCursor) return;
+  const idle = whaleCursor.getChildByName('idle');
+  const dn = whaleCursor.getChildByName('down');
+  if (idle) idle.visible = !whaleCursorDown;
+  if (dn) dn.visible = whaleCursorDown;
+}
+
+function applyCursorMode(p) {
+  ensureWhaleCursor();
+  const overUI = p ? isOverUIChrome(p) : false;
+  const itemActive = tuneSceneOpen && tuneSelectedItem === 'whip' && !overUI;
+  // 鞭子只在「调教 + 选中道具 + 不在 UI 上」时接管
+  if (whipCursor) whipCursor.visible = itemActive;
+  whaleCursor.visible = !itemActive;
+  if (itemActive) {
+    app.view.classList.add('whip-cursor');
+    app.view.classList.remove('custom-cursor');
+  } else {
+    app.view.classList.remove('whip-cursor');
+    app.view.classList.add('custom-cursor');
+  }
+}
+
+function clientToStage(e) {
+  const rect = app.view.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) / rect.width * app.screen.width,
+    y: (e.clientY - rect.top) / rect.height * app.screen.height,
+  };
+}
+
+app.view.addEventListener('pointermove', (e) => {
+  ensureWhaleCursor();
+  ensureWhipAssets();
+  const p = clientToStage(e);
+  // 先贴坐标,再算模式——命中检测失败也不能打断跟随
+  whaleCursor.x = p.x;
+  whaleCursor.y = p.y;
+  if (whipCursor) {
+    whipCursor.x = p.x;
+    whipCursor.y = p.y;
+  }
+  const itemActive = !!(tuneSceneOpen && tuneSelectedItem === 'whip' && !isOverUIChrome(p));
+  whaleCursor.visible = !itemActive;
+  if (whipCursor) whipCursor.visible = itemActive;
+  if (itemActive) {
+    app.view.classList.add('whip-cursor');
+    app.view.classList.remove('custom-cursor');
+  } else {
+    app.view.classList.remove('whip-cursor');
+    app.view.classList.add('custom-cursor');
+  }
+});
+// 进入画布也立刻贴一次,减少「停在角上」的观感
+app.view.addEventListener('pointerenter', (e) => {
+  ensureWhaleCursor();
+  const p = clientToStage(e);
+  whaleCursor.x = p.x;
+  whaleCursor.y = p.y;
+  whaleCursor.visible = !(tuneSceneOpen && tuneSelectedItem === 'whip' && !isOverUIChrome(p));
+});
+app.view.addEventListener('pointerdown', (e) => {
+  setWhaleCursorDown(true);
+  const p = clientToStage(e);
+  ensureWhaleCursor();
+  whaleCursor.x = p.x;
+  whaleCursor.y = p.y;
+  if (!tuneSceneOpen || tuneSelectedItem !== 'whip' || !whipCursor) return;
+  if (screenPanelOpen) return;
+  if (isOverUIChrome(p)) return;
+  whipCursor.x = p.x;
+  whipCursor.y = p.y;
+  showWhipFrame(true);
+  whipCrackTimer = 0.12;
+});
+app.view.addEventListener('pointerup', () => { setWhaleCursorDown(false); });
+app.view.addEventListener('pointerupoutside', () => { setWhaleCursorDown(false); });
+window.addEventListener('blur', () => { setWhaleCursorDown(false); });
+
+function ensureWhipAssets() {
+  if (whipIdleTex) return;
+  whipIdleTex = PIXI.Texture.from(ASSETS.whip_idle);
+  whipCrackTex = PIXI.Texture.from(ASSETS.whip_crack);
+  whipCursor = new PIXI.Container();
+  whipCursor.visible = false;
+  whipCursor.eventMode = 'none';
+  const idle = new PIXI.Sprite(whipIdleTex);
+  // 握柄作锚点;anchor.x↑ 更靠左,anchor.y↓ 更靠下
+  idle.anchor.set(0.30, 0.28);
+  idle.name = 'idle';
+  const crack = new PIXI.Sprite(whipCrackTex);
+  crack.anchor.set(0.26, 0.40);
+  crack.name = 'crack';
+  crack.visible = false;
+  whipCursor.addChild(idle, crack);
+  applyWhipScale();
+  app.stage.addChild(whipCursor);
+}
+
+// 常态按高度缩放;挥动图在同系上再放大一档,甩得更开
+function applyWhipScale() {
+  if (!whipIdleTex || !whipCrackTex || !whipCursor) return;
+  const base = 170 / whipIdleTex.height;
+  const idle = whipCursor.getChildByName('idle');
+  const crk = whipCursor.getChildByName('crack');
+  if (idle) idle.scale.set(base);
+  if (crk) crk.scale.set(base * 1.35);
+}
+
+function setTuneItem(key) {
+  tuneSelectedItem = (tuneSelectedItem === key) ? null : key;
+  ensureWhipAssets();
+  // 立刻按当前鼠标位置应用一次光标模式(若无 p 则退回默认)
+  whipCursor.visible = false; // 等 pointermove 再定位;先关掉避免错位
+  if (!whipCursor.visible) {
+    whipShowingCrack = false;
+    whipCrackTimer = 0;
+  }
+  if (tuneSceneOpen) layoutTuneScene();
+}
+
+function showWhipFrame(crack) {
+  if (!whipCursor) return;
+  whipShowingCrack = crack;
+  const idle = whipCursor.getChildByName('idle');
+  const crk = whipCursor.getChildByName('crack');
+  if (idle) idle.visible = !crack;
+  if (crk) crk.visible = !!crack;
+}
+
+function layoutTunePanelBtn() {
+  const w = app.screen.width;
+  const bw = 96, bh = 40;
+  const bx = w - bw - 20, by = 64;
+  const g = new PIXI.Graphics();
+  g.lineStyle(1, 0xc4b8a8, 0.9);
+  g.beginFill(0xe8e0d4, 0.95);
+  g.drawRoundedRect(0, 0, bw, bh, 10);
+  g.endFill();
+  const label = makeText('面板', { size: 16, color: '#5a4632', weight: 'bold', anchor: 0.5 });
+  label.x = bw / 2; label.y = bh / 2;
+  const btn = new PIXI.Container();
+  btn.addChild(g, label);
+  btn.x = bx; btn.y = by;
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(0, 0, bw, bh);
+  btn.on('pointerdown', (e) => {
+    e.stopPropagation();
+    if (screenPanelOpen) {
+      closeScreenPanel();
+      return;
+    }
+    panelTab = 'model';
+    openScreenPanel();
+  });
+  tunePanelBtn = btn;
+  tuneScene.addChild(btn);
+}
+
+// 道具抽屉:几何对齐生产「购买」(右侧窄条 48×92,展开面板向左)
+function layoutTunePropDrawer() {
+  const w = app.screen.width, h = app.screen.height;
+  const btnW = 48, btnH = 92;
+  const panelW = 200, panelH = 160;
+  const baseX = w - btnW - 16;
+  const baseY = h * 0.2;
+
+  const drawer = new PIXI.Container();
+
+  // 折叠条按钮
+  const btn = new PIXI.Container();
+  const btnBg = new PIXI.Graphics();
+  roundRect(btnBg, 0, 0, btnW, btnH, 10, tunePropExpanded ? 0xd4a574 : 0xc4853a, 0.92);
+  const btnText = makeText('道\n具', { size: 15, color: '#fff5e6', weight: 'bold', align: 'center', anchor: 0.5, lineHeight: 18 });
+  btnText.x = btnW / 2; btnText.y = btnH / 2 + 8;
+  // 箭头(与购买同款,展开朝左)
+  const arrow = new PIXI.Graphics();
+  arrow.lineStyle(2.5, 0xfff5e6, 0.9);
+  const acx = 21, acy = 18;
+  if (tunePropExpanded) {
+    arrow.moveTo(acx - 6, acy + 4); arrow.lineTo(acx, acy - 4); arrow.lineTo(acx + 6, acy + 4);
+  } else {
+    arrow.moveTo(acx - 4, acy - 6); arrow.lineTo(acx + 4, acy); arrow.lineTo(acx - 4, acy + 6);
+  }
+  btn.addChild(btnBg, btnText, arrow);
+  btn.x = baseX; btn.y = baseY;
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(0, 0, btnW, btnH);
+  btn.on('pointerdown', (e) => {
+    e.stopPropagation();
+    tunePropExpanded = !tunePropExpanded;
+    layoutTuneScene();
+  });
+  drawer.addChild(btn);
+
+  // 展开面板:贴在按钮左侧
+  const content = new PIXI.Container();
+  content.x = baseX - panelW - 8;
+  content.y = baseY;
+  content.visible = tunePropExpanded;
+  if (tunePropExpanded) {
+    const bg = new PIXI.Graphics();
+    roundRect(bg, 0, 0, panelW, panelH, 12, 0xfff8ee, 0.95);
+    content.addChild(bg);
+
+    const title = makeText('道具', { size: 14, color: '#5a4632', weight: 'bold' });
+    title.x = 16; title.y = 12;
+    content.addChild(title);
+
+    // 鞭子格(与购买条目风格接近)
+    const selected = tuneSelectedItem === 'whip';
+    const slot = new PIXI.Graphics();
+    slot.lineStyle(2, selected ? 0xd4a574 : 0xc4b8a8, 0.9);
+    slot.beginFill(selected ? 0xf5e6d0 : 0xe8e0d4, 0.9);
+    slot.drawRoundedRect(12, 36, panelW - 24, 64, 8);
+    slot.endFill();
+    slot.eventMode = 'static';
+    slot.cursor = 'pointer';
+    slot.hitArea = new PIXI.Rectangle(12, 36, panelW - 24, 64);
+    slot.on('pointerdown', (e) => {
+      e.stopPropagation();
+      setTuneItem('whip');
+    });
+    content.addChild(slot);
+
+    ensureWhipAssets();
+    if (whipIdleTex) {
+      const th = 44;
+      const icon = new PIXI.Sprite(whipIdleTex);
+      icon.anchor.set(0.5, 0.5);
+      icon.scale.set(th / whipIdleTex.height);
+      icon.x = 12 + 40; icon.y = 36 + 32;
+      content.addChild(icon);
+    }
+    const name = makeText('鞭子', { size: 15, color: '#3a2f22', weight: 'bold' });
+    name.x = 12 + 78; name.y = 36 + 14;
+    content.addChild(name);
+    // 短文案,避免溢出格子
+    const desc = makeText(selected ? '点击屏幕挥鞭' : '点击选中', { size: 12, color: selected ? '#c05a2a' : '#8a7a68' });
+    desc.x = 12 + 78; desc.y = 36 + 36;
+    content.addChild(desc);
+  }
+  drawer.addChild(content);
+
+  tunePropBtn = btn;
+  tunePropContent = content;
+  tunePropDrawer = drawer;
+  tuneScene.addChild(drawer);
+}
 
 function layoutTuneScene() {
   const w = app.screen.width, h = app.screen.height;
-  // cover 铺满,与中转站背景同一套(纹理未就绪时用默认尺寸防除零)
   const tw = tuneBgSprite.texture.width > 1 ? tuneBgSprite.texture.width : 1920;
   const th = tuneBgSprite.texture.height > 1 ? tuneBgSprite.texture.height : 1081;
   const s = Math.max(w / tw, h / th);
@@ -3500,25 +4662,135 @@ function layoutTuneScene() {
   tuneBgSprite.x = (w - tw * s) / 2;
   tuneBgSprite.y = (h - th * s) / 2;
   tuneShade.clear();
-  tuneShade.beginFill(0x0a0806, 0.28);
+  tuneShade.beginFill(0x0a0806, 0.12);
   tuneShade.drawRect(0, 0, w, h);
   tuneShade.endFill();
-  // 文案压在黑板中下部,避开窗光与顶部标语
-  tuneTitle.x = w / 2; tuneTitle.y = h * 0.42;
-  tuneHint1.x = w / 2; tuneHint1.y = h * 0.54;
-  tuneHint2.x = w / 2; tuneHint2.y = h * 0.62;
+
+  // 层级:bg → shade → 人物 → 课桌 → UI(人物在桌子下,桌盖人)
+  tuneScene.setChildIndex(tuneDeskSprite, 3);
+  if (tuneWalker && tuneWalker.container.parent === tuneScene) {
+    tuneScene.setChildIndex(tuneWalker.container, 2);
+  }
+
+  // 课桌:教室中央地面带上;宽约屏宽 18%(缩小)
+  const deskW = Math.max(120, w * 0.18);
+  const dw = tuneDeskSprite.texture.width > 1 ? tuneDeskSprite.texture.width : 900;
+  const dh = tuneDeskSprite.texture.height > 1 ? tuneDeskSprite.texture.height : 647;
+  const deskScale = deskW / dw;
+  tuneDeskSprite.scale.set(deskScale);
+  tuneDeskSprite.x = w * 0.5;
+  tuneDeskSprite.visible = true;
+  // 桌脚落在站立线附近;cover 裁切后站立线可能落到屏幕外,夹回可视区
+  const floorY = Math.min(tuneBgSprite.y + th * s * 0.90, h - 2);
+  tuneDeskSprite.y = floorY;
+
+  // 清旧 UI 再重建
+  if (tunePanelBtn) {
+    tuneScene.removeChild(tunePanelBtn);
+    if (!tunePanelBtn.destroyed) tunePanelBtn.destroy({ children: true });
+    tunePanelBtn = null;
+  }
+  if (tunePropDrawer) {
+    tuneScene.removeChild(tunePropDrawer);
+    if (!tunePropDrawer.destroyed) tunePropDrawer.destroy({ children: true });
+    tunePropDrawer = null;
+  }
+  layoutTunePanelBtn();
+  layoutTunePropDrawer();
+  // UI 要在课桌之上
+  if (tunePanelBtn) tuneScene.setChildIndex(tunePanelBtn, tuneScene.children.length - 2);
+  if (tunePropDrawer) tuneScene.setChildIndex(tunePropDrawer, tuneScene.children.length - 1);
+  applyWhipScale();
+
+  // 可坐区域:先算好(不依赖人物是否已建)
+  // 人物在桌下层:脚贴地会被桌沿挡头,但坐到桌面上又太高。
+  // 脚底落在「地面～桌面」之间(约地面 +35%桌高,上限 72px),腿在桌后、头露出桌沿。
+  const deskH = dh * deskScale;
+  const deskTop = floorY - deskH;
+  deskSeat.sitY = floorY - Math.min(deskH * 0.35, 72);
+  // 头顶至少高出桌沿 2% 屏高(超宽桌高时兜底微调,不整段抬到桌面)
+  const sitCharH = h * 0.32 * 1.12;
+  const sitPad = sitCharH * 0.25;
+  deskSeat.sitY = Math.min(Math.max(deskSeat.sitY, sitPad), h - 2);
+  if (deskSeat.sitY - sitCharH > deskTop - h * 0.02) {
+    deskSeat.sitY = deskTop - h * 0.02 + sitCharH;
+    deskSeat.sitY = Math.min(Math.max(deskSeat.sitY, sitPad), h - 2);
+  }
+  deskSeat.minX = tuneDeskSprite.x - tuneDeskSprite.width * 0.5;
+  deskSeat.maxX = tuneDeskSprite.x + tuneDeskSprite.width * 0.5;
+
+  if (!tuneWalker) return;
+  applyWalkerMetrics(tuneWalker, tuneBgSprite.x, tuneBgSprite.y, tw * s, th * s, 0.74, 0.90);
+  if (tuneWalker.ai.x === 0 && tuneWalker.ai.y === 0) {
+    const b = tuneWalker.ai.bounds;
+    tuneWalker.ai.x = Math.max(b.minX, Math.min(b.maxX, tuneBgSprite.x + tw * s * 0.4));
+    tuneWalker.ai.y = Math.max(b.minY, Math.min(b.maxY, tuneBgSprite.y + th * s * 0.83));
+    tuneWalker.container.x = tuneWalker.ai.x;
+    tuneWalker.container.y = tuneWalker.ai.y;
+  }
+
+  // 坐姿时重新对齐桌心 + 强制可见(修「坐上桌人没了」)
+  if (tuneWalker.ai.state === 'sitting' && tuneWalker.physics.sitOnChair) {
+    tuneWalker.ai.x = tuneDeskSprite.x;
+    tuneWalker.ai.y = Math.min(deskSeat.sitY || (h * 0.9), h - 2);
+    tuneWalker.container.x = tuneWalker.ai.x;
+    tuneWalker.container.y = tuneWalker.ai.y;
+    tuneWalker.container.visible = true;
+    tuneWalker.container.alpha = 1;
+    showWalkerRig(tuneWalker, 'idle');
+    // 人物保持在课桌正下方
+    if (tuneDeskSprite) {
+      const di = tuneScene.getChildIndex(tuneDeskSprite);
+      const wi = tuneScene.getChildIndex(tuneWalker.container);
+      if (wi > di) tuneScene.setChildIndex(tuneWalker.container, di);
+      else if (wi < di - 1) tuneScene.setChildIndex(tuneWalker.container, di - 1);
+    }
+  }
 }
 
 function openTuneScene() {
   tuneSceneOpen = true;
   tuneScene.visible = true;
   setProductionLayersVisible(false);
+  if (!tuneWalker) {
+    // 停顿 + 桌前坐姿都用 Q 版立绘(tune_idle),不用背影 walker_sit
+    tuneWalker = createWalkerRig('tune_idle', 'tune_idle');
+    tuneScene.addChild(tuneWalker.container);
+    bindWalkerDrag(tuneWalker, 'tune');
+    // 开场直接走,不先停
+    tuneWalker.ai.state = 'walking';
+    tuneWalker.ai.timer = 180;
+    pickWalkDir(tuneWalker.ai);
+    syncWalkFacing(tuneWalker.ai, tuneWalker);
+    if (tuneDeskSprite) {
+      // 人物在桌子下、课桌盖在人上(与 layoutTuneScene 一致)
+      tuneScene.setChildIndex(tuneWalker.container, 2);
+      tuneScene.setChildIndex(tuneDeskSprite, 3);
+    }
+  }
+  showWalkerRig(tuneWalker, tuneWalker.ai.state === 'idle' || tuneWalker.ai.state === 'sitting' ? 'idle' : 'walk');
+  if (tuneWalker.ai.state === 'walking' && !tuneWalker.walk.playing) tuneWalker.walk.play();
+  // tune_idle 异步解码完成后重算一次缩放/布局,避免首次 layout 时 height=0 把 scale 算成 Infinity
+  const idleTex = tuneWalker.idle.texture;
+  if (idleTex && !idleTex.__tuneIdleRetuned) {
+    idleTex.__tuneIdleRetuned = true;
+    idleTex.on('update', () => { if (tuneSceneOpen) layoutTuneScene(); });
+  }
+  ensureWhipAssets();
+  // 鲸鱼等 pointermove 再出现,避免钉在左上
+  if (whaleCursor) whaleCursor.visible = false;
+  if (whipCursor) whipCursor.visible = false;
   layoutTuneScene();
 }
 
 function closeTuneScene() {
   tuneSceneOpen = false;
   tuneScene.visible = false;
+  if (whipCursor) whipCursor.visible = false;
+  if (whaleCursor) whaleCursor.visible = true;
+  app.view.classList.remove('whip-cursor');
+  app.view.classList.add('custom-cursor');
+  if (screenPanelOpen) closeScreenPanel();
   setProductionLayersVisible(true);
 }
 
@@ -3557,36 +4829,16 @@ function layoutRelayScene() {
   screenGlowHit.endFill();
   screenGlowHit.hitArea = new PIXI.Rectangle(sgX, sgY, sgW, sgH);
 
-  // 行走人物:大小与场景适配,边界在背景图范围内
-  const walkerScale = (h * 0.32) / WALK_FRAME_H;
-  walker.scale.set(walkerScale);
-  // 休息贴图与行走人物等高(保持比例)
-  const idleScale = (WALK_FRAME_H * walkerScale) / walkerIdle.texture.height * 1.12;
-  walkerIdle.scale.set(idleScale);
-  // 提起贴图与行走人物等高(保持比例)
-  const liftScale = (WALK_FRAME_H * walkerScale) / walkerLift.texture.height;
-  walkerLift.scale.set(liftScale);
-  // 坐姿背影贴图:比行走人物稍大(坐姿背影更饱满)
-  const sitScale = (WALK_FRAME_H * walkerScale * 1.15) / walkerSit.texture.height;
-  walkerSit.scale.set(sitScale);
-  const ww = WALK_FRAME_W * walkerScale;
-  const wh = WALK_FRAME_H * walkerScale;
-  // 活动边界:地面区域(背景图下半部分),留出边距
-  // 用 rbgH*bgScale 而非 relayBg.height,后者在纹理未加载时=1*bgScale 会导致边界错误
+  // 行走人物(relayWalker):与调教共用 applyWalkerMetrics 算法,实例各自独立
   const bgH = rbgH * bgScale;
-  walkerAI.bounds = {
-    minX: relayBg.x + ww * 0.6,
-    maxX: relayBg.x + rbgW * bgScale - ww * 0.6,
-    minY: relayBg.y + bgH * 0.70,
-    maxY: relayBg.y + bgH - wh * 0.12
-  };
+  applyWalkerMetrics(relayWalker, relayBg.x, relayBg.y, rbgW * bgScale, bgH, 0.70);
   // 首次布局时设置初始位置(椅子旁边)
-  if (walkerAI.x === 0 && walkerAI.y === 0) {
-    walkerAI.x = chairSprite.x - 150;
-    walkerAI.y = chairSprite.y;
+  if (relayWalker.ai.x === 0 && relayWalker.ai.y === 0) {
+    relayWalker.ai.x = chairSprite.x - 150;
+    relayWalker.ai.y = chairSprite.y;
+    relayWalker.container.x = relayWalker.ai.x;
+    relayWalker.container.y = relayWalker.ai.y;
   }
-  walkerContainer.x = walkerAI.x;
-  walkerContainer.y = walkerAI.y;
 
   // 计算椅子可坐区域:坐高=椅子高度40%处(从底部往上,比一半低一点),宽度=椅子宽度
   const chairW = chairSprite.width;
@@ -3602,20 +4854,22 @@ function layoutRelayScene() {
   chairOutline.y = chairSprite.y;
 
   // resize时(如F12开关控制台)如果人物处于坐姿,重新对齐到椅子坐高,避免位置偏移
-  if (walkerAI.state === 'sitting') {
-    walkerAI.x = chairSprite.x;
-    walkerAI.y = chairSeat.sitY;
-    walkerContainer.x = chairSprite.x;
-    walkerContainer.y = chairSeat.sitY;
+  if (relayWalker.ai.state === 'sitting') {
+    relayWalker.ai.x = chairSprite.x;
+    relayWalker.ai.y = chairSeat.sitY;
+    relayWalker.container.x = chairSprite.x;
+    relayWalker.container.y = chairSeat.sitY;
   }
 }
 
 function updateRelayTabVisibility() {
-  // 中转站标签 2026-09-11 起常显(未解锁点击只提示,见 switchScene),这里不再管可见性;
-  // 剩下的职责是兜底:万一服务器没了而中转站还开着(读旧档/未来出卖出服务器),把场景拉回生产。
-  if (state.machines.server.count <= 0 && relaySceneOpen) {
-    closeRelayScene();
-    navScene = 'production';
+  // 中转站/调教标签常显;未买服务器时把已打开的场景拉回生产
+  if (state.machines.server.count <= 0) {
+    if (relaySceneOpen) closeRelayScene();
+    if (tuneSceneOpen) closeTuneScene();
+    if (relaySceneOpen || tuneSceneOpen) {
+      navScene = 'production';
+    }
   }
   layoutNavTabs();
 }
@@ -3890,6 +5144,9 @@ const state = {
     hourAccum: 0, repAccum: 0,
     serviceDown: false,  // 库存见底 = 服务中断
     totalTokensSold: 0, totalDollarsEarned: 0,
+    news: {
+      totalH: 0, nextSpawnH: 6, active: [], collected: {}, boosts: [],
+    },
   },
   waterCoolingTimer: 0,
   waterCoolingNextTrigger: 10,
@@ -3985,6 +5242,22 @@ function loadGame() {
       if (state.relay.userSlots.length > state.relay.users) {
         state.relay.userSlots.length = state.relay.users;
       }
+      // 社区日报:老存档无 news 字段 → 用默认
+      if (!state.relay.news || typeof state.relay.news !== 'object') {
+        state.relay.news = newsDefaults();
+      } else {
+        if (!Array.isArray(state.relay.news.active)) state.relay.news.active = [];
+        if (!state.relay.news.collected) state.relay.news.collected = {};
+        if (!Array.isArray(state.relay.news.boosts)) state.relay.news.boosts = [];
+        if (typeof state.relay.news.totalH !== 'number') state.relay.news.totalH = 0;
+        if (typeof state.relay.news.nextSpawnH !== 'number') state.relay.news.nextSpawnH = NEWS_INTERVAL_H;
+        // 旧文案迁移:已生成日报里的「开源」改「闭源」(NEWS_POOL 已改,存档里旧条目仍要洗)
+        for (const a of state.relay.news.active) {
+          if (a && typeof a.body === 'string' && a.body.indexOf('开源模型') >= 0) {
+            a.body = a.body.replace(/开源模型/g, '闭源模型');
+          }
+        }
+      }
     }
     refreshRelayPanel(); // 属性可能变了,刷新雷达图/最接近模型
     recalcProduction();
@@ -4020,6 +5293,7 @@ function resetGame() {
     hourAccum: 0, repAccum: 0,
     serviceDown: false,
     totalTokensSold: 0, totalDollarsEarned: 0,
+    news: newsDefaults(),
   };
   recalcProduction();
   recalcClickPower();
@@ -4171,6 +5445,12 @@ app.ticker.add(() => {
 
     // 中转站经营 v1:时钟 + 卖 token 换刀乐 + 小时/信誉刷新(§14;生产中也跑,不依赖场景)
     updateRelayBusiness(dt);
+
+    // 鞭子挥动帧回退
+    if (whipShowingCrack) {
+      whipCrackTimer -= dt;
+      if (whipCrackTimer <= 0) showWhipFrame(false);
+    }
   }
 });
 
@@ -4178,6 +5458,12 @@ app.ticker.add(() => {
 // 加载本地存档
 const hasSave = loadGame();
 layoutAll();
+ensureWhaleCursor();
+ensureWhipAssets();
+// 启动先不显示鲸鱼,等第一次进入画布再贴鼠标
+if (whaleCursor) whaleCursor.visible = false;
+if (whipCursor) whipCursor.visible = false;
+app.view.classList.add('custom-cursor');
 if (hasSave) {
   updateTokenDisplay();
   layoutCase();
@@ -4204,6 +5490,10 @@ pcCase.texture.on('update', () => { safeRelayout(); });
 relayBg.texture.on('update', () => { safeRelayout(); });
 chairSprite.texture.on('update', () => { safeRelayout(); });
 tuneBgSprite.texture.on('update', () => { safeRelayout(); });
+// tune_idle 解码完成后重算缩放(否则 height=0 → scale=Infinity,坐桌/停顿时人会整张消失)
+if (typeof tuneIdleTex !== 'undefined' && tuneIdleTex) {
+  tuneIdleTex.on('update', () => { if (tuneSceneOpen) layoutTuneScene(); });
+}
 
 window.addEventListener('load', () => { setTimeout(safeRelayout, 0); });
 
