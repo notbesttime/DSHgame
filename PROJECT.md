@@ -358,18 +358,27 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 ## 已知事项 / 注意
 
 - 浏览器自动化点击 canvas 测试时:**设置面板开着会挡住底部标签**(遮罩全屏),先关面板再点。cua 坐标=CSS 像素(本机 dpr=1),中转站标签中心 ≈ `(0.62×宽, 高-36)`,生产 ≈ `(0.38×宽, 高-36)`。
-- 设置面板的音乐/音效滑条目前是摆设(无音频消费方),接入音频前别让玩家误会。
+- 设置面板「音乐音量」滑条**已接 BGM 且已持久化**:拖动即时改正在播的轨(`setBgmVolume`),换轨淡入也以 `musicVolume` 为目标;音量存进存档 `settings.{music,sfx}`(`saveGame`/`loadGame`,拖动防抖 400ms 落盘),刷新/换设备(同浏览器 localStorage)会跟随用户设置——VibeHub 上即随玩家本地存档持久。默认 0.7。「音效音量」滑条也持久化但仍无消费方(游戏还没有音效)。
+- 设置卡片**只有点背景虚影(全屏遮罩)才关闭**;卡片本体 `bg` 设了 `eventMode='static'` + `hitArea` + `pointerdown` 吸收点击,防止点在卡内空白处误触关闭。改 `drawSettingsPanel` 时别把 `bg` 的交互去掉,否则卡内点击会穿透到遮罩又变成一点就关。
+- **后台「收益速率」用 `formatRate` 自适应精度**(`$ /秒`,早期 `users×speed×coef×price/1e6` 极小,固定 `toFixed(3)` 会显示成 `0.000`,像"一直是0")。别退回固定 3 位小数。
+- **强化训练贴图坐标坑**:`tuneGameTiles` 每格 Graphics **必须画在局部坐标(0,0起)、`position` 设成绝对格位、`pivot` 设成局部中心**(缩放/弹跳绕自身中心)。踩过的坑:画在绝对坐标又同时 `pivot.set(绝对中心)+position(0,0)` → 渲染时整体偏移 `-(pivot)`,所有方块堆到左上角 = "棋盘空白、无法游玩"。`hitArea` 也要用局部 `(0,0,cell,cell)`。
+- **「闭关训练…」标签**:统一头顶标签 `sessionLabel`(挂 `layers.topbar`,亮金 `#ffe9a8` + 深色描边),每帧 `syncSessionLabel()` 跟随**当前可见场景**的人物头顶(调教→`tuneWalker`、中转站→`relayWalker`、生产→`charClosed`),文案用「Nmin」;无疗程隐藏。不再只在调教场景、不再钉死课桌。**坑:它在 topbar,层级在 `layers.panel` 之上,任何整屏覆盖层一开,倒计时就穿帮盖住它们。已在 `syncSessionLabel` 开头让位隐藏:`screenPanelOpen`(电脑屏幕)或 `gameState && tuneSceneOpen`(强化训练棋盘)任一真即 `visible=false`。**(2026-09-26:中转站打开电脑面板时标签浮在屏幕之上,即此坑。)
 - 手机竖屏会显示"请横屏游玩"遮罩(`#rotatePrompt`,触屏+竖屏才触发)。
 - 启动时序:base64 纹理异步解码,靠 7 个 `texture.on('update')`(bgLight/bgDark/charClosed/charOpen/pcCase/**relayBg/chairSprite**) + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。**新增纹理必须加 update 监听**,否则 layoutRelayScene 等函数会在纹理未就绪时计算,除以0导致 NaN 边界(已踩过坑:中转站行走边界完全失效)。
   - `dist/` 模式下纹理是真·异步 URL 加载(时序比 base64 更晚),**已实测这套兜底仍然够用**(2026-09-10 真实浏览器验证 18 个素材全部就绪、纹理尺寸正确、布局一致)。但以后若新增依赖纹理尺寸的布局,dist 模式要再验一次。
 - layoutRelayScene 中有纹理未加载时的默认尺寸保护(rbgW=1672,rbgH=941),避免除以0。新增依赖纹理尺寸的布局函数时建议同样保护。
 - **构建自检用 `check_syntax.js`**(旧名 `_check_syntax.js` 已废弃——以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则吃掉)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
   ⚠️ **不要再把这个文件名写进 `.gitignore`**。2026-09-10 曾这么干过一次,结果它既进不了版本库、又被随后的清理脚本一起删掉,构建自检整个消失(见坑36)。
+- **BGM 音频的坑(2026-09-26)**:
+  - **始终外链、绝不 base64 内联**(三首 AAC 共 2.9M,内联会把单文件 HTML 撑爆)。副作用:**单文件「本体」不再自包含**,离线双击要连 `assets/audio/` 一起拷走(图片仍内联,只有音频外置)。上传 VibeHub 走 `--dist` 不受影响(音频已进 `dist/assets/`)。
+  - **浏览器自动播放限制**:页面加载后不会立刻有声,要等**首次用户手势**(`startBGMOnGesture` 挂在一次性 pointerdown/keydown 上)才起播。别在 `openTuneScene` 里期待 `setBGM` 马上出声——手势前 `setBGM` 只记目标轨、不播。
+  - 本地 `server.js` 把 `.m4a` 报成 `application/octet-stream`,`<audio>` 靠内容嗅探仍能播(实测 `canPlayType('audio/mp4;…mp4a.40.2')`=probably、时长可解码);VibeHub 若给正确 MIME 更稳,无需为此改 server.js。
+  - 换轨是**交叉淡入淡出**(`bgmFade` 用 setInterval 改 volume),不是硬切;`closeTuneScene` 会先 `settleGame` 再切回上一首,别把这两步顺序写反。
 
 ## 后续待办(用户规划)
 
 1. **中转站玩法设计**(用户亲自安排——等需求,勿抢先实现)
-2. 设置面板音频接入(音乐/音效滑条已就位;若不做音频,应把滑条隐藏,别挂着当摆设)
+2. 音频补全:BGM 已实装(三场景各一首、外置 AAC/.m4a),「音乐音量」滑条已接且已持久化(存进 `settings`)。**待办**:加音效(点击/购买等)并接「音效音量」滑条——目前该滑条已持久化但无消费方。
 3. ~~发布 VibeHub 前的适配~~ **已完成**:体积/缓存模型已落地(`--dist` 模式)、移动端适配已做(方案 A + `touch-action:none`)。
    剩下真正发布时的动作见「发布前检查清单」(字体子集化可选、封面截图待备)。
 4. 离线收益(存档已有 savedAt,用户说放到后面考虑)
@@ -430,6 +439,8 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
   百分比布局与单文件版一致、无控件碰撞。所以「已知事项」里那条 NaN 兜底在拆分下仍然够用。
 - `server.js` 已支持目录请求补 `index.html`,本地 `python server.js` 后直接访问 `/dist/` 即可预览构建产物。
 - ⚠️ dist 产物不能离线双击打开(需要 http 服务);要塞「本体」仍用单文件模式。
+- **全局资源域名开关 `ASSET_BASE`**(2026-09-22 加):`build.py` 顶部读环境变量 `ASSET_BASE`(默认空 = 同源相对 `assets/…`),非空自动补结尾斜杠,同时前缀到 `ASSET_FILES` 路径表**和** pixi 外链。**决策:不用对象存储**——图片继续随 `dist/` 一起上传 VibeHub、吃平台 1 年哈希强缓存(实测 dist 版内联 base64 图片 0 个、外链 webp 25 个)。此变量只是留口:将来真要搬 OSS/COS/R2 或 CDN,`ASSET_BASE=https://域名/ python build.py --dist` 一行切换、代码零改动(届时先过跨域 WebGL 纹理的 CORS + 平台 CSP 两关)。单文件模式不受影响(仍 base64 内联供离线双击)。
+- **背景音乐 BGM(2026-09-26 加,始终外置)**:三首场景曲(`assets/audio/` 下 `bgm_basement`主生产 / `bgm_relay`中转站 / `bgm_tune`调教)。源 mp3 先 ffmpeg 压 128k MP3,再改 **AAC 64k(.m4a)**——`地下室 1.1M / 中转站 0.6M / 调教 1.2M`,合计 **11.4M→2.9M**;AAC 同码率音质优于 MP3 且 iOS/安卓/桌面全支持(浏览器 `canPlayType('audio/mp4; codecs="mp4a.40.2"')`=probably,实测元数据可解码)。`build.py` 顶部 `AUDIO_FILES` 清单 + 模板 `<script>__AUDIO__</script>` 注入 `const AUDIO` 路径表。**关键:音频两种模式都走外链、绝不 base64 内联**(否则单文件 HTML 会从 2.4M 暴涨)——单文件 `index.html` 引相对路径 `assets/audio/*.m4a`,dist 引 `ASSET_BASE + assets/bgm_<name>.<hash>.m4a`(哈希强缓存)。⚠️ **代价:单文件「本体」不再完全自包含**,离线双击要带上 `assets/audio/` 文件夹一起(图片仍内联,只有音频外置)。游戏内 `BGM` 模块(`initBGM/setBGM/startBGMOnGesture`)用 `new Audio` 循环 + 交叉淡入淡出,按 `openTuneScene/openRelayScene` 及各自 close 切场景;**受浏览器自动播放限制,首次用户手势后才起播**。
 
 ### 移动端适配(2026-09-10 已按方案 A 实现)
 
@@ -472,6 +483,7 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 
 1. 重新拉取 `/api/skill` 并按其步骤安装/更新官方 CLI(不是用本文档的记忆)。
 2. `python build.py`(或 `--dist`)产出干净目录,确认顶层有 `index.html`,且不含源码/`.git`/raw 素材。
+   ⚠️ dist 现在还含三首 BGM(`dist/assets/bgm_*.m4a`,约 2.9M):首访会下载它们(之后吃 1 年哈希缓存)。别误当"多余文件"删掉。
 3. 准备封面 + 截图(≤6 张)放进部署目录内部;准备好 UTF-8 的描述文件(≤2000 字符)与更新说明文件。
 4. `vibehub whoami` 已登录则复用,不要重复 `login`。
 5. `vibehub metadata` 取真实 category/tag ID,不要自己造。
@@ -482,6 +494,15 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 
 
 ## 仓库状态与提交
+
+### 2026-09-26 调教养成 v1 收口(本轮提交，含新素材首次入库)
+- **强化训练消消乐进调教场景**(非电脑面板):`GAME_CFG`/`startGame`/`settleGame`/`buildTuneGameLayer`，开局 3 算力 + token、**每步也扣 token 且随游玩天数涨价**(`gameTokenMul`);切场景**不自动结算**、回调教保持这局(防白耗算力)。修了棋盘多个渲染坑(贴图坐标 pivot/position、臃肿弹跳 `gtween`、消除后新块未刷新的空洞)。
+- **属性比例制**:`TRAIN_ITEMS` `delta→rate`，结算 `A[k]+=(100-A[k])*rate*trainGainMul()`——越高越难涨、基于当前能力而非购买次数;`trainGainMul` 加压力软惩罚(叠加原摆烂硬锁);7 个道具改梗名。
+- **调教场景**:受击 `tune_hit.webp`(鞭打命中换图并停下，尺寸对齐 `tune_idle`);`tuneHud` 显示美刀/token/时间;时长文案「占x分」统一改「训练需xmin」。
+- **闭关头顶标签 `sessionLabel`**:亮金 `#ffe9a8`、每帧跟随当前场景人物头顶、生产/中转站/调教都显示、单位 min。**本轮修**:它挂在 `layers.topbar`(在 `layers.panel` 之上)，开电脑面板/强化训练棋盘时会穿帮盖住整屏覆盖层 → `syncSessionLabel` 开头加 `screenPanelOpen` 让位隐藏(中转站开屏幕不再被标签盖)。
+- **场景 BGM 外置**:`build.py` 新增 `AUDIO_FILES`(3 首 AAC 64k `.m4a`)，**两模式都外链、绝不 base64 内联**;⚠️ 单文件本体不再完全自包含(离线双击要带 `assets/audio/`)。音量滑条接线 + 持久化进存档 `settings`;设置卡片只有点背景遮罩才关(防误触)。
+- **新素材入库**:`assets/audio/bgm_*.m4a`(3 首 ~2.9M)、`assets/compressed_webp/tune_hit.webp`(21KB)——首次提交;`index.html`/`dist/` 仍按 `.gitignore` 不入库。
+- 已跑 `node check_syntax.js` + `python build.py`(单文件 2466KB)/`--dist`(合计 4900KB);浏览器 evaluate 行为断言(标签让位·属性涨·疗程结算·切场景不结算)全绿。文档写回 `中转站设计.md` §16.9/16.10/§17/19.2 + 本文坑位。
 
 ### 2026-09-12 调教消失修复(本轮未提交)
 - **坑56**:调教人物走到边缘 / 停顿 idle / 坐上桌持续消失 → `applyWalkerMetrics` 边界与屏幕求交 + `safeSpriteScale` 防 texture.height=0/1 把 scale 算成 Infinity;启动预载 `tune_idle` 并在 `texture.on('update')` 重布局。

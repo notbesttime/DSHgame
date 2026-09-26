@@ -67,6 +67,7 @@
 </div>
 <script>__PIXIES__</script>
 <script>__ASSETS__</script>
+<script>__AUDIO__</script>
 <script>
 // ==================== 工具函数 ====================
 // 渲染分辨率唯一来源:canvas 后备缓冲与文字栅格化都用它,避免两处各写一份而不同步。
@@ -1301,6 +1302,53 @@ const RELAY_BIZ = {
   DOWN_REP_HOURLY: 1,         // 每小时处在服务中断 → 信誉 -1
 };
 
+// ========== 发布(§19;数值全占位,待调) ==========
+const PUBLISH_CFG = {
+  BENCH_DAYS: 5,            // 对标持续游戏天(24min=24h → 现实≈2h)
+  RUN_DAYS: 1,              // 跑分短期爆量(游戏天)
+  POOL_BASE: 60,            // 榜首人数池基数
+  POOL_DECAY: 0.12,         // 名次衰减:池 = POOL_BASE / (1 + rank*DECAY),越靠前越大
+  CHEAP_MUL_MAX: 2,         // 定价越低抽量倍率上限(官价×1 → ×2)
+  SHRINK_P: 0.25,           // 抽量"反而变少"的概率(波动)
+  BENCH_REP_GAIN: 0.5,      // 对标发布即时少量信誉
+  BENCH_GROWTH_MUL: 0.8,    // 对标期内信誉"增长"×此系数(不削下降)
+  RUN_REP_LOSS: [1, 3],     // 跑分信誉随机降低区间
+  SIM_GATE: 80,             // 达标线:有效相似度≥此才可对标
+};
+
+// ========== 调教养成(设计 §16;连续流 AP + 消耗型道具 + 阈值触发阶梯测评) ==========
+// 数值全为草案档位;刀乐价格的绝对尺度待 §14.3 收益尺度校准,实数游戏内调。
+const TRAIN_CFG = {
+  AP_REGEN_PER_GAME_MIN: 1,     // 每游戏分钟回 1 AP(=1 现实秒)
+  AP_MAX: 10,
+  PRESSURE_MAX: 100,            // 压力爆表 → 摆烂(暂停可训练,靠空闲/泄压事件回落)
+  PRESSURE_DECAY_PER_GAME_H: 6, // 空闲时每小时泄压
+  PRESSURE_PENALTY_DIV: 250,    // 软性惩罚:训练效果 ×(1 - 压力/此值),满压 100 时约 ×0.6;到 PRESSURE_MAX 再触发摆烂硬锁
+  GAIN_MUL_K: 0.6,              // §10:训练增益倍率 = 1 + 参数/100 × K
+  EXAMS: [                      // 训练开始后累计游戏天数到阈值触发(1 游戏天=24 游戏时=24 现实分);奖励 tokens 以 M 计
+    { name: '随堂小测', atDay: 1,  tokenM: 0.5 },
+    { name: '月考',     atDay: 3,  tokenM: 2 },
+    { name: '模拟考',   atDay: 7,  tokenM: 6 },
+    { name: '毕业大考', atDay: 14, tokenM: 20 },
+  ],
+};
+// 消耗型道具:买一次用一次。instant=立即结算;session=扣费后人物落座 duraMin 游戏分再结算大 Δ。
+// attr 目标键(同 state.relay.ability);rate=比例增益(结算时按 (100-当前值)*rate*gainMul 计算,分数越高越难提升);need=前置门槛。
+const TRAIN_ITEMS = [
+  { key:'coffee',  name:'速溶咖啡',         sub:'蒸馏·加速',     kind:'instant', attr:['speed'],                rate:{speed:0.05},               cost:3,  ap:1, duraMin:0,   pres:5,  color:0x6a4a2a },
+  { key:'cheat',   name:'备忘录',            sub:'RAG·检索',      kind:'instant', attr:['knowledge'],            rate:{knowledge:0.05},           cost:3,  ap:1, duraMin:0,   pres:2,  color:0x3a6a8a },
+  { key:'pie',     name:'画饼',             sub:'指令对齐',       kind:'instant', attr:['instruct'],             rate:{instruct:0.05},            cost:3,  ap:1, duraMin:0,   pres:1,  color:0xba8a3a },
+  { key:'tutor',   name:'诸葛亮给张飞的小玩具', sub:'RLHF·蒸馏',  kind:'session', attr:['reasoning','instruct'], rate:{reasoning:0.10, instruct:0.08}, cost:20, ap:3, duraMin:45,  pres:10, color:0x3a9a6a },
+  { key:'drill',   name:'五年高考三年模拟', sub:'预训练刷题',     kind:'session', attr:['reasoning','longCtx'],  rate:{reasoning:0.15, longCtx:0.08},cost:35, ap:4, duraMin:90,  pres:18, color:0xc05a2a },
+  { key:'gym',     name:'俯卧撑预备!',       sub:'Scale-up 扩容',  kind:'session', attr:['params'],               rate:{params:0.12},              cost:50, ap:4, duraMin:120, pres:8,  color:0x8a5a20 },
+  { key:'eyes',    name:'指鹿为马ing',       sub:'Vision head',   kind:'session', attr:['multimodal'],           rate:{multimodal:0.25},          cost:60, ap:4, duraMin:100, pres:12, color:0x3a6a8a },
+  { key:'ear',     name:'助听器',            sub:'音频模态',       kind:'session', attr:['multimodal'],           rate:{multimodal:0.18},          cost:70, ap:4, duraMin:100, pres:12, color:0x3a6a8a, need:{multimodal:40} },
+  { key:'toolkit', name:'工程制图强化学习',   sub:'Function·Agent',kind:'session', attr:['toolCall'],             rate:{toolCall:0.28},            cost:45, ap:3, duraMin:80,  pres:8,  color:0x5a6a7a },
+];
+function trainDefaults() {
+  return { ap: 0, apAccum: 0, pressure: 0, examStage: 0, examStartH: null, session: null };
+}
+
 function blendPriceNum(m) { return (m.pi + m.po * 3) / 4; }
 // officialPriceOf 在社区日报块末尾定义(含活跃 price 系数)
 function findModelByName(n) {
@@ -1711,13 +1759,14 @@ function relayRepSettle() {
   if (!listed) return; // 自研不结算
   const sim = similarityTo(R.ability, listed);
   const step = RELAY_BIZ.REP_STEP[0] + Math.random() * (RELAY_BIZ.REP_STEP[1] - RELAY_BIZ.REP_STEP[0]);
+  const gmul = (R.publish.active && R.publish.strategy === 'bench') ? PUBLISH_CFG.BENCH_GROWTH_MUL : 1;
   if (sim > 100) {
     // 高配低标:只升,幅度小
-    R.reputation = Math.min(100, R.reputation + step * 0.4);
+    R.reputation = Math.min(100, R.reputation + step * 0.4 * gmul);
   } else if (sim >= 80) {
     const pUp = (sim - 80) / 20; // 80→0  100→1,越高越易升
     if (Math.random() < 0.25 + pUp * 0.5) {
-      R.reputation = Math.min(100, R.reputation + step);
+      R.reputation = Math.min(100, R.reputation + step * gmul);
     } else {
       R.reputation = Math.max(0, R.reputation - step * 0.5);
     }
@@ -1726,6 +1775,67 @@ function relayRepSettle() {
     const sev = Math.min(1, (80 - sim) / 80);
     R.reputation = Math.max(0, R.reputation - step * (1 + sev * 2));
   }
+}
+
+// ========== 发布逻辑(§19;对标=诚实线 / 跑分=投机线 / 实话=中性) ==========
+function publishLocked() { return state.relay.publish.active && state.relay.publish.strategy === 'bench'; }
+function boardRankOf(name) { const o = boardOrder(); for (let i = 0; i < o.length; i++) { if (o[i].m.n === name) return i; } return o.length; }
+function repCoef() { return 0.5 + Math.max(0, Math.min(100, state.relay.reputation)) / 100; } // 信誉→转化率 0.5~1.5
+function publishPoolDraw(name, price) {
+  const idx = boardRankOf(name);
+  const listed = findModelByName(name);
+  const base = PUBLISH_CFG.POOL_BASE / (1 + idx * PUBLISH_CFG.POOL_DECAY);   // 名次越靠前池越大
+  const off = listed ? officialPriceOf(listed) : 0;
+  let mul = 1;
+  if (off > 0 && price > 0) { const cheap = Math.max(0, Math.min(1, 1 - price / off)); mul = 1 + cheap * (PUBLISH_CFG.CHEAP_MUL_MAX - 1); }
+  let n = base * mul * repCoef();                                            // ★ 信誉 = 转化
+  if (Math.random() < PUBLISH_CFG.SHRINK_P) n *= (0.4 + Math.random() * 0.4); // 有概率反而变少
+  return Math.max(1, Math.round(n));
+}
+function doPublish(strategy, targetName) {
+  const R = state.relay, P = R.publish;
+  if (P.active) return { ok: false, msg: '发布进行中，锁定期内不可再发' };
+  if (strategy === 'honest') {
+    P.lastCap = modelCapability(R.ability);
+    saveGame();
+    return { ok: true, msg: '已实话实说发布：不刷额外用户、不涨不扣信誉，能力基线已记录' };
+  }
+  const target = findModelByName(targetName);
+  if (!target) return { ok: false, msg: '先选一个对标模型' };
+  const sim = similarityTo(R.ability, target);
+  if (strategy === 'bench' && sim < PUBLISH_CFG.SIM_GATE)
+    return { ok: false, msg: '未达训练预期（相似度 ' + sim.toFixed(0) + '＜' + PUBLISH_CFG.SIM_GATE + '）' };
+  if (strategy === 'run' && sim >= PUBLISH_CFG.SIM_GATE)
+    return { ok: false, msg: '已达标，用「对标」更划算' };
+  R.listedModel = targetName;                                        // 强制标榜
+  if (!(R.price > 0)) R.price = officialPriceOf(target);            // 保底定价
+  const users = publishPoolDraw(targetName, R.price);
+  // 叠加:不覆盖正常运营已有的用户,只额外注入这波对标池流量
+  for (let i = 0; i < users; i++) R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50) });
+  R.users = R.userSlots.length;
+  if (strategy === 'bench') R.reputation = Math.min(100, R.reputation + PUBLISH_CFG.BENCH_REP_GAIN);
+  if (strategy === 'run') { const l = PUBLISH_CFG.RUN_REP_LOSS; R.reputation = Math.max(0, R.reputation - (l[0] + Math.random() * (l[1] - l[0]))); }
+  P.active = true; P.strategy = strategy; P.model = targetName;
+  P.totalH = (strategy === 'bench' ? PUBLISH_CFG.BENCH_DAYS : PUBLISH_CFG.RUN_DAYS) * 24;
+  P.remainH = P.totalH;
+  P.lastCap = modelCapability(R.ability);
+  saveGame();
+  return { ok: true, msg: (strategy === 'bench' ? '已对标发布 ' : '已跑分发布 ') + targetName + '（' + R.users + ' 人 / ' + (P.totalH / 24) + ' 天）' };
+}
+function publishTick(gameHours) {
+  const P = state.relay.publish;
+  if (!P.active) return;
+  P.remainH -= gameHours;
+  if (P.remainH <= 0) { P.active = false; P.strategy = null; P.model = null; P.remainH = 0; }
+}
+
+// 收益速率自适应精度:早期 $/秒 很小,固定 3 位会显示成 0.000,按量级给到有效位
+function formatRate(v) {
+  if (!v || v <= 0) return '0';
+  if (v >= 100) return v.toFixed(0);
+  if (v >= 1) return v.toFixed(2);
+  if (v >= 0.01) return v.toFixed(3);
+  return v.toFixed(5);
 }
 
 // 主循环每帧调用:时钟 + 卖 token 换刀乐 + 到点触发小时/信誉刷新
@@ -1769,6 +1879,10 @@ function updateRelayBusiness(dt) {
   }
   // 社区日报:每 6 游戏时
   newsTick(gameHours);
+  // 调教养成:AP 连续再生 / 疗程倒计时 / 空闲泄压 / 阈值触发测评(§16)
+  updateTrain(gameHours);
+  // 发布:对标/跑分窗口倒计时与到期解锁(§19)
+  publishTick(gameHours);
 
   // 后台页开着时原地刷新活字(不整页重绘,避免 destroy 开销)。
   // 节流 0.25s:卖出进行时 dollars 每帧都变,不加节流的话这几条 PIXI.Text 每帧都重栅格化
@@ -1784,7 +1898,7 @@ function updateRelayBusiness(dt) {
     backendLive.users.text = String(R.users);
     backendLive.clock.text = gameClockFull();
     backendLive.rate.text = listed && R.price > 0
-      ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
+      ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef * R.price / 1e6) + ' /秒'
       : '未标榜';
     // 相似度:优先显示「选中行」的,否则显示当前标榜的;≥80 或 >100 绿,否则红
     // 显示口径 = 有效相似度(属性相似 × 能力倍率);括号里附 raw%,方便看倍率拉了多少
@@ -1813,6 +1927,214 @@ function updateRelayBusiness(dt) {
       + (listed2 ? '   ·   标榜 ' + listed2.n + ' 模型' : '   ·   未标榜')
       + (R.serviceDown ? '   ·   ⚠中断' : '');
   }
+  // 调教场景顶栏 HUD:美刀 / token / 时间(节流同 relayHud)
+  if (tuneSceneOpen && tuneHudLine1 && uiDue) {
+    tuneHudLine1.text = '$' + formatNum(R.dollars) + '   ·   ' + formatNum(state.tokens) + ' tok';
+    tuneHudLine2.text = gameClockFull();
+  }
+}
+
+// ========== 调教养成逻辑(设计 §16;实时,不依赖场景) ==========
+function trainGainMul() {
+  const base = 1 + (state.relay.ability.params / 100) * TRAIN_CFG.GAIN_MUL_K;
+  const pressureMul = Math.max(0, 1 - (state.relay.train.pressure / TRAIN_CFG.PRESSURE_PENALTY_DIV));
+  return base * pressureMul;
+}
+function abilityAdd(attr, v) {
+  const a = state.relay.ability;
+  a[attr] = Math.max(0, Math.min(100, a[attr] + v));
+}
+function trainItemByKey(key) { for (const it of TRAIN_ITEMS) if (it.key === key) return it; return null; }
+function trainPressureMaxed() { return state.relay.train.pressure >= TRAIN_CFG.PRESSURE_MAX; }
+
+// 能不能用:余额(刀乐) / AP / 疗程独占 / 前置门槛 / 压力爆表(摆烂)
+function trainCanUse(item) {
+  const T = state.relay.train, R = state.relay;
+  if (trainPressureMaxed()) return false;
+  if (R.dollars < item.cost) return false;
+  if (T.ap < item.ap) return false;
+  if (item.kind === 'session' && T.session) return false;
+  if (item.need) { for (const k in item.need) { if (R.ability[k] < item.need[k]) return false; } }
+  return true;
+}
+
+function useTrainItem(item) {
+  if (!trainCanUse(item)) return false;
+  const T = state.relay.train, R = state.relay;
+  R.dollars -= item.cost;
+  spendAP(item.ap);
+  T.pressure = Math.min(TRAIN_CFG.PRESSURE_MAX, T.pressure + item.pres);
+  if (item.kind === 'instant') {
+    const mul = trainGainMul();
+    for (const k in item.rate) {
+      const gain = (100 - R.ability[k]) * item.rate[k] * mul;
+      abilityAdd(k, gain);
+    }
+  } else {
+    T.session = { key: item.key, remainMin: item.duraMin, totalMin: item.duraMin };
+  }
+  saveGame();
+  if (typeof refreshTrainUI === 'function') refreshTrainUI();
+  return true;
+}
+
+function finishSession() {
+  const T = state.relay.train;
+  const item = trainItemByKey(T.session.key);
+  if (item) {
+    const mul = trainGainMul();
+    for (const k in item.rate) {
+      const gain = (100 - state.relay.ability[k]) * item.rate[k] * mul;
+      abilityAdd(k, gain);
+    }
+  }
+  T.session = null;
+}
+
+// 训练开始后累计的游戏天数(锚定首次 tick 的 totalH,老存档不会一次性补发全部测评)
+function trainElapsedDays() {
+  const T = state.relay.train;
+  const totalH = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  if (T.examStartH == null) T.examStartH = totalH;
+  return Math.floor((totalH - T.examStartH) / 24);
+}
+
+function updateTrain(gameHours) {
+  const T = state.relay.train;
+  const gm = gameHours * 60; // 游戏分钟(1 游戏时 = 60 游戏分)
+  // 强化训练进行中(且正停留在调教场景)才暂停算力回复;切去别的板块时算力照常回复,不冻死
+  if (!(gameState && tuneSceneOpen) && T.ap < TRAIN_CFG.AP_MAX) {
+    T.apAccum += gm;
+    while (T.apAccum >= 1 && T.ap < TRAIN_CFG.AP_MAX) { T.apAccum -= 1; T.ap += 1; }
+    if (T.ap >= TRAIN_CFG.AP_MAX) T.apAccum = 0;
+  }
+  if (T.session) {
+    T.session.remainMin -= gm;
+    if (T.session.remainMin <= 0) finishSession();
+  } else if (T.pressure > 0) {
+    T.pressure = Math.max(0, T.pressure - TRAIN_CFG.PRESSURE_DECAY_PER_GAME_H * gameHours);
+  }
+  const elapsed = trainElapsedDays();
+  while (T.examStage < TRAIN_CFG.EXAMS.length && elapsed >= TRAIN_CFG.EXAMS[T.examStage].atDay) {
+    fireExam(TRAIN_CFG.EXAMS[T.examStage]);
+    T.examStage += 1;
+  }
+}
+
+// 测评 = 能力(§2.1) 对照标榜档位 × 像不像(§14.11) → 发 M 级 tokens(1e6 恰为 §14.3 定价分母)
+function fireExam(exam) {
+  const R = state.relay;
+  const ability = modelCapability(R.ability);
+  const listed = relayListedModel();
+  const refCap = listed ? Math.max(listed.cap, 1) : Math.max(ability, 1);
+  const grade = Math.max(0, Math.min(1.5, ability / refCap));                    // 能力 / 档位
+  const simFactor = listed ? (0.6 + Math.min(similarityTo(R.ability, listed), 100) / 100 * 0.6) : 0.7;
+  const tokens = exam.tokenM * 1e6 * (0.5 + grade) * simFactor;
+  state.tokens += tokens;
+  updateTokenDisplay();
+  if (typeof spawnFloatText === 'function') {
+    spawnFloatText(exam.name + ' 通过! +' + formatNum(tokens) + ' tok', app.screen.width / 2, app.screen.height * 0.3);
+  }
+}
+
+// ========== 调教「强化训练」= 点按成组消除(设计 §16.10;在调教场景内,与电脑面板区分;主流缓慢增长) ==========
+// 颜色=属性维度;模式决定棋盘出现哪些维、主色涨得多。结算与商店共用「(100-当前值)×比例」口径。
+const GAME_CFG = {
+  COLS: 7, ROWS: 7,
+  COLORS: 4,             // 每局出现的颜色数(= 属性维度数)
+  MIN_GROUP: 3,          // 相连同色 >=3 才能点消
+  START_MOVES: 14,       // 每局有效消除次数上限
+  AP_COST: 3,            // 开局消耗算力(行动点)
+  TOKEN_START: 3e6,      // 开局消耗 token(基准值,随游玩天数放大)
+  TOKEN_PER_MOVE: 5e5,   // 每有效消除一步消耗 token(基准值,随游玩天数放大)
+  TOKEN_GROWTH_PER_DAY: 0.3, // 成本倍率 = 1 + 已玩天数 × 此值(开局与每步同倍率,越玩越贵)
+  BASE_POINTS: 40,       // 结算分母:某维点数/此值 = 占比(封顶 1)
+  WEIGHT_PRIMARY: 0.09,  // 主色:每满占比最多涨这么多 headroom
+  WEIGHT_SECOND: 0.045,  // 副色
+};
+const TRAIN_MODES = [
+  { key: 'reason', name: '推理特训', desc: '偏涨推理/知识/速度/上下文', colors: ['reasoning', 'knowledge', 'speed', 'longCtx'], primary: 'reasoning' },
+];
+const GAME_TILE_HEX = [0x4a7ac0, 0xc05a5a, 0x4aa05a, 0xd0a53a]; // 4 色方块(索引对应 mode.colors)
+let gameState = null; // 临时,不进存档:{ mode, board[ROWS][COLS], moves, tally:{key:n}, over }
+
+// 通用行动点扣除(将来同学聊天/交友等也走这个池)
+function spendAP(n) { state.relay.train.ap = Math.max(0, state.relay.train.ap - n); }
+
+// token 成本倍率:随已玩的游戏天数线性上涨(越玩越贵);开局与每步共用
+function gameTokenMul() {
+  const totalH = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  const daysPlayed = totalH / 24;
+  return 1 + daysPlayed * GAME_CFG.TOKEN_GROWTH_PER_DAY;
+}
+function gameStartTokenCost() { return GAME_CFG.TOKEN_START * gameTokenMul(); }
+function gameMoveTokenCost() { return GAME_CFG.TOKEN_PER_MOVE * gameTokenMul(); }
+
+function gameCanStart() {
+  return state.relay.train.ap >= GAME_CFG.AP_COST && state.tokens >= gameStartTokenCost();
+}
+function randColor() { return Math.floor(Math.random() * GAME_CFG.COLORS); }
+function makeBoard() {
+  const b = [];
+  for (let r = 0; r < GAME_CFG.ROWS; r++) { b.push([]); for (let c = 0; c < GAME_CFG.COLS; c++) b[r].push(randColor()); }
+  return b;
+}
+function startGame() {
+  if (gameState || !gameCanStart()) return false;
+  spendAP(GAME_CFG.AP_COST);
+  state.tokens -= gameStartTokenCost();
+  updateTokenDisplay();
+  const tally = {};
+  for (const k of TRAIN_MODES[0].colors) tally[k] = 0;
+  gameState = { mode: TRAIN_MODES[0], board: makeBoard(), moves: GAME_CFG.START_MOVES, tally, over: false };
+  return true;
+}
+// 从 (r,c) flood fill 同色相连块
+function findGroup(board, r0, c0) {
+  const color = board[r0][c0];
+  if (color < 0) return [];
+  const seen = {}, out = [], stack = [[r0, c0]];
+  while (stack.length) {
+    const [r, c] = stack.pop();
+    const key = r + ',' + c;
+    if (seen[key]) continue;
+    if (r < 0 || r >= GAME_CFG.ROWS || c < 0 || c >= GAME_CFG.COLS) continue;
+    if (board[r][c] !== color) continue;
+    seen[key] = 1; out.push([r, c]);
+    stack.push([r + 1, c], [r - 1, c], [r, c + 1], [r, c - 1]);
+  }
+  return out;
+}
+// 消除 + 重力下落 + 顶部补新
+function clearAndDrop(board, cells) {
+  for (const [r, c] of cells) board[r][c] = -1;
+  for (let c = 0; c < GAME_CFG.COLS; c++) {
+    let write = GAME_CFG.ROWS - 1;
+    for (let r = GAME_CFG.ROWS - 1; r >= 0; r--) {
+      if (board[r][c] >= 0) { board[write][c] = board[r][c]; if (write !== r) board[r][c] = -1; write--; }
+    }
+    for (let r = write; r >= 0; r--) board[r][c] = randColor();
+  }
+  return board;
+}
+// 结算:每维按 (100-当前值) × min(1,点数/基准) × 权重 × trainGainMul() 涨
+function settleGame() {
+  if (!gameState) return null;
+  const R = state.relay, mul = trainGainMul();
+  const gains = {};
+  for (const k in gameState.tally) {
+    const n = gameState.tally[k];
+    if (n <= 0) continue;
+    const frac = Math.min(1, n / GAME_CFG.BASE_POINTS);
+    const w = (k === gameState.mode.primary) ? GAME_CFG.WEIGHT_PRIMARY : GAME_CFG.WEIGHT_SECOND;
+    const gain = (100 - R.ability[k]) * frac * w * mul;
+    abilityAdd(k, gain);
+    gains[k] = gain;
+  }
+  gameState = null;
+  saveGame();
+  if (typeof refreshTrainUI === 'function') refreshTrainUI(true);
+  return gains;
 }
 
 // ========== 电脑屏幕面板(点击描边打开) ==========
@@ -1862,11 +2184,22 @@ screenPanel.addChild(panelContentArea);
 // 左侧栏标签页。内容与数值设计见 中转站设计.md 第 11 节;当前只做到"能切、有占位图"。
 const PANEL_TABS = [
   { key: 'model', label: '模型' },
+  { key: 'train', label: '训练' },
+  { key: 'publish', label: '发布' },
   { key: 'leaderboard', label: '榜单' },
   { key: 'community', label: '社区' },
   { key: 'backend', label: '后台' },
 ];
 let panelTab = 'model';
+// 「发布」页临时状态:选中的对标模型 / 反馈文案 / 对标的二次确认目标
+let publishSel = null;
+let publishMsg = '';
+let publishMsgOk = true;
+let publishArmed = null;
+// 发布页流程:概览 / 选策略 / 选模型;模型列表滚动偏移;待选模型的策略
+let publishPhase = 'overview';
+let publishModelScroll = 0;
+let publishPendingStrategy = null;
 
 // 「榜单」页的滚动位置(首行下标)与每行高度。只在 panelTab==='leaderboard' 时被读写。
 let boardScroll = 0;
@@ -2058,6 +2391,10 @@ function layoutScreenPanel() {
       communityPostOpen = false;
       boardPickIdx = -1;
       editingKey = null;
+      publishMsg = '';
+      publishArmed = null;
+      publishPhase = 'overview';
+      publishPendingStrategy = null;
       if (tab.key === 'model') radarAnim = true;   // 切回模型页也重播一次
       layoutScreenPanel();
     });
@@ -2071,16 +2408,13 @@ function layoutScreenPanel() {
 
     sideY += 36;
   }
-  // 预留一行提示:标签页是全新内容,旧的三组占位菜单已移除
-  const sideHint = makeText('训练 / 调教见底部「调教」标签', { size: 11, color: '#b0a294' });
-  sideHint.x = sideX;
-  sideHint.y = sideY + 10;
-  panelPlaceholders.addChild(sideHint);
 
   // ===== 内容区:按当前标签渲染 =====
   const cx0 = px + sideW, cy0 = py + topH;
   const cw = pw - sideW, ch = ph - topH;
   if (panelTab === 'model')            drawModelPage(cx0, cy0, cw, ch);
+  else if (panelTab === 'train')       drawTrainPage(cx0, cy0, cw, ch);
+  else if (panelTab === 'publish')     drawPublishPage(cx0, cy0, cw, ch);
   else if (panelTab === 'leaderboard') drawLeaderboardPage(cx0, cy0, cw, ch);
   else if (panelTab === 'community')   drawCommunityPage(cx0, cy0, cw, ch);
   else                                 drawBackendPage(cx0, cy0, cw, ch);
@@ -2641,6 +2975,168 @@ function commitModelAttrEdit() {
 //   参数 —— 值本身有意义(放大训练收益),照常画。
 // 轴序变化不影响算法:相似度与叠影对照都是按 key 取值的。
 const RADAR_KEYS = ['reasoning', 'knowledge', 'longCtx', 'speed', 'instruct', 'toolCall', 'multimodal', 'fit', 'params'];
+function drawTrainPage(x, y, w, h) {
+  const R = state.relay, T = R.train, A = R.ability;
+  // 顶部 HUD:点数 / 压力 / 刀乐 + 能力 / 下一测评进度(中国式家长"这回合还剩多少精力")
+  const pMul = Math.max(0, 1 - (T.pressure / TRAIN_CFG.PRESSURE_PENALTY_DIV));
+  const hud = makeText('算力 ' + (T.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
+    '      压力 ' + (T.pressure | 0) + '(效果×' + pMul.toFixed(2) + ')' + (trainPressureMaxed() ? '摆烂' : '') +
+    '      刀乐 $' + formatNum(R.dollars),
+    { size: 16, color: '#5a4632', weight: 'bold' });
+  hud.x = x + 20; hud.y = y + 12;
+  panelContentArea.addChild(hud);
+  const ex = T.examStage < TRAIN_CFG.EXAMS.length ? TRAIN_CFG.EXAMS[T.examStage] : null;
+  const elapsed = trainElapsedDays();
+  const hud2 = makeText(ex ? ('训练第 ' + elapsed + ' 天 · 下一测评：' + ex.name + '（' + (ex.atDay - elapsed) + ' 天后）') : ('训练第 ' + elapsed + ' 天 · 测评已全部完成'),
+    { size: 15, color: '#8a7a68' });
+  hud2.x = x + 20; hud2.y = y + 38;
+  panelContentArea.addChild(hud2);
+
+  // 左上放大数字:能力 / 客户期待值(= §14.11 有效相似度换皮)
+  const capNum = makeText(modelCapability(A).toFixed(1), { size: 36, color: '#5a4632', weight: 'bold' });
+  capNum.x = x + 20; capNum.y = y + 88;
+  panelContentArea.addChild(capNum);
+  const capLbl = makeText('能力', { size: 13, color: '#8a7a68' });
+  capLbl.x = x + 20; capLbl.y = y + 66;
+  panelContentArea.addChild(capLbl);
+
+  const listed = relayListedModel();
+  const expVal = listed ? similarityTo(A, listed) : -1;
+  const expNum = makeText(listed ? (expVal.toFixed(0) + '%') : '未标榜',
+    { size: 36, color: expVal >= 80 ? '#2a7a3a' : (expVal < 0 ? '#b0a294' : '#c05a2a'), weight: 'bold' });
+  expNum.x = x + 120; expNum.y = y + 88;
+  panelContentArea.addChild(expNum);
+  const expLbl = makeText('客户期待值', { size: 13, color: '#8a7a68' });
+  expLbl.x = x + 120; expLbl.y = y + 66;
+  panelContentArea.addChild(expLbl);
+
+  // 左下:缩小的 9 维属性雷达(我的成长;对照标榜模型灰影)——只是调小,不动 drawRadar
+  const their = listed ? modelToAttrs(listed) : null;
+  const radarR = Math.min(w * 0.19, (h - 176) * 0.30);
+  drawRadar(x + w * 0.26, y + 176 + radarR, radarR, A, their);
+
+  // 右:训练道具卡列表(沿用原鞭子卡样式:圆角槽 + 左图标块 + 名 + 描述;点=买并用)
+  const listX = x + w * 0.50, listW = w * 0.48, gap = 8;
+  const startY = y + 66;
+  const n = TRAIN_ITEMS.length;
+  const cardH = Math.max(40, Math.min(60, ((y + h - 12) - startY - gap * (n - 1)) / n));
+  const head = makeText('训练道具（点开使用）', { size: 14, color: '#5a4632', weight: 'bold' });
+  head.x = listX; head.y = y + 42;
+  panelContentArea.addChild(head);
+  const iconSz = Math.min(36, cardH - 10);
+  for (let i = 0; i < n; i++) {
+    const it = TRAIN_ITEMS[i];
+    const cy = startY + i * (cardH + gap);
+    const usable = trainCanUse(it);
+    const inSession = it.kind === 'session' && T.session && T.session.key === it.key;
+    const card = new PIXI.Graphics();
+    card.lineStyle(2, inSession ? 0x3a9a6a : (usable ? 0xd4a574 : 0xc4b8a8), 0.9);
+    card.beginFill(inSession ? 0xe6f2e8 : (usable ? 0xf5ecd8 : 0xe8e0d4), 0.95);
+    card.drawRoundedRect(listX, cy, listW, cardH, 8);
+    card.endFill();
+    card.beginFill(it.color, 0.92);
+    card.drawRoundedRect(listX + 8, cy + (cardH - iconSz) / 2, iconSz, iconSz, 6);
+    card.endFill();
+    card.eventMode = 'static';
+    card.cursor = 'pointer';
+    card.hitArea = new PIXI.Rectangle(listX, cy, listW, cardH);
+    card.on('pointerdown', (e) => { e.stopPropagation(); if (useTrainItem(it)) layoutScreenPanel(); });
+    panelContentArea.addChild(card);
+    const tx = listX + 8 + iconSz + 10;
+    const nm = makeText(it.name, { size: 14, color: '#3a2f22', weight: 'bold' });
+    nm.x = tx; nm.y = cy + cardH * 0.10;
+    panelContentArea.addChild(nm);
+    const costStr = inSession ? ('闭关 ' + Math.max(0, Math.ceil(T.session.remainMin)) + 'min')
+      : ('$' + it.cost + ' · ' + it.ap + '算力');
+    const cost = makeText(costStr, { size: 12, color: '#7a5a2a', weight: 'bold' });
+    cost.anchor.set(1, 0);
+    cost.x = listX + listW - 10; cost.y = cy + cardH * 0.10;
+    panelContentArea.addChild(cost);
+    const gain = Object.keys(it.rate).map((k) => {
+      const dynamicGain = (100 - A[k]) * it.rate[k] * trainGainMul();
+      return (ATTR_CN[k] || k) + '+' + dynamicGain.toFixed(1);
+    }).join(' ');
+    const gainT = makeText('得到 ' + gain, { size: 11, color: '#2a7a3a' });
+    gainT.x = tx; gainT.y = cy + cardH * 0.42;
+    panelContentArea.addChild(gainT);
+    let riskStr = '代价 压力+' + it.pres + (it.kind === 'session' ? (' · 训练需' + it.duraMin + 'min') : '');
+    if (it.need) { for (const k in it.need) { if (A[k] < it.need[k]) riskStr = '🔒 需' + (ATTR_CN[k] || k) + '≥' + it.need[k]; } }
+    const riskT = makeText(riskStr, { size: 11, color: '#a05a2a' });
+    riskT.x = tx; riskT.y = cy + cardH * 0.66;
+    panelContentArea.addChild(riskT);
+  }
+}
+
+function drawPublishPage(x, y, w, h) {
+  const R = state.relay, P = R.publish;
+  const cap = modelCapability(R.ability);
+  const listed = relayListedModel();
+  const txt = (s, opt, px, py) => { const t = makeText(s, opt); t.x = px; t.y = py; panelContentArea.addChild(t); return t; };
+  const btn = (bx, by, bw, bh, title, sub, onTap) => {
+    const wrap = new PIXI.Container();
+    const g = new PIXI.Graphics(); g.lineStyle(2, 0xc4b8a8, 0.9); g.beginFill(0xf5ecd8, 0.95); g.drawRoundedRect(bx, by, bw, bh, 8); g.endFill();
+    wrap.addChild(g);
+    const t = makeText(title, { size: 15, color: '#3a2f22', weight: 'bold' }); t.x = bx + 14; t.y = by + (sub ? 8 : bh / 2 - 10); wrap.addChild(t);
+    if (sub) { const s = makeText(sub, { size: 11, color: '#8a7a68' }); s.x = bx + 14; s.y = by + 30; wrap.addChild(s); }
+    wrap.eventMode = 'static'; wrap.cursor = 'pointer'; wrap.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+    wrap.on('pointerdown', (e) => { e.stopPropagation(); onTap(); });
+    panelContentArea.addChild(wrap);
+  };
+  const back = () => { publishPhase = 'overview'; publishPendingStrategy = null; publishMsg = ''; layoutScreenPanel(); };
+  const fmtLeft = () => { const d = Math.floor(P.remainH / 24), rem = P.remainH - d * 24, hh = Math.floor(rem), mm = Math.floor((rem - hh) * 60); return d + '天' + ('' + hh).padStart(2, '0') + ':' + ('' + mm).padStart(2, '0'); };
+
+  const bar = P.active
+    ? ('发布中 · ' + (P.strategy === 'bench' ? '对标' : '跑分') + ' · ' + P.model + ' · 剩余 ' + fmtLeft() + (P.strategy === 'bench' ? ' · 信誉增长 −20%' : ''))
+    : ('未发布 · 能力 ' + cap.toFixed(1) + (P.lastCap != null ? ('（比上次发布 ' + (cap - P.lastCap >= 0 ? '+' : '') + (cap - P.lastCap).toFixed(1) + '）') : ''));
+  txt(bar, { size: 15, color: P.active ? '#7a4a22' : '#5a4632', weight: 'bold' }, x + 20, y + 14);
+  if (publishMsg) txt(publishMsg, { size: 12, color: publishMsgOk ? '#2a7a3a' : '#c05a2a' }, x + 20, y + 40);
+
+  const topY = y + 66;
+  if (P.active) { txt('发布进行中，到期后可再次发布。', { size: 13, color: '#8a7a68' }, x + 20, topY); return; }
+
+  if (publishPhase === 'overview') {
+    txt('当前能力', { size: 13, color: '#8a7a68' }, x + 20, topY);
+    txt(cap.toFixed(1), { size: 40, color: '#5a4632', weight: 'bold' }, x + 20, topY + 20);
+    const exp = listed ? similarityTo(R.ability, listed) : -1;
+    txt('客户期待值', { size: 13, color: '#8a7a68' }, x + 220, topY);
+    txt(listed ? (exp.toFixed(0) + '%') : '未标榜', { size: 40, color: exp >= 80 ? '#2a7a3a' : '#a05a2a', weight: 'bold' }, x + 220, topY + 20);
+    btn(x + 20, topY + 96, 220, 56, '发 布', '选择策略发布当前模型', () => { publishPhase = 'strategy'; publishMsg = ''; layoutScreenPanel(); });
+    return;
+  }
+
+  if (publishPhase === 'strategy') {
+    txt('选择发布策略', { size: 14, color: '#5a4632', weight: 'bold' }, x + 20, topY);
+    const sw = Math.min(380, w * 0.6), sh = 60, sx = x + 20, gy = topY + 26;
+    btn(sx, gy, sw, sh, '对标', '选真实型号·相似度达标才发·5天锁标榜+少量信誉', () => { publishPendingStrategy = 'bench'; publishPhase = 'model'; publishModelScroll = 0; layoutScreenPanel(); });
+    btn(sx, gy + (sh + 10), sw, sh, '跑分', '不达标可发·短期爆量·随机扣信誉', () => { publishPendingStrategy = 'run'; publishPhase = 'model'; publishModelScroll = 0; layoutScreenPanel(); });
+    btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说', '无额外用户·无代价(记录基线)', () => { const r = doPublish('honest', null); publishMsg = r.msg; publishMsgOk = r.ok; publishPhase = 'overview'; layoutScreenPanel(); });
+    btn(sx + sw + 16, gy, 96, 38, '返回', null, back);
+    return;
+  }
+
+  // model:全部模型可滚选
+  const stratName = publishPendingStrategy === 'bench' ? '对标' : '跑分';
+  txt('选择' + stratName + '的模型（滚轮翻页 · 全部可选）', { size: 14, color: '#5a4632', weight: 'bold' }, x + 20, topY);
+  const listX = x + 20, listW = Math.min(480, w * 0.74), rowH = 30, listTop = topY + 26;
+  const all = boardOrder();
+  const visible = Math.max(4, Math.floor((y + h - 16 - listTop) / rowH));
+  publishModelScroll = Math.max(0, Math.min(Math.max(0, all.length - visible), publishModelScroll));
+  for (let i = 0; i < visible && (publishModelScroll + i) < all.length; i++) {
+    const m = all[publishModelScroll + i].m, yy = listTop + i * rowH;
+    const sim = similarityTo(R.ability, m), ok = sim >= PUBLISH_CFG.SIM_GATE;
+    const row = new PIXI.Graphics();
+    row.lineStyle(2, 0xc4b8a8, 0.9); row.beginFill(0xf5ecd8, 0.9); row.drawRoundedRect(listX, yy, listW, rowH - 4, 6); row.endFill();
+    row.eventMode = 'static'; row.cursor = 'pointer'; row.hitArea = new PIXI.Rectangle(listX, yy, listW, rowH - 4);
+    row.on('pointerdown', (e) => { e.stopPropagation(); const r = doPublish(publishPendingStrategy, m.n); publishMsg = r.msg; publishMsgOk = r.ok; if (r.ok) { publishPhase = 'overview'; publishPendingStrategy = null; } layoutScreenPanel(); });
+    panelContentArea.addChild(row);
+    txt(m.n, { size: 13, color: '#3a2f22' }, listX + 10, yy + 5);
+    const tag = publishPendingStrategy === 'bench' ? (ok ? '✓ 可对标' : ('相似度 ' + sim.toFixed(0))) : ('相似度 ' + sim.toFixed(0));
+    const tagT = txt(tag, { size: 11, color: (publishPendingStrategy === 'bench' && !ok) ? '#a05a2a' : '#2a7a3a' }, listX + listW - 10, yy + 6);
+    tagT.anchor.set(1, 0);
+  }
+  btn(listX + listW + 16, topY, 96, 38, '返回', null, back);
+}
+
 function drawRadar(cx, cy, r, myAttrs, theirAttrs, parent, labelSize) {
   // parent/labelSize 缺省 = 模型页用法;榜单编辑器传 attrDetailLayer + 小号字,把图画进卡片右侧
   parent = parent || panelContentArea;
@@ -3470,7 +3966,7 @@ function drawBackendPage(x, y, w, h) {
 
   const clockStr = gameClockFull();
   const rateStr = (listed && R.price > 0)
-    ? '+$' + (R.users * R.ability.speed * R.activeCoef * R.price / 1e6).toFixed(3) + ' /秒'
+    ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef * R.price / 1e6) + ' /秒'
     : '未标榜';
 
   // ===== 资源条(6 格) =====
@@ -3899,6 +4395,29 @@ function layoutRelayHud() {
   relayHud.addChild(relayHudLine1, relayHudLine2);
 }
 
+// 调教场景顶栏 HUD:美刀 / token / 时间(与 relayHud 同款几何,仅 tuneSceneOpen 时显示)
+const tuneHud = new PIXI.Container();
+tuneHud.visible = false;
+layers.topbar.addChild(tuneHud);
+let tuneHudLine1 = null, tuneHudLine2 = null;
+function layoutTuneHud() {
+  const w = app.screen.width;
+  const old = tuneHud.removeChildren();
+  setTimeout(() => { for (const c of old) if (!c.destroyed) c.destroy({ children: true }); }, 0);
+  const bw = Math.min(420, w * 0.55);
+  const bh = 52;
+  const x = (w - bw) / 2;
+  const y = 12;
+  const bg = new PIXI.Graphics();
+  roundRect(bg, x, y, bw, bh, 14, 0x2a1f16, 0.78);
+  tuneHud.addChild(bg);
+  tuneHudLine1 = makeText('', { size: 15, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
+  tuneHudLine1.x = w / 2; tuneHudLine1.y = y + 18;
+  tuneHudLine2 = makeText('', { size: 12, color: '#d4c4a8', anchor: 0.5 });
+  tuneHudLine2.x = w / 2; tuneHudLine2.y = y + 38;
+  tuneHud.addChild(tuneHudLine1, tuneHudLine2);
+}
+
 // 行走人物:工厂创建多实例(中转站 / 调教各一套状态与精灵,共用同一套代码)
 // 中转站人物可在椅子上办公;调教人物只走动。禁止用 reparent 搬同一个 container —— 会打乱椅子层级。
 const WALK_FRAME_W = 158;
@@ -3921,6 +4440,10 @@ const walkerLiftTex = PIXI.Texture.from(ASSETS.walker_lift);
 const walkerSitTex = PIXI.Texture.from(ASSETS.walker_sit);
 // 调教 Q 版 idle:启动即 Texture.from,避免首次进场景才开始解码导致 scale 算错
 const tuneIdleTex = PIXI.Texture.from(ASSETS.tune_idle);
+// 受击贴图(鞭打命中时替换 idle;画布同为 210x280,与 tune_idle 人物等大)
+const tuneHitTex = PIXI.Texture.from(ASSETS.tune_hit);
+let tuneHitTimer = 0;                 // >0 时人物处于受击表现
+const TUNE_HIT_DURATION = 1.2;        // 受击持续(现实秒),到时恢复 idle 并让 AI 继续
 
 // 一套完整人物 rig:容器 + 四张贴图 + AI/拖拽/落体状态
 // idleAssetKey: 可选覆盖 idle; sitAssetKey: 可选覆盖坐姿(调教用同一张 Q 版,避免出现背影)
@@ -4139,6 +4662,15 @@ function updateWalkerRig(rig, mode) {
   const ph = rig.physics;
   const c = rig.container;
 
+  // 鞭打受击:冻结移动 + 显示受击贴图(仅调教人物),计时器到点在 updateWalkerAI 里恢复
+  if (mode === 'tune' && tuneHitTimer > 0) {
+    if (rig.walk.playing) { rig.walk.stop(); rig.walk.gotoAndStop(0); }
+    rig.idle.texture = tuneHitTex;
+    c.scale.set(1);
+    showWalkerRig(rig, 'idle');
+    return;
+  }
+
   // 调教:允许坐在课桌上(不再强制改回 walking);中转站坐姿逻辑不变
   // (原先 mode==='tune' && sitting 会立刻踢回走路,课桌落座做不了)
 
@@ -4249,7 +4781,60 @@ function updateWalkerRig(rig, mode) {
 function updateWalkerAI() {
   // 性能:两场景都关时不跑
   if (relaySceneOpen) updateWalkerRig(relayWalker, 'relay');
-  if (tuneSceneOpen && tuneWalker) updateWalkerRig(tuneWalker, 'tune');
+  if (tuneSceneOpen && tuneWalker) { syncTuneTrainingSit(); updateWalkerRig(tuneWalker, 'tune'); }
+}
+
+// 闭关训练头顶标签:跟随"当前可见场景"的人物头顶(生产/中转站/调教都显示)
+let sessionLabel = null;
+function syncSessionLabel() {
+  // 电脑面板(screenPanel)与强化训练棋盘是盖住人物的整屏覆盖层:头顶标签在 topbar(panel 之上),浮其上会穿帮盖住它们,此时让位隐藏
+  if (screenPanelOpen || (gameState && tuneSceneOpen)) { if (sessionLabel) sessionLabel.visible = false; return; }
+  const sess = state.relay.train && state.relay.train.session;
+  if (!sess) { if (sessionLabel) sessionLabel.visible = false; return; }
+  if (!sessionLabel) {
+    sessionLabel = makeText('', { size: 15, color: '#ffe9a8', weight: 'bold', anchor: 0.5 });
+    sessionLabel.style.stroke = 0x1c1611; sessionLabel.style.strokeThickness = 5;
+    sessionLabel.eventMode = 'none';
+    layers.topbar.addChild(sessionLabel);
+  }
+  let ax, ay;
+  if (tuneSceneOpen && tuneWalker) { const c = tuneWalker.container; ax = c.x; ay = c.y - c.height - 16; }
+  else if (relaySceneOpen && relayWalker) { const c = relayWalker.container; ax = c.x; ay = c.y - c.height - 16; }
+  else { ax = charClosed.x + charClosed.width / 2; ay = charClosed.y - 18; }
+  sessionLabel.x = ax; sessionLabel.y = Math.max(20, ay);
+  sessionLabel.text = '闭关训练… ' + Math.max(0, Math.ceil(sess.remainMin)) + 'min';
+  sessionLabel.visible = true;
+}
+function seatTuneWalker() {
+  if (!tuneWalker) return;
+  const rig = tuneWalker, ai = rig.ai, c = rig.container, ph = rig.physics;
+  ph.isFalling = false; ph.vy = 0; ph.sitOnChair = true;
+  ai.state = 'sitting';
+  if (tuneDeskSprite) ai.x = tuneDeskSprite.x;
+  ai.y = Math.min(deskSeat.sitY || (app.screen.height * 0.9), app.screen.height - 2);
+  c.x = ai.x; c.y = ai.y;
+  c.visible = true; c.alpha = 1; c.scale.set(1);
+  showWalkerRig(rig, 'idle');
+  if (tuneDeskSprite && tuneScene && c.parent === tuneScene) {
+    const di = tuneScene.getChildIndex(tuneDeskSprite);
+    const wi = tuneScene.getChildIndex(c);
+    if (wi > di) tuneScene.setChildIndex(c, di);
+    else if (wi < di - 1) tuneScene.setChildIndex(c, di - 1);
+  }
+}
+function standTuneWalker() {
+  if (!tuneWalker) return;
+  const ai = tuneWalker.ai, ph = tuneWalker.physics;
+  ph.sitOnChair = false; ph.isFalling = true; ph.vy = 0;
+  ph.targetY = ai.bounds.maxY || app.screen.height * 0.85;
+  ai.state = 'walking';
+  ai.timer = 120 + Math.floor(Math.random() * 120);
+  pickWalkDir(ai); syncWalkFacing(ai, tuneWalker);
+}
+function syncTuneTrainingSit() {
+  const active = !!state.relay.train.session;
+  if (active && tuneTrainingSit !== 'on') { seatTuneWalker(); tuneTrainingSit = 'on'; }
+  else if (!active && tuneTrainingSit === 'on') { standTuneWalker(); tuneTrainingSit = 'off'; }
 }
 
 bindWalkerDrag(relayWalker, 'relay');
@@ -4271,6 +4856,62 @@ function setProductionLayersVisible(v) {
   tpsLabel.visible = v;
 }
 
+// ==================== 背景音乐(BGM):三场景各一首,循环,切换交叉淡入淡出 ====================
+// 浏览器自动播放策略:首次用户手势前不播;之后 setBGM 按场景切。地下室=默认,中转站=relay,调教=tune。
+const BGM = { tracks: {}, cur: null, started: false, inited: false };
+function initBGM() {
+  if (BGM.inited) return;
+  BGM.inited = true;
+  for (const k in AUDIO) {
+    const a = new Audio(AUDIO[k]);
+    a.loop = true; a.preload = 'auto'; a.volume = 0;
+    BGM.tracks[k] = a;
+  }
+}
+function bgmFade(a, target, done) {
+  if (!a) { if (done) done(); return; }
+  const start = a.volume, steps = 10, step = (target - start) / steps;
+  let i = 0;
+  const t = setInterval(() => {
+    i++; a.volume = Math.max(0, Math.min(1, start + step * i));
+    if (i >= steps) { a.volume = target; clearInterval(t); if (done) done(); }
+  }, 30);
+}
+function currentBgmKey() { return tuneSceneOpen ? 'bgm_tune' : (relaySceneOpen ? 'bgm_relay' : 'bgm_basement'); }
+function setBGM(key) {
+  initBGM();
+  if (BGM.cur === key || !BGM.tracks[key]) return;
+  const from = BGM.cur ? BGM.tracks[BGM.cur] : null;
+  if (from) bgmFade(from, 0, () => { try { from.pause(); } catch (e) {} });
+  BGM.cur = key;
+  if (!BGM.started) return; // 手势前只记目标,不播
+  const to = BGM.tracks[key];
+  try { to.play().catch(() => {}); } catch (e) {}
+  bgmFade(to, musicVolume);
+}
+function startBGMOnGesture() {
+  if (BGM.started) return;
+  initBGM();
+  BGM.started = true;
+  const key = currentBgmKey();
+  BGM.cur = key;
+  const a = BGM.tracks[key];
+  if (a) { try { a.play().then(() => bgmFade(a, musicVolume)).catch(() => {}); } catch (e) {} }
+}
+// 设置面板「音乐音量」滑条调用:改全局音量并即时作用到正在播的轨
+function setBgmVolume(v) {
+  musicVolume = v;
+  const a = BGM.cur && BGM.tracks[BGM.cur];
+  if (a) a.volume = v;
+  saveSettingsSoon();
+}
+// 音量/设置改动防抖落盘(拖动每帧都触发,别每帧写 localStorage)
+let settingsSaveTimer = 0;
+function saveSettingsSoon() {
+  clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(() => { saveGame(); }, 400);
+}
+
 function openRelayScene() {
   relaySceneOpen = true;
   relayScene.visible = true;
@@ -4279,6 +4920,7 @@ function openRelayScene() {
   layoutRelayScene();
   if (relayHud) relayHud.visible = true;
   if (screenPanelOpen) layoutScreenPanel();
+  setBGM('bgm_relay');
 }
 
 function closeRelayScene() {
@@ -4287,6 +4929,7 @@ function closeRelayScene() {
   if (relayHud) relayHud.visible = false;
   if (screenPanelOpen) closeScreenPanel(); // 切回生产时自动关闭电脑面板
   setProductionLayersVisible(true);
+  setBGM(tuneSceneOpen ? 'bgm_tune' : 'bgm_basement');
   // 立即刷新购买面板(中转站期间token可能增加,按钮状态需同步)
   updateAllBuyButtons();
 }
@@ -4316,6 +4959,13 @@ let tunePropContent = null;
 let tunePropExpanded = false;
 // 道具选中:null | 'whip'。鞭子:光标替换 + 点击挥鞭(图1↔图2)
 let tuneSelectedItem = null;
+// 强化训练(调教场景内,与电脑面板区分):入口按钮 + 棋盘层
+let tuneTrainBtn = null;
+let tuneGameLayer = null;
+// 训练页活动引用(电脑面板「训练」页原地刷新用;抽屉不碰)
+let tunePropLive = null;
+// 疗程闭关:人物自动落座课桌 + 场景内进度提示
+let tuneTrainingSit = 'off';
 let whipCursor = null;
 let whipIdleTex = null, whipCrackTex = null;
 let whipShowingCrack = false;
@@ -4432,6 +5082,14 @@ function clientToStage(e) {
   };
 }
 
+// 滚轮:发布页「选模型」阶段翻页
+app.view.addEventListener('wheel', (e) => {
+  if (!(screenPanelOpen && panelTab === 'publish' && publishPhase === 'model')) return;
+  e.preventDefault();
+  publishModelScroll += (e.deltaY > 0 ? 1 : -1);
+  layoutScreenPanel();
+}, { passive: false });
+
 app.view.addEventListener('pointermove', (e) => {
   ensureWhaleCursor();
   ensureWhipAssets();
@@ -4475,6 +5133,14 @@ app.view.addEventListener('pointerdown', (e) => {
   whipCursor.y = p.y;
   showWhipFrame(true);
   whipCrackTimer = 0.12;
+  // 命中人物 → 受击表现(停下 + 换哭脸贴图);重复命中刷新时长
+  if (tuneWalker) {
+    const c = tuneWalker.container;
+    const hw = c.width * 0.5 + 24;
+    if (p.x >= c.x - hw && p.x <= c.x + hw && p.y >= c.y - c.height - 24 && p.y <= c.y + 24) {
+      tuneHitTimer = TUNE_HIT_DURATION;
+    }
+  }
 });
 app.view.addEventListener('pointerup', () => { setWhaleCursorDown(false); });
 app.view.addEventListener('pointerupoutside', () => { setWhaleCursorDown(false); });
@@ -4653,6 +5319,253 @@ function layoutTunePropDrawer() {
   tuneScene.addChild(drawer);
 }
 
+// 强化训练入口按钮(左上角):克制深色胶囊 + 细金边,与顶栏 HUD 同风格,不用卡通橙
+function layoutTuneTrainBtn() {
+  const bw = 216, bh = 56, bx = 16, by = 132;
+  const can = gameCanStart();
+  const btn = new PIXI.Container();
+  const g = new PIXI.Graphics();
+  g.lineStyle(1, can ? 0xc9a86a : 0x5a5148, 0.9);
+  g.beginFill(0x1c1611, can ? 0.9 : 0.7);
+  g.drawRoundedRect(0, 0, bw, bh, 8); g.endFill();
+  g.lineStyle(0); g.beginFill(can ? 0xc9a86a : 0x5a5148, 0.9);
+  g.drawRoundedRect(4, 12, 3, bh - 24, 1.5); g.endFill(); // 左侧细金条点缀
+  const label = makeText('强化训练', { size: 16, color: can ? '#f0dcae' : '#8a8073', weight: 'bold' });
+  label.x = 16; label.y = 9;
+  const cost = makeText('进入 ' + GAME_CFG.AP_COST + '算力 · ' + formatNum(gameStartTokenCost()) + ' token', { size: 11, color: can ? '#c9b892' : '#7d7466' });
+  cost.x = 16; cost.y = 33;
+  btn.addChild(g, label, cost);
+  btn.x = bx; btn.y = by;
+  btn.eventMode = 'static'; btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(0, 0, bw, bh);
+  btn.on('pointerdown', (e) => {
+    e.stopPropagation();
+    if (startGame()) { tuneSelectedItem = null; layoutTuneScene(); }
+  });
+  tuneScene.addChild(btn);
+  tuneTrainBtn = btn;
+}
+
+// 强化训练棋盘层:全屏压暗 + 可点棋盘 + 资源/步数 + 右侧点数统计 + 结算
+// 强化训练棋盘层的状态(持久贴图,便于做消除动画)
+let tuneGameTiles = null;      // [r][c] = Graphics
+let tuneGameGeo = null;        // { cell, bx, by }
+let tuneGameFx = null;         // 特效层
+let tuneGameAnimating = false; // 消除动画期间锁输入
+let tuneGameMovesText = null, tuneGameResText = null, tuneGameTallyTexts = null;
+
+function tuneTilePos(r, c) { return { x: tuneGameGeo.bx + c * tuneGameGeo.cell, y: tuneGameGeo.by + r * tuneGameGeo.cell }; }
+// tween() 的 delta 是"变化量";这个助手让你按"目标值"传参(内部换算成差值)
+function gtween(obj, to, dur, cb) { const d = {}; for (const k in to) d[k] = to[k] - obj[k]; return tween(obj, d, dur, cb); }
+function gameTileDraw(tile, colorIdx) {
+  const cell = tuneGameGeo.cell;
+  tile.clear();
+  tile.beginFill(GAME_TILE_HEX[colorIdx], 0.95);
+  tile.drawRoundedRect(0, 0, cell - 4, cell - 4, 6);
+  tile.endFill();
+}
+function gameTileSet(r, c, colorIdx, dropIn) {
+  const tile = tuneGameTiles[r][c];
+  const cell = tuneGameGeo.cell, p = tuneTilePos(r, c);
+  gameTileDraw(tile, colorIdx);
+  tile.pivot.set((cell - 4) / 2, (cell - 4) / 2);
+  tile.position.set(p.x + cell / 2, p.y + cell / 2); // pivot 是方块中心 → position 要是格子中心
+  if (dropIn) {
+    tile.scale.set(0.35); tile.alpha = 0.15;
+    gtween(tile.scale, { x: 1, y: 1 }, 0.18);
+    gtween(tile, { alpha: 1 }, 0.16);
+  } else {
+    tile.scale.set(1); tile.alpha = 1;
+  }
+}
+function gamePopTile(r, c) {
+  const tile = tuneGameTiles[r][c];
+  gtween(tile.scale, { x: 1.5, y: 1.5 }, 0.16);
+  gtween(tile, { alpha: 0 }, 0.16);
+}
+function gameBurst(r, c) {
+  const p = tuneTilePos(r, c), cell = tuneGameGeo.cell;
+  const cx = p.x + cell / 2, cy = p.y + cell / 2;
+  const ring = new PIXI.Graphics();
+  ring.lineStyle(3, 0xfff2d0, 0.95);
+  ring.drawCircle(0, 0, cell * 0.34);
+  ring.position.set(cx, cy);
+  ring.scale.set(0.5);
+  tuneGameFx.addChild(ring);
+  gtween(ring.scale, { x: 2.3, y: 2.3 }, 0.28);
+  gtween(ring, { alpha: 0 }, 0.28, () => { if (!ring.destroyed) ring.destroy(); });
+}
+function gameProjectedGain(k, count) {
+  const R = state.relay, mul = trainGainMul();
+  const frac = Math.min(1, (count || 0) / GAME_CFG.BASE_POINTS);
+  const wt = (k === gameState.mode.primary) ? GAME_CFG.WEIGHT_PRIMARY : GAME_CFG.WEIGHT_SECOND;
+  return (100 - R.ability[k]) * frac * wt * mul;
+}
+function gameTallyLabel(k) {
+  const n = gameState.tally[k] || 0;
+  const g = gameProjectedGain(k, n);
+  return (ATTR_CN[k] || k) + (k === gameState.mode.primary ? '(主)' : '') + '  ' + n + '  (+' + g.toFixed(1) + ')';
+}
+function gameRefreshHud() {
+  if (tuneGameMovesText) tuneGameMovesText.text = '剩余 ' + gameState.moves + ' 步';
+  if (tuneGameResText) tuneGameResText.text = '算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
+    '   ·   token ' + formatNum(state.tokens) + '   ·   每步消耗 -' + formatNum(gameMoveTokenCost()) + ' token';
+  if (tuneGameTallyTexts) for (let i = 0; i < tuneGameTallyTexts.length; i++) {
+    const k = gameState.mode.colors[i];
+    tuneGameTallyTexts[i].text = gameTallyLabel(k);
+  }
+}
+// 带动画的消除:点→够组就弹掉+爆环+扣费计步,落定后新/移位的块缩放入场
+function gameClearAt(r, c) {
+  if (!gameState || gameState.over || tuneGameAnimating) return;
+  if (state.tokens < gameMoveTokenCost()) return;
+  const board = gameState.board;
+  const colorIdx = board[r][c];
+  const cells = findGroup(board, r, c);
+  if (cells.length < GAME_CFG.MIN_GROUP) return;
+  tuneGameAnimating = true;
+  const key = gameState.mode.colors[colorIdx];
+  if (key) gameState.tally[key] = (gameState.tally[key] || 0) + cells.length;
+  state.tokens -= gameMoveTokenCost(); updateTokenDisplay();
+  gameState.moves -= 1;
+  const before = board.map((row) => row.slice());
+  const clearedSet = {};
+  for (const [rr, cc] of cells) { clearedSet[rr + ',' + cc] = 1; gamePopTile(rr, cc); gameBurst(rr, cc); }
+  clearAndDrop(board, cells);
+  gameRefreshHud();
+  setTimeout(() => {
+    for (let rr = 0; rr < GAME_CFG.ROWS; rr++) for (let cc = 0; cc < GAME_CFG.COLS; cc++) {
+      // 变了 或 被消过 的格子都要重画(否则消后补到同色的格子会停在"弹飞+透明"的空洞态)
+      if (before[rr][cc] !== board[rr][cc] || clearedSet[rr + ',' + cc]) gameTileSet(rr, cc, board[rr][cc], true);
+    }
+    tuneGameAnimating = false;
+    if (gameState && gameState.moves <= 0) { gameState.over = true; rebuildTuneGameLayer(); }
+  }, 180);
+}
+
+function buildTuneGameLayer() {
+  const w = app.screen.width, h = app.screen.height, mode = TRAIN_MODES[0];
+  tuneGameAnimating = false; // 重建即解锁输入(防御:动画中途出错也不会永久卡住点击)
+  const layer = new PIXI.Container();
+  const bg = new PIXI.Graphics();
+  bg.beginFill(0x0a0806, 0.6); bg.drawRect(0, 0, w, h); bg.endFill();
+  bg.eventMode = 'static'; bg.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  bg.on('pointerdown', (e) => e.stopPropagation());
+  layer.addChild(bg);
+
+  // 标题/资源行下移,避开左上角设置按钮(14,14,48,48)
+  const title = makeText('强化训练 · ' + mode.name, { size: 22, color: '#ffe9c4', weight: 'bold' });
+  title.x = 24; title.y = 92; layer.addChild(title);
+  tuneGameResText = makeText('算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
+    '   ·   token ' + formatNum(state.tokens) + '   ·   每步消耗 -' + formatNum(gameMoveTokenCost()) + ' token',
+    { size: 16, color: '#ffd98a', weight: 'bold' });
+  tuneGameResText.x = 24; tuneGameResText.y = 124; layer.addChild(tuneGameResText);
+
+  const cell = Math.max(28, Math.min((w * 0.6) / GAME_CFG.COLS, (h * 0.56) / GAME_CFG.ROWS));
+  const bw2 = cell * GAME_CFG.COLS, bh2 = cell * GAME_CFG.ROWS;
+  const bx = (w - bw2) / 2, by = h * 0.5 - bh2 / 2 + 44;
+  tuneGameGeo = { cell, bx, by };
+  const board = new PIXI.Graphics();
+  board.lineStyle(2, 0xd4a574, 0.9); board.beginFill(0x2a1f16, 0.6);
+  board.drawRoundedRect(bx - 10, by - 10, bw2 + 20, bh2 + 20, 12); board.endFill();
+  layer.addChild(board);
+  tuneGameTiles = [];
+  for (let r = 0; r < GAME_CFG.ROWS; r++) {
+    tuneGameTiles.push([]);
+    for (let c = 0; c < GAME_CFG.COLS; c++) {
+      const tile = new PIXI.Graphics();
+      tile.eventMode = 'static'; tile.cursor = 'pointer';
+      tile.hitArea = new PIXI.Rectangle(0, 0, cell, cell);
+      const rr = r, cc = c;
+      tile.on('pointerdown', (e) => { e.stopPropagation(); gameClearAt(rr, cc); });
+      layer.addChild(tile);
+      tuneGameTiles[r].push(tile);
+    }
+  }
+  tuneGameFx = new PIXI.Container(); tuneGameFx.eventMode = 'none'; layer.addChild(tuneGameFx);
+  for (let r = 0; r < GAME_CFG.ROWS; r++) for (let c = 0; c < GAME_CFG.COLS; c++) gameTileSet(r, c, gameState.board[r][c], false);
+
+  const rx = bx + bw2 + 30;
+  tuneGameMovesText = makeText('剩余 ' + gameState.moves + ' 步', { size: 18, color: '#ffe9c4', weight: 'bold' });
+  tuneGameMovesText.x = rx; tuneGameMovesText.y = by; layer.addChild(tuneGameMovesText);
+  const tHead = makeText('消几个 → 涨哪维(括号=预计属性+)', { size: 13, color: '#d4c4a8' });
+  tHead.x = rx; tHead.y = by + 30; layer.addChild(tHead);
+  let iy = by + 58;
+  tuneGameTallyTexts = [];
+  for (let i = 0; i < mode.colors.length; i++) {
+    const k = mode.colors[i];
+    const sw = new PIXI.Graphics(); sw.beginFill(GAME_TILE_HEX[i], 0.95); sw.drawRoundedRect(rx, iy, 16, 16, 3); sw.endFill(); layer.addChild(sw);
+    const tl = makeText(gameTallyLabel(k), { size: 14, color: '#ffe9c4' });
+    tl.x = rx + 24; tl.y = iy; layer.addChild(tl);
+    tuneGameTallyTexts.push(tl);
+    iy += 30;
+  }
+  const sbw = 180, sbh = 46, sbx = rx, sby = iy + 12;
+  const sg = new PIXI.Graphics();
+  sg.lineStyle(2, 0xd4a574, 0.95); sg.beginFill(gameState.over ? 0x3a9a6a : 0xc4853a, 0.95);
+  sg.drawRoundedRect(sbx, sby, sbw, sbh, 10); sg.endFill();
+  sg.eventMode = 'static'; sg.cursor = 'pointer'; sg.hitArea = new PIXI.Rectangle(sbx, sby, sbw, sbh);
+  sg.on('pointerdown', (e) => { e.stopPropagation(); settleGame(); layoutTuneScene(); });
+  layer.addChild(sg);
+  const sl = makeText(gameState.over ? '结算' : '结算并退出', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+  sl.x = sbx + sbw / 2; sl.y = sby + sbh / 2; layer.addChild(sl);
+  if (gameState.over) { const hint = makeText('步数用完，点结算', { size: 12, color: '#8fe0a8' }); hint.x = sbx; hint.y = sby + sbh + 6; layer.addChild(hint); }
+
+  tuneGameLayer = layer;
+  tuneScene.addChild(layer); // 追加到最后 = 盖住人物/课桌/抽屉
+  if (whipCursor) whipCursor.visible = false;
+}
+function rebuildTuneGameLayer() {
+  if (tuneGameLayer) { tuneScene.removeChild(tuneGameLayer); if (!tuneGameLayer.destroyed) tuneGameLayer.destroy({ children: true }); tuneGameLayer = null; }
+  tuneGameTiles = null; tuneGameFx = null; tuneGameMovesText = null; tuneGameResText = null; tuneGameTallyTexts = null;
+  if (gameState) buildTuneGameLayer(); else layoutTuneScene();
+}
+
+const ATTR_CN = { reasoning: '推理', knowledge: '知识', longCtx: '上下文', speed: '速度', multimodal: '多模态', instruct: '指令', toolCall: '工具', fit: '拟合', params: '参数' };
+
+// 原地刷抽屉:HUD(AP/刀乐/压力/测评进度)+ 每格可买态/价格/增益。key 不变则跳过重绘(同 updateAllBuyButtons)
+function refreshTrainUI(force) {
+  const L = tunePropLive;
+  if (!L || !tuneSceneOpen || !tunePropExpanded) return;
+  const T = state.relay.train, R = state.relay;
+  const pMul = Math.max(0, 1 - (T.pressure / TRAIN_CFG.PRESSURE_PENALTY_DIV));
+  L.hud.text = '点数 ' + (T.ap | 0) + '/' + TRAIN_CFG.AP_MAX + '   压力 ' + (T.pressure | 0) + '(效果×' + pMul.toFixed(2) + ')' + (trainPressureMaxed() ? '摆烂' : '') + '   刀乐 $' + formatNum(R.dollars);
+  const ex = T.examStage < TRAIN_CFG.EXAMS.length ? TRAIN_CFG.EXAMS[T.examStage] : null;
+  const elapsed = trainElapsedDays();
+  L.hud2.text = ex ? ('第' + elapsed + '天 · 下测评 ' + ex.name + ' ' + (ex.atDay - elapsed) + '天后') : ('第' + elapsed + '天 · 测评已全完');
+  for (const row of L.rows) {
+    if (row.kind === 'whip') {
+      const sel = tuneSelectedItem === 'whip' ? 1 : 0;
+      if (!force && row._uiKey === sel) continue;
+      row._uiKey = sel;
+      row.bg.clear();
+      row.bg.lineStyle(2, sel ? 0xd4a574 : 0xc4b8a8, 0.9);
+      row.bg.beginFill(sel ? 0xf5e6d0 : 0xe8e0d4, 0.95);
+      row.bg.drawRoundedRect(6, 0, L.panelW - 16, L.rowH, 8);
+      row.bg.endFill();
+      continue;
+    }
+    const it = row.item;
+    const usable = trainCanUse(it) ? 1 : 0;
+    const inSession = it.kind === 'session' && T.session && T.session.key === it.key;
+    const priceStr = inSession ? ('闭关 ' + Math.max(0, Math.ceil(T.session.remainMin)) + 'min')
+      : ('$' + it.cost + ' · ' + it.ap + '点');
+    const mul = trainGainMul();
+    let dtxt = Object.keys(it.rate).map((k) => (ATTR_CN[k] || k) + '+' + ((100 - R.ability[k]) * it.rate[k] * mul).toFixed(1)).join(' ');
+    if (it.need) { for (const k in it.need) { if (R.ability[k] < it.need[k]) dtxt += ' 🔒'; } }
+    const key = priceStr + '|' + dtxt + '|' + usable + '|' + (inSession ? 1 : 0);
+    if (!force && row._uiKey === key) continue;
+    row._uiKey = key;
+    row.bg.clear();
+    row.bg.lineStyle(2, inSession ? 0x3a9a6a : (usable ? 0xd4a574 : 0xbdb2a2), 0.9);
+    row.bg.beginFill(inSession ? 0xe6f2e8 : (usable ? 0xf5ecd8 : 0xdcd4c6), 0.95);
+    row.bg.drawRoundedRect(6, 0, L.panelW - 16, L.rowH, 8);
+    row.bg.endFill();
+    row.price.text = priceStr;
+    row.st.text = dtxt;
+  }
+}
+
 function layoutTuneScene() {
   const w = app.screen.width, h = app.screen.height;
   const tw = tuneBgSprite.texture.width > 1 ? tuneBgSprite.texture.width : 1920;
@@ -4685,22 +5598,24 @@ function layoutTuneScene() {
   tuneDeskSprite.y = floorY;
 
   // 清旧 UI 再重建
-  if (tunePanelBtn) {
-    tuneScene.removeChild(tunePanelBtn);
-    if (!tunePanelBtn.destroyed) tunePanelBtn.destroy({ children: true });
-    tunePanelBtn = null;
+  for (const ref of ['tunePanelBtn', 'tunePropDrawer', 'tuneTrainBtn', 'tuneGameLayer']) {
+    const obj = ({ tunePanelBtn, tunePropDrawer, tuneTrainBtn, tuneGameLayer })[ref];
+    if (obj) { tuneScene.removeChild(obj); if (!obj.destroyed) obj.destroy({ children: true }); }
   }
-  if (tunePropDrawer) {
-    tuneScene.removeChild(tunePropDrawer);
-    if (!tunePropDrawer.destroyed) tunePropDrawer.destroy({ children: true });
-    tunePropDrawer = null;
+  tunePanelBtn = tunePropDrawer = tuneTrainBtn = tuneGameLayer = null;
+  if (gameState) {
+    // 强化训练进行中:只显示棋盘层(盖住人物/课桌/抽屉)
+    buildTuneGameLayer();
+  } else {
+    layoutTunePanelBtn();
+    layoutTunePropDrawer();
+    // UI 要在课桌之上
+    if (tunePanelBtn) tuneScene.setChildIndex(tunePanelBtn, tuneScene.children.length - 3);
+    if (tunePropDrawer) tuneScene.setChildIndex(tunePropDrawer, tuneScene.children.length - 2);
+    layoutTuneTrainBtn();
+    if (tuneTrainBtn) tuneScene.setChildIndex(tuneTrainBtn, tuneScene.children.length - 1);
+    applyWhipScale();
   }
-  layoutTunePanelBtn();
-  layoutTunePropDrawer();
-  // UI 要在课桌之上
-  if (tunePanelBtn) tuneScene.setChildIndex(tunePanelBtn, tuneScene.children.length - 2);
-  if (tunePropDrawer) tuneScene.setChildIndex(tunePropDrawer, tuneScene.children.length - 1);
-  applyWhipScale();
 
   // 可坐区域:先算好(不依赖人物是否已建)
   // 人物在桌下层:脚贴地会被桌沿挡头,但坐到桌面上又太高。
@@ -4780,12 +5695,17 @@ function openTuneScene() {
   // 鲸鱼等 pointermove 再出现,避免钉在左上
   if (whaleCursor) whaleCursor.visible = false;
   if (whipCursor) whipCursor.visible = false;
+  if (tuneHud) { layoutTuneHud(); tuneHud.visible = true; }
+  setBGM('bgm_tune');
   layoutTuneScene();
 }
 
 function closeTuneScene() {
   tuneSceneOpen = false;
   tuneScene.visible = false;
+  if (tuneHud) tuneHud.visible = false;
+  // 不自动结算:切去生产/中转站等板块时保留 gameState,回调教继续这局(友好:别让玩家白耗算力)
+  setBGM(relaySceneOpen ? 'bgm_relay' : 'bgm_basement');
   if (whipCursor) whipCursor.visible = false;
   if (whaleCursor) whaleCursor.visible = true;
   app.view.classList.remove('whip-cursor');
@@ -4981,6 +5901,10 @@ function drawSettingsPanel() {
 
   const bg = new PIXI.Graphics();
   roundRect(bg, 0, 0, pw, ph, 16, 0x2a1f16, 0.95);
+  // 卡片本体吸收点击:落在卡内(标题/标签/空隙)不冒泡到全屏遮罩,避免误触关闭
+  bg.eventMode = 'static';
+  bg.hitArea = new PIXI.Rectangle(0, 0, pw, ph);
+  bg.on('pointerdown', (e) => { e.stopPropagation(); });
   settingsPanel.addChild(bg);
 
   const title = makeText('设置', { size: 20, color: '#ffd98a', weight: 'bold', anchor: 0.5 });
@@ -4995,7 +5919,7 @@ function drawSettingsPanel() {
   musicVal.x = pw - 30; musicVal.y = 70;
   settingsPanel.addChild(musicVal);
   const musicSlider = createSlider(30, 100, pw - 60, musicVolume, (v) => {
-    musicVolume = v; musicVal.text = Math.round(v * 100) + '%';
+    setBgmVolume(v); musicVal.text = Math.round(v * 100) + '%';
   });
   settingsPanel.addChild(musicSlider);
 
@@ -5007,7 +5931,7 @@ function drawSettingsPanel() {
   sfxVal.x = pw - 30; sfxVal.y = 150;
   settingsPanel.addChild(sfxVal);
   const sfxSlider = createSlider(30, 180, pw - 60, sfxVolume, (v) => {
-    sfxVolume = v; sfxVal.text = Math.round(v * 100) + '%';
+    sfxVolume = v; sfxVal.text = Math.round(v * 100) + '%'; saveSettingsSoon();
   });
   settingsPanel.addChild(sfxSlider);
 
@@ -5144,6 +6068,8 @@ const state = {
     hourAccum: 0, repAccum: 0,
     serviceDown: false,  // 库存见底 = 服务中断
     totalTokensSold: 0, totalDollarsEarned: 0,
+    train: trainDefaults(),
+    publish: { active: false, strategy: null, model: null, remainH: 0, totalH: 0, lastCap: null },
     news: {
       totalH: 0, nextSpawnH: 6, active: [], collected: {}, boosts: [],
     },
@@ -5193,6 +6119,7 @@ function saveGame() {
       autoClick: state.scripts.autoClick,
       miracle: state.scripts.miracle,
       relay: state.relay,
+      settings: { music: musicVolume, sfx: sfxVolume },
       savedAt: Date.now()
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -5259,6 +6186,22 @@ function loadGame() {
         }
       }
     }
+    // 调教养成:老存档无 train → 用默认;有则补齐数值型(与 news 迁移同款防御)
+    if (!state.relay.train || typeof state.relay.train !== 'object') state.relay.train = trainDefaults();
+    if (typeof state.relay.train.ap !== 'number') state.relay.train.ap = 0;
+    if (typeof state.relay.train.apAccum !== 'number') state.relay.train.apAccum = 0;
+    if (typeof state.relay.train.pressure !== 'number') state.relay.train.pressure = 0;
+    if (state.relay.train.examStartH == null) state.relay.train.examStartH = null;
+    if (typeof state.relay.train.examStage !== 'number') state.relay.train.examStage = 0;
+    // 发布:老存档无 publish 字段 → 补默认
+    if (!state.relay.publish || typeof state.relay.publish !== 'object') {
+      state.relay.publish = { active: false, strategy: null, model: null, remainH: 0, totalH: 0, lastCap: null };
+    }
+    // 设置(音量):老存档无 settings → 保持默认;有则夹到 0..1
+    if (data.settings && typeof data.settings === 'object') {
+      if (typeof data.settings.music === 'number') musicVolume = Math.max(0, Math.min(1, data.settings.music));
+      if (typeof data.settings.sfx === 'number') sfxVolume = Math.max(0, Math.min(1, data.settings.sfx));
+    }
     refreshRelayPanel(); // 属性可能变了,刷新雷达图/最接近模型
     recalcProduction();
     recalcClickPower();
@@ -5293,6 +6236,8 @@ function resetGame() {
     hourAccum: 0, repAccum: 0,
     serviceDown: false,
     totalTokensSold: 0, totalDollarsEarned: 0,
+    train: trainDefaults(),
+    publish: { active: false, strategy: null, model: null, remainH: 0, totalH: 0, lastCap: null },
     news: newsDefaults(),
   };
   recalcProduction();
@@ -5320,6 +6265,7 @@ function layoutAll() {
   layoutPurchasePanel();
   layoutNavTabs();
   layoutRelayHud();
+  layoutTuneHud();
   if (relaySceneOpen) layoutRelayScene();
   if (tuneSceneOpen) layoutTuneScene();
   updateTokenDisplay();
@@ -5364,6 +6310,8 @@ app.ticker.add(() => {
   radarTicker();
   // 中转站行走人物AI(不受暂停影响)
   updateWalkerAI();
+  // 闭关训练头顶标签:跟随当前可见场景的人物(生产/中转站/调教)
+  syncSessionLabel();
   // 电脑屏幕描边呼吸动画(4s周期:0.4s出现+1.2s保持+0.4s消失+2s等待,悬停常驻)
   // 悬停时timer停止累积,移出时平滑过渡避免跳变
   if (relaySceneOpen && screenGlow.visible) {
@@ -5451,6 +6399,19 @@ app.ticker.add(() => {
       whipCrackTimer -= dt;
       if (whipCrackTimer <= 0) showWhipFrame(false);
     }
+
+    // 鞭打受击计时:到点恢复普通 idle 贴图,让人物重新走神(下一帧 AI 继续)
+    if (tuneHitTimer > 0) {
+      tuneHitTimer -= dt;
+      if (tuneHitTimer <= 0) {
+        tuneHitTimer = 0;
+        if (tuneWalker) {
+          tuneWalker.idle.texture = tuneIdleTex;
+          tuneWalker.ai.state = 'idle';
+          tuneWalker.ai.timer = 60;
+        }
+      }
+    }
   }
 });
 
@@ -5469,6 +6430,18 @@ if (hasSave) {
   layoutCase();
   updateRelayTabVisibility();
 }
+
+// 背景音乐:预载三轨;浏览器自动播放策略要求首次用户手势后才起
+initBGM();
+(function armBGM() {
+  const go = () => {
+    startBGMOnGesture();
+    window.removeEventListener('pointerdown', go);
+    window.removeEventListener('keydown', go);
+  };
+  window.addEventListener('pointerdown', go);
+  window.addEventListener('keydown', go);
+})();
 
 let relayoutPending = false;
 function safeRelayout() {

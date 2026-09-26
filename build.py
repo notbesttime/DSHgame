@@ -44,10 +44,25 @@ ASSET_FILES = {
     "whale_cursor_down": ("assets/compressed_webp/whale_cursor_down.webp", "image/webp"),
     "tune_desk": ("assets/compressed_webp/tune_desk.webp", "image/webp"),
     "tune_idle": ("assets/compressed_webp/tune_idle.webp", "image/webp"),
+    "tune_hit": ("assets/compressed_webp/tune_hit.webp", "image/webp"),
+}
+
+# 背景音乐:始终外置(绝不 base64 内联,否则单文件 HTML 会暴涨)。key → 源路径。
+# 地下室=主生产场景 / 中转站=relay / 调教=tune。AAC 64k(.m4a),iOS/安卓/桌面全支持。
+AUDIO_FILES = {
+    "bgm_basement": "assets/audio/bgm_basement.m4a",
+    "bgm_relay": "assets/audio/bgm_relay.m4a",
+    "bgm_tune": "assets/audio/bgm_tune.m4a",
 }
 
 DIST_MODE = "--dist" in sys.argv
 DIST_DIR = "dist"
+
+# 全局资源域名:默认空 = 同源相对路径(assets 随 dist 一起上传,吃平台 1 年哈希缓存)。
+# 将来想改走对象存储/CDN,只需 ASSET_BASE=https://你的域名/ python build.py --dist,代码零改动。
+ASSET_BASE = os.environ.get("ASSET_BASE", "").strip()
+if ASSET_BASE and not ASSET_BASE.endswith("/"):
+    ASSET_BASE += "/"
 
 with open("index_template.html", "r", encoding="utf-8") as f:
     TEMPLATE = f.read()
@@ -78,6 +93,15 @@ def build_single():
     assets_js += "};"
 
     html = html.replace("__ASSETS__", assets_js)
+
+    # 音频:单文件模式也走相对外链(index.html 在项目根,assets/audio 就在旁边;离线双击可播)
+    audio_js = "const AUDIO = {\n"
+    for key, path in AUDIO_FILES.items():
+        audio_js += f'  "{key}": "{path}",\n'
+        print(f"  audio {key}: {os.path.getsize(path) // 1024} KB (外链)")
+    audio_js += "};"
+    html = html.replace("__AUDIO__", audio_js)
+
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html)
     print("\n单文件 index.html:", os.path.getsize("index.html") // 1024, "KB")
@@ -88,16 +112,27 @@ def build_dist():
         shutil.rmtree(DIST_DIR)
     os.makedirs(os.path.join(DIST_DIR, "assets"))
     print(f"输出目录: {DIST_DIR}/")
+    print(f"资源域名 ASSET_BASE: {ASSET_BASE!r} (空 = 同源相对路径,随 dist 一起上传)")
 
-    # 1) 素材:以 <name>.<hash>.<ext> 落盘,HTML 里引用相对路径
+    # 1) 素材:以 <name>.<hash>.<ext> 落盘,HTML 里引用 ASSET_BASE + 相对路径
     assets_js = "const ASSETS = {\n"
     for key, (path, _mime) in ASSET_FILES.items():
         ext = os.path.splitext(path)[1]
         out_name = f"{key}.{short_hash(path)}{ext}"
         shutil.copyfile(path, os.path.join(DIST_DIR, "assets", out_name))
-        assets_js += f'  "{key}": "assets/{out_name}",\n'
+        assets_js += f'  "{key}": "{ASSET_BASE}assets/{out_name}",\n'
         print(f"  assets/{out_name}")
     assets_js += "};"
+
+    # 1b) 音频:同样哈希外置到 dist/assets(一年缓存),绝不内联
+    audio_js = "const AUDIO = {\n"
+    for key, path in AUDIO_FILES.items():
+        ext = os.path.splitext(path)[1]
+        out_name = f"{key}.{short_hash(path)}{ext}"
+        shutil.copyfile(path, os.path.join(DIST_DIR, "assets", out_name))
+        audio_js += f'  "{key}": "{ASSET_BASE}assets/{out_name}",\n'
+        print(f"  assets/{out_name} ({os.path.getsize(path) // 1024} KB)")
+    audio_js += "};"
 
     # 2) PixiJS 独立成带哈希的文件(445KB,一年缓存)
     pixi_name = f"pixi.{hashlib.sha256(PIXI_JS.encode('utf-8')).hexdigest()[:8]}.js"
@@ -107,9 +142,10 @@ def build_dist():
 
     # 3) HTML 只留代码:把内联 PixiJS 换成外链,ASSETS 换成路径表
     html = TEMPLATE.replace(
-        "<script>__PIXIES__</script>", f'<script src="{pixi_name}"></script>'
+        "<script>__PIXIES__</script>", f'<script src="{ASSET_BASE}{pixi_name}"></script>'
     )
     html = html.replace("__ASSETS__", assets_js)
+    html = html.replace("__AUDIO__", audio_js)
     with open(os.path.join(DIST_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
