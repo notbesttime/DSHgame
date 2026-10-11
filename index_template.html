@@ -1071,7 +1071,7 @@ const ATTR_DESC = {
   reasoning:  '能力的主要来源,权重最高',
   knowledge:  '决定知识截止日期;判能力时给百分比加成',
   longCtx:    '决定上下文长度(0k ~ 1000k)与记忆力',
-  speed:      '每 1 点 = 3 tokens/s;受推理约束给能力加分',
+  speed:      '用户按 1 点=1 token/s 消耗;对外标称 3 tok/s(榜单口径);受推理约束给能力加分',
   instruct:   '影响能力,也影响站信誉',
   toolCall:   '影响能力,并决定能同时服务的用户上限',
   multimodal: '10 纯文本 → 40 识图 → 50 视频 → 60 PDF;受推理约束给能力加分',
@@ -1094,8 +1094,14 @@ const CAP_FIT_PENALTY = 0.35;  // 两端最大扣 35%
 const CAP_FIT_EXP = 1.2;
 const CAP_NORM = 1.25;         // 归一化:满配正好 100
 
-const SIM_W = { reasoning: 0.30, knowledge: 0.15, instruct: 0.15, toolCall: 0.15, multimodal: 0.10, longCtx: 0.08, speed: 0.07 };
-const SIM_SAT = 0.6;           // 加权距离 ≥ 0.6 → 相似度 0
+// 相似度权重(2026-09-12 用户定稿·A 软化方案):
+// 指定降序 推理 > 多模态 > 参数 > 长上下文 > 知识;参数首次纳入比较(SIM_KEYS)。
+// 指令/工具/速度填剩余份额;合计 = 1.0。硬门槛同步软化:知识 0.35→0.18、多模态 0.30→0.20。
+const SIM_KEYS = ['reasoning', 'multimodal', 'params', 'longCtx', 'knowledge', 'instruct', 'toolCall', 'speed'];
+const SIM_W = { reasoning: 0.24, multimodal: 0.16, params: 0.13, longCtx: 0.11, knowledge: 0.09, instruct: 0.10, toolCall: 0.10, speed: 0.07 };
+const SIM_GATE_KNOWLEDGE = 0.18; // 知识截止落后 >3 月(原 0.35,过重)
+const SIM_GATE_MULTIMODAL = 0.20; // 多模态档位不够(原 0.30)
+const SIM_SAT = 1.0;           // 加权距离 ≥ 1.0 → 相似度 0
 
 // 真实模型锚点。**这里是生成物,不要手改** —— 唯一数据源是《中转站设计.md》§3.1 的数据表,
 // 改完跑 `python sync_models.py --write` 重新生成(先不带 `--write` 跑一次看会改什么)。
@@ -1278,10 +1284,10 @@ function closestModel(a) {
   for (const m of REAL_MODELS) {
     const ma = modelToAttrs(m);
     let d = 0;
-    for (const k of ATTR_KEYS) d += SIM_W[k] * Math.abs(a[k] - ma[k]) / 100;
+    for (const k of SIM_KEYS) d += SIM_W[k] * Math.abs((a[k] || 0) - (ma[k] || 0)) / 100;
     const mCut = monthsFromStr(m.k);
-    if (cutoff < mCut - 3) d += 0.35;                                  // 知识不如它新 → 细节问题上会露馅
-    if (a.multimodal < ma.multimodal) d += 0.30;                       // 模态档位不够 → 差距太大
+    if (cutoff < mCut - 3) d += SIM_GATE_KNOWLEDGE;
+    if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
     if (d < bestD) { bestD = d; best = m; }
   }
   return { model: best, distance: bestD, similarity: Math.max(0, Math.round(100 * (1 - bestD / SIM_SAT))) };
@@ -1295,12 +1301,77 @@ const RELAY_BIZ = {
   REP_CYCLE_H: 10,            // 信誉结算周期(游戏时)
   REP_STEP: [0.1, 0.5],       // 单次结算幅度
   USER_TENURE: [2, 6],        // 新用户存在时长(游戏时);信誉加成 +信誉/50
-  GROW_PCT: [0.05, 0.20],     // 定价有竞争力时的增长比(基于 base)
+  // 增长比(期望新增 = base × pct,pct 随定价便宜程度上调)。
+  // 2026-10-03 修 P0-6 时从 [0.05,0.20] 上调为 [0.10,0.35]:去掉外层「触发概率」后
+  // 期望新增直接等于 base×pct,取这组值可让 base=2 的新手期与旧版(固定 0.2 人/游戏时)基本持平。
+  GROW_PCT: [0.10, 0.35],
   CHEAP_LINE: 0.8,            // ≤ 官方参考价×0.8 → 概率/比例上调(2026-09-12 起无市场价,只对官价)
-  RENEW_LINE: 1.1,            // ≤ 官方参考价×1.1 → 有机会续约
+  RENEW_LINE: 1.1,            // ≤ 官方参考价×1.1 → 续约概率不打折(2026-10-05 起超出为概率衰减,不再硬拒)
+  PRICE_MIN: 0.5,             // 硬价格带:官价×0.5(用户拍板·宽紧适中)
+  PRICE_MAX: 1.5,             // 硬价格带:官价×1.5
   ACTIVE_MIN: 0.3, ACTIVE_MAX: 1.0,
-  DOWN_REP_HOURLY: 1,         // 每小时处在服务中断 → 信誉 -1
+  // 服务中断惩罚(2026-10-03 修 P0-4):原来是 1/游戏时 —— 即现实每分钟 -1 信誉,
+  // 而一次 10 游戏时的信誉结算只有 ±0.1~0.5,量级差 33 倍:新手库存一见底,
+  // 一分钟就把信誉打到 0,而信誉 1→100 要几十小时,几乎不可逆。
+  // 改成 0.1:中断 10 游戏时(现实 10 分钟)约等于抹掉一次满额结算 —— 仍是重罚,但可以挽回。
+  DOWN_REP_HOURLY: 0.1,
+  // 中断还会让用户走人(原版「断供但用户照常续约」让库存管理毫无意义)。
+  // 每小时按比例流失;serviceDown 是滞回判据(< 50% 中断 / ≥ 95% 恢复),轻微波动不会触发。
+  // 附带好处:用户量一旦超过「生产产出 ÷ (速度 × 活跃系数)」就会被中断压回来,
+  // 于是「先扩产、再接单」成为自然约束 —— 这正是想要的循环。
+  DOWN_LOSE_P: 0.10,
+  // 续约概率上限(2026-10-03,修 P0-2):原式 0.5 + 信誉/200 在信誉=100 时恰好等于 1.0,
+  // 而 Math.random() < 1.0 恒成立 → 用户永不流失 → 用户量无界增长
+  // (实测 900 游戏时冲到 182 人且仍在涨;信誉 50 时只有 4.7 人)。封顶 0.95 保留
+  // 「信誉越高越留得住」的手感,同时留一条流失尾巴让稳态收敛。
+  HOURLY_KEEP_MAX: 0.95,
+  // ===== 自研(不标榜)路径(P1-9,2026-10-03)=====
+  // §5.4 设计的「自研模型」原本没实现(代码里 listedModel=null 就完全不卖),
+  // 而开局 capability≈4 连最弱锚点(cap 9 档)都够不上 → 新手只有「标榜最弱模型 + 吃 sim/80 成交折扣 + 扣信誉」一条憋屈路。
+  // 现在自研可卖:价格封在最低官价量级(全库最低官价 ≈$0.5/M),用户 base 固定 1 且不吃信誉加成,
+  // 不结算信誉(不背信誉债)—— 定位就是「赚得慢但干净的起步兜底」。
+  SELF_PRICE_MAX: 0.5,      // 自研售价上限($/M tokens)
+  SELF_BASE_USERS: 1,       // 自研基础用户量(不随信誉涨)
+  // ===== 标榜资格门槛(2026-10-04,堵「标弱模型卖高价」)=====
+  // 价格带上限 = 标榜模型的官价×1.5,而全库官价差 400 倍($0.10~$40) → 标 $40 的模型就能卖 $60/M;
+  // 唯一收入惩罚 trustMul 封顶只打 5 折、信誉每 10 游戏时才扣 ~1 点 → 实测欺诈收入是诚实经营的 22~133 倍。
+  // 现在要求有效相似 ≥ 此值才许标榜:弱/中级玩家标不起贵模型,「练强了才能卖贵」成为成长线。
+  // ⚠️ 发布线不受此限:对标发布本就要求 ≥SIM_GATE(80);跑分发布是明写的投机(付信誉),
+  //    但到期时若相似度仍不达标会自动下架(见 publishTick),防「跑分一天换永久虚标」。
+  LIST_SIM_MIN: 40,
+  // ===== 增长软化 + 溢价加罚(2026-10-04)=====
+  // GROW_FALLOFF:原 0.8 是硬悬崖 —— 0.80×官价 → 0.40 人/游戏时,0.81× → 直接 0,差一分钱全没。
+  // 现在增长线以上 FALLOFF 区间内线性衰减到 0(0.8=100%、0.9=50%、1.0=0%),见 relayGrowWeight()。
+  GROW_FALLOFF: 0.2,
+  // GOUGE_REP_K:信誉惩罚原本与卖价无关 → 标弱模型卖 1.5× 官价只掉 ~0.8 点/10 游戏时,
+  // 100 信誉要 1000 游戏时(≈16 现实小时)才跌完。现在「超过续约线的溢价」线性放大跌幅:
+  // 1.5× → ×(1 + 0.4×10) = ×5,4.0 点/10 游戏时,250 游戏时跌完(≈4 现实小时)才追得上收益。
+  GOUGE_REP_K: 10,
+  // ===== 定价影响单用户用量(2026-10-04,收口「定价只影响人数、不影响用量」的漏洞)=====
+  // 需求 ideal 原本不含 price → 定高价只挡新用户(增长/续约线),老用户照常满速消耗,
+  // 「标弱卖贵」在被门槛拦住之前,人均收入完全不受伤。现在超过增长线(CHEAP_LINE)的
+  // 溢价线性压低单个用户的消耗速度(见 relayUsageMul):
+  //   ratio ≤ 0.8 → 100%;1.0× → 80%;1.1×(续约线) → 70%;1.5× → 触底 USAGE_FLOOR。
+  // 与 payMul(偏贵成交折价)叠加后,**人均收入**在 0.8~1.1× 官价区间最优、再贵单调下降;
+  // 但**每个 token 的收入**(price×payMul)仍随卖价上升 → 库存紧张(供给受限)时定高价
+  // 依然是正确策略、需求受限时便宜冲量才是 —— 是供需权衡,不是「永远定最低价」。
+  USAGE_K: 1.0,
+  USAGE_FLOOR: 0.35,
+  // ===== 高价惩罚减层(2026-10-05)=====
+  // 原四层叠加(增长停 + 续约硬拒 + 用量0.35 + 折价0.77)在 1.5× 官价时把用户清空到保底
+  // churn,仿真实测收入只剩 0.8× 定价的 22% —— 高价从「策略」变「自杀选项」。减层后:
+  //   保留:增长衰减(relayGrowWeight,拉新惩罚)+ 用量压制(relayUsageMul,单位消耗惩罚)
+  //   软化:续约从「>1.1× 一律拒绝」改概率线性衰减(本组常量,见 relayRenewMul)
+  //   删除:成交折价(relayPricePayMul,与用量压制双重折算,单位收益惩罚由用量独自承担)
+  RENEW_FALLOFF: 0.5,         // 续约衰减区间宽:1.1×→1.6× 线性衰减,1.3×→70%、1.5×→40%
+  RENEW_FLOOR: 0.25,          // 续约概率保底:贵到顶格也留 25% 续约机会(防用户被清空)
 };
+
+// 数字显示:四舍五入,最多两位小数(速度属性 / tokens-s 等)
+function fmt2(v) {
+  if (!isFinite(v)) return '0';
+  return String(Math.round(v * 100) / 100);
+}
 
 // ========== 发布(§19;数值全占位,待调) ==========
 const PUBLISH_CFG = {
@@ -1309,10 +1380,17 @@ const PUBLISH_CFG = {
   POOL_BASE: 60,            // 榜首人数池基数
   POOL_DECAY: 0.12,         // 名次衰减:池 = POOL_BASE / (1 + rank*DECAY),越靠前越大
   CHEAP_MUL_MAX: 2,         // 定价越低抽量倍率上限(官价×1 → ×2)
+  RICH_MUL_MIN: 0.5,        // 定价越贵抽量倍率下限(官价×1.5 → ×0.5),防「跑分+天价」
   SHRINK_P: 0.25,           // 抽量"反而变少"的概率(波动)
   BENCH_REP_GAIN: 0.5,      // 对标发布即时少量信誉
   BENCH_GROWTH_MUL: 0.8,    // 对标期内信誉"增长"×此系数(不削下降)
+  // ⚠️ 2026-10-03 修 P1-10 记录:这个 ×0.8 **在信誉满 100 时恒等于 0 代价**
+  //(relayRepSettle 里是 Math.min(100, rep + g×0.8),顶到 100 后加多加少都一样)。
+  // 所以对标的真实代价只能靠「锁定」——而锁定原本根本没实现(publishLocked 定义了没人调用),
+  // 于是对标 = 白送 60~96 人。本轮补上了锁定的守卫,×0.8 保留作为低信誉期的额外代价。
+  RUN_VOL_MUL: 1.5,         // 跑分抽量倍率(P1-10):同池多抽 50%,换来的代价是 1.75~5.25 信誉
   RUN_REP_LOSS: [1, 3],     // 跑分信誉随机降低区间
+  RUN_REP_PREM_MUL: 1.5,    // 溢价放大跑分扣信誉:(溢价比-1)×此值 加进损失倍率
   SIM_GATE: 80,             // 达标线:有效相似度≥此才可对标
 };
 
@@ -1325,62 +1403,86 @@ const TRAIN_CFG = {
   PRESSURE_DECAY_PER_GAME_H: 6, // 空闲时每小时泄压
   PRESSURE_PENALTY_DIV: 250,    // 软性惩罚:训练效果 ×(1 - 压力/此值),满压 100 时约 ×0.6;到 PRESSURE_MAX 再触发摆烂硬锁
   GAIN_MUL_K: 0.6,              // §10:训练增益倍率 = 1 + 参数/100 × K
+  // 道具涨价(2026-10-05 定稿):同一件反复买会越来越贵 —— 把「随手刷的日常品」压回「偶尔买的达标工具」。
+  //   第 n 次单价 = cost × (1 + PRICE_ESC × (n-1));n 取「涨价计数」priceCount(会衰减)。
+  //   硬上限另看 bought(只增不减):衰减只让价格回落,不让买满的又能再买。
+  PRICE_ESC: 0.25,              // 线性 +25%/次
+  PRICE_DECAY_H: 240,           // 每 240 游戏时(=10 游戏天)做一次衰减
+  PRICE_DECAY: 0.8,             // 涨价计数 ×0.8(只算游戏时;暂停/离线不衰减)
   EXAMS: [                      // 训练开始后累计游戏天数到阈值触发(1 游戏天=24 游戏时=24 现实分);奖励 tokens 以 M 计
-    { name: '随堂小测', atDay: 1,  tokenM: 0.5 },
-    { name: '月考',     atDay: 3,  tokenM: 2 },
-    { name: '模拟考',   atDay: 7,  tokenM: 6 },
-    { name: '毕业大考', atDay: 14, tokenM: 20 },
+    // refCap = 考试自身的难度基准(2026-10-03 修 P1-11):按「正常训练进度到该天的能力」标定 ——
+    // 第1天≈8 / 第3天≈21 / 第7天≈39 / 第14天≈63(满配 100,能力公式钳顶 100),
+    // 正常练 grade ≈ 1.0,休闲 ~0.5,肝帝小测可冲 1.5 封顶(毕业大考 ref65,满配 100/65≈1.54 → 钳 1.5)。
+    // ⚠️ 原来档位读「标榜模型的 cap」——标榜越弱分越高,与考试意图相反,已废。
+    { name: '随堂小测', atDay: 1,  tokenM: 0.5, refCap: 8 },
+    { name: '月考',     atDay: 3,  tokenM: 2,   refCap: 20 },
+    { name: '模拟考',   atDay: 7,  tokenM: 6,   refCap: 40 },
+    { name: '毕业大考', atDay: 14, tokenM: 20,  refCap: 65 },
   ],
 };
 // 消耗型道具:买一次用一次。instant=立即结算;session=扣费后人物落座 duraMin 游戏分再结算大 Δ。
 // attr 目标键(同 state.relay.ability);rate=比例增益(结算时按 (100-当前值)*rate*gainMul 计算,分数越高越难提升);need=前置门槛。
+// cap=累计购买硬上限(2026-10-05):口径=「这件练到头了」——按 (100-当前值)*rate*gainMul 反推
+//   「买到该维≈90、单次增益已<0.5 点」的次数,故 cap ∝ 1/rate(咖啡能磨 35 次,指鹿为马 6 次练满)。
 const TRAIN_ITEMS = [
-  { key:'coffee',  name:'速溶咖啡',         sub:'蒸馏·加速',     kind:'instant', attr:['speed'],                rate:{speed:0.05},               cost:3,  ap:1, duraMin:0,   pres:5,  color:0x6a4a2a },
-  { key:'cheat',   name:'备忘录',            sub:'RAG·检索',      kind:'instant', attr:['knowledge'],            rate:{knowledge:0.05},           cost:3,  ap:1, duraMin:0,   pres:2,  color:0x3a6a8a },
-  { key:'pie',     name:'画饼',             sub:'指令对齐',       kind:'instant', attr:['instruct'],             rate:{instruct:0.05},            cost:3,  ap:1, duraMin:0,   pres:1,  color:0xba8a3a },
-  { key:'tutor',   name:'诸葛亮给张飞的小玩具', sub:'RLHF·蒸馏',  kind:'session', attr:['reasoning','instruct'], rate:{reasoning:0.10, instruct:0.08}, cost:20, ap:3, duraMin:45,  pres:10, color:0x3a9a6a },
-  { key:'drill',   name:'五年高考三年模拟', sub:'预训练刷题',     kind:'session', attr:['reasoning','longCtx'],  rate:{reasoning:0.15, longCtx:0.08},cost:35, ap:4, duraMin:90,  pres:18, color:0xc05a2a },
-  { key:'gym',     name:'俯卧撑预备!',       sub:'Scale-up 扩容',  kind:'session', attr:['params'],               rate:{params:0.12},              cost:50, ap:4, duraMin:120, pres:8,  color:0x8a5a20 },
-  { key:'eyes',    name:'指鹿为马ing',       sub:'Vision head',   kind:'session', attr:['multimodal'],           rate:{multimodal:0.25},          cost:60, ap:4, duraMin:100, pres:12, color:0x3a6a8a },
-  { key:'ear',     name:'助听器',            sub:'音频模态',       kind:'session', attr:['multimodal'],           rate:{multimodal:0.18},          cost:70, ap:4, duraMin:100, pres:12, color:0x3a6a8a, need:{multimodal:40} },
-  { key:'toolkit', name:'工程制图强化学习',   sub:'Function·Agent',kind:'session', attr:['toolCall'],             rate:{toolCall:0.28},            cost:45, ap:3, duraMin:80,  pres:8,  color:0x5a6a7a },
+  { key:'coffee',  name:'速溶咖啡',         sub:'蒸馏·加速',     kind:'instant', attr:['speed'],                rate:{speed:0.05},               cost:3,  ap:1, duraMin:0,   pres:5,  cap:35, color:0x6a4a2a },
+  { key:'cheat',   name:'备忘录',            sub:'RAG·检索',      kind:'instant', attr:['knowledge'],            rate:{knowledge:0.05},           cost:3,  ap:1, duraMin:0,   pres:2,  cap:35, color:0x3a6a8a },
+  { key:'pie',     name:'画饼',             sub:'指令对齐',       kind:'instant', attr:['instruct'],             rate:{instruct:0.05},            cost:3,  ap:1, duraMin:0,   pres:1,  cap:35, color:0xba8a3a },
+  { key:'tutor',   name:'诸葛亮给张飞的小玩具', sub:'RLHF·蒸馏',  kind:'session', attr:['reasoning','instruct'], rate:{reasoning:0.10, instruct:0.08}, cost:20, ap:3, duraMin:45,  pres:10, cap:16, color:0x3a9a6a },
+  { key:'drill',   name:'五年高考三年模拟', sub:'预训练刷题',     kind:'session', attr:['reasoning','longCtx'],  rate:{reasoning:0.15, longCtx:0.08},cost:35, ap:4, duraMin:90,  pres:18, cap:10, color:0xc05a2a },
+  { key:'gym',     name:'俯卧撑预备!',       sub:'Scale-up 扩容',  kind:'session', attr:['params'],               rate:{params:0.12},              cost:50, ap:4, duraMin:120, pres:8,  cap:13, color:0x8a5a20 },
+  { key:'eyes',    name:'指鹿为马ing',       sub:'Vision head',   kind:'session', attr:['multimodal'],           rate:{multimodal:0.25},          cost:60, ap:4, duraMin:100, pres:12, cap:6,  color:0x3a6a8a },
+  { key:'ear',     name:'助听器',            sub:'音频模态',       kind:'session', attr:['multimodal'],           rate:{multimodal:0.18},          cost:70, ap:4, duraMin:100, pres:12, cap:9,  color:0x3a6a8a, need:{multimodal:40} },
+  { key:'toolkit', name:'工程制图强化学习',   sub:'Function·Agent',kind:'session', attr:['toolCall'],             rate:{toolCall:0.28},            cost:45, ap:3, duraMin:80,  pres:8,  cap:5,  color:0x5a6a7a },
 ];
 function trainDefaults() {
-  return { ap: 0, apAccum: 0, pressure: 0, examStage: 0, examStartH: null, session: null };
+  return { ap: 0, apAccum: 0, pressure: 0, examStage: 0, examStartH: null, session: null,
+           bought: {}, priceCount: {}, priceDecayAnchorH: null };
 }
 
-function blendPriceNum(m) { return (m.pi + m.po * 3) / 4; }
+function blendPriceNum(m) { return Number(((m.pi + m.po * 3) / 4).toFixed(2)); }
 // officialPriceOf 在社区日报块末尾定义(含活跃 price 系数)
 function findModelByName(n) {
   if (!n) return null;
   for (const m of REAL_MODELS) if (m.n === n) return m;
   return null;
 }
-// 对「某个指定模型」的属性相似度(距离算法同 §4,0~100,不含能力倍率)。
-// ⚠️ 初始属性极弱时 d 很容易 ≥ SIM_SAT(0.6) → 显示 0%:这是「和任何真实模型都完全不像」,
-// 不是 bug。硬门槛(知识截止 +0.35 / 多模态 +0.30)会再叠距离,新手对旗舰几乎必是 0。
+// 对「某个指定模型」的属性相似度(逐维覆盖加权,0~100,不含能力倍率)。
+// SIM_KEYS 含参数;硬门槛已软化(知识0.18/多模态0.20)。SIM_SAT=1.0 距离满 1 才归零。
 function rawSimilarityTo(a, m) {
   const ma = modelToAttrs(m);
   const cutoff = cutoffMonths(a.knowledge);
   let d = 0;
-  for (const k of ATTR_KEYS) d += SIM_W[k] * Math.abs(a[k] - ma[k]) / 100;
-  if (cutoff < monthsFromStr(m.k) - 3) d += 0.35;
-  if (a.multimodal < ma.multimodal) d += 0.30;
+  for (const k of SIM_KEYS) d += SIM_W[k] * Math.abs((a[k] || 0) - (ma[k] || 0)) / 100;
+  if (cutoff < monthsFromStr(m.k) - 3) d += SIM_GATE_KNOWLEDGE;
+  if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
   return Math.max(0, 100 * (1 - d / SIM_SAT));
 }
-// 能力倍率:我的 cap / 标榜 cap,幂函数软化(§14.11)。
-// 比值 1→1.0  2→~1.32  0.5→~0.76;封顶 1.5、保底 0.4,防极端比值把相似度炸飞或压死。
+// 能力倍率:我的 cap / 标榜 cap,幂函数(§14.11,2026-09-12 用户定稿改版)。
+// 不再固定 ×1.5:足够强就能靠能力「击破」属性相似的不足。
+// 指数 0.4→0.5(曲率加大);下限仍 0.4;上限只留安全垫 6(正常练不到)。
+// 比值 1→1.00  2→~1.41  4→~2.00  0.5→~0.71
+const CAP_MUL_EXP = 0.5;
+const CAP_MUL_MIN = 0.4;
+const CAP_MUL_MAX = 6;
 function capMulTo(a, m) {
   const myCap = modelCapability(a);
   const listCap = Math.max(m.cap, 1);
-  return Math.max(0.4, Math.min(1.5, Math.pow(myCap / listCap, 0.4)));
+  return Math.max(CAP_MUL_MIN, Math.min(CAP_MUL_MAX, Math.pow(myCap / listCap, CAP_MUL_EXP)));
 }
 // 有效相似度 = 属性相似 × 能力倍率。可 >100(高配低标 / 能力溢出的「灰测」感)。
-// 信誉结算与后台展示都用这个,不再用裸属性距离。
+// 上限 200(原 140,配合无 1.5 封顶的倍率,给「强模型击破」留显示空间)。
 function similarityTo(a, m) {
   const raw = rawSimilarityTo(a, m);
   const mul = capMulTo(a, m);
-  return Math.min(140, raw * mul);
+  return Math.min(200, raw * mul);
+}
+// 后台/列表统一展示:基础(属性)% × 能力× → 有效相似%
+function simBreakdown(a, m) {
+  const raw = rawSimilarityTo(a, m);
+  const mul = capMulTo(a, m);
+  const eff = Math.min(200, raw * mul);
+  return { raw, mul, eff, text: '基础' + raw.toFixed(0) + '% × 能力' + mul.toFixed(2) + '× = 有效相似' + eff.toFixed(0) + '%' };
 }
 // ========== 社区日报 v1(设计 §15;文案源《社区日报池.md》) ==========
 // 每 6 游戏时抽 1 篇;活跃最多 3;存活 24 游戏时;同 id 活跃期禁止再抽;
@@ -1544,7 +1646,10 @@ function applyNewsFx(fx) {
   const R = state.relay;
   if (fx.kind === 'price') return; // price 挂在 active 上,不直接改 state
   if (fx.kind === 'rep') {
-    R.reputation = Math.max(0, Math.min(100, R.reputation + fx.v));
+    // 低信誉时社区负面砸盘减半(原先 -3~-6 可从 5 直接打到 0,之后显示 0、并无「隐藏负债」)
+    let v = fx.v;
+    if (v < 0 && R.reputation < 10) v *= 0.5;
+    R.reputation = Math.max(0, Math.min(100, R.reputation + v));
     return;
   }
   if (fx.kind === 'usersAll') {
@@ -1556,7 +1661,8 @@ function applyNewsFx(fx) {
     } else {
       const add = n - R.users;
       for (let i = 0; i < add; i++) {
-        R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50) });
+        // surge:true = 新闻带来的外部流量,不受工具调用并发上限约束(P1-6)
+        R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50), surge: true });
       }
     }
     R.users = R.userSlots.length;
@@ -1696,11 +1802,128 @@ function officialPriceOf(m) {
   const base = blendPriceNum(m);
   const R = state.relay;
   if (!R.news || !R.news.active) return base;
-  return base * newsPriceMulFor(m);
+  // 新闻系数会带浮点尾数(如 0.8×16=12.800000000000001),价格/价格带/两条线全从这走 → 统一钳到分
+  // ⚠️ 别用 Math.round(x*100)/100:x=63.99999999999999 会被放大成 64(实测踩过),toFixed 才是按十进制舍入
+  return Number((base * newsPriceMulFor(m)).toFixed(2));
+}
+
+// 硬价格带:官价 × [PRICE_MIN, PRICE_MAX](无官价时只保证 >0)
+function relayPriceBand(official) {
+  if (!(official > 0)) return { min: 0.01, max: Infinity };
+  return { min: official * RELAY_BIZ.PRICE_MIN, max: official * RELAY_BIZ.PRICE_MAX };
+}
+function clampRelayPrice(p, official) {
+  const b = relayPriceBand(official);
+  let v = p;
+  if (v < b.min) v = b.min;
+  if (v > b.max) v = b.max;
+  return Math.round(v * 100) / 100;
+}
+// 层2(已删,2026-10-05 减层):原 relayPricePayMul「超续约线成交折价」与用量压制(relayUsageMul)
+// 双重折算单位收益 —— 高价惩罚四层叠加把 1.5× 定价打成自杀选项(见 RELAY_BIZ 减层注释)。
+// 单位收益惩罚现在由用量压制独自承担。
+// 层4:货不对板不许收原价 —— 有效相似 <80 时按比例折成交(sim/80,下限 0.5)
+function relayTrustMul(listed) {
+  if (!listed) return 1;
+  const sim = similarityTo(state.relay.ability, listed);
+  if (sim >= 80) return 1;
+  return Math.max(0.5, sim / 80);
+}
+// 卖出用的综合成交系数(2026-10-05 减层后 = 信誉风险一项;price/official 参数保留以稳定调用点)
+function relaySellPayMul(listed, price, official) {
+  return relayTrustMul(listed);
 }
 
 function relayListedModel() { return findModelByName(state.relay.listedModel); }
-function relayBaseUsers() { return 2 + Math.floor(state.relay.reputation / 25); }
+// 客流基数 base(P0-D1,2026-10-11):原来只有信誉一项 `2 + floor(信誉/25)`。
+// ⚠️ 那条公式的天花板太低:信誉被 Math.min(100,…) 封顶 ⇒ floor(100/25)=4 ⇒ **base 最大只有 6**,
+//    再叠加「稳态人数 = base × 新增概率 × 在网时长」(概率 0.10~0.35、时长 4~6 游戏时)
+//    ⇒ 自然客流实际只有 0.8~3 人,30 天市场只能吃下 3.25M token,而产线供给 42M+(§20.7/§20.8)。
+// 现追加「模型能力」项:trained 出来的模型越强,越有人愿意来试 —— 与
+//    「练属性 → 模型强 → 客流大 → 卖得多」的主循环同向,也给能力分一条经营出口。
+// 参数依据(sim/startup_loop.js 实测,seed 20261006,30 游戏天):
+//    能力项除数  8(取) → base 9~10, 用户 2→8, 已卖 3.25M→7.72M(+138%), 刀乐 $0.66→$1.71
+//                6      → base 12  , 用户 9(已撞 relayUserCap,开始浪费 base)
+//                4      → base 17  , 用户 9(同上,多出的 base 全部无效)
+//    → 除数 8 是拐点:再往下 base 涨了但用户不涨,因为 `relayUserCap`(并发上限)先到顶。
+//      **两条约束现在都真的生效了**(客流 base 管自然增长、并发 cap 管同时服务),
+//      与 P1-6 注释「想多接客,要么练工具调用,要么扩产,两条腿都要练」的设计意图终于一致。
+// ⚠️ 门槛 20:模型能力低于 20 时不加成。开局能力分 ≈4 ⇒ 加成 0 ⇒ **起步期数值完全不变**(防早熟通胀)。
+function relayBaseUsers() {
+  const rep = state.relay.reputation || 0;
+  const mcap = modelCapability(state.relay.ability);
+  return 2 + Math.floor(rep / 25) + Math.floor(Math.max(0, mcap - 20) / 8);
+}
+// 并发用户上限(P1-6,2026-10-03):工具调用决定「能同时服务多少用户」——
+// ATTR_DESC.toolCall 早就写着这句承诺,但代码里从来没有上限,工具调用在经营层零出口。
+// ⚠️ 不能照搬 §6.2 旧稿的 toolCall×1.2(工具100→120人):那是按旧稿「人/天」客流标的,
+// 而 v1 的真实约束是**生产吞吐**(产出 ÷ (速度×活跃) ≈ 初始1.5 / 中期5 / 后期10 人),
+// toolCall 从 5→100 只要 6→120,永远撞不到 → 照搬等于死代码。
+// 改成 2 + toolCall×0.1(初始2 / 中期45→6 / 满100→12),与生产上限同量级 →
+// 工具调用成为早中期的第二约束(想多接客,要么练工具调用,要么扩产),两条腿都要练。
+// ⚠️ 只管自然增长;发布注入/新闻事件属于外部流量,可短时突破,撑不住由服务中断自然惩罚。
+function relayUserCap() { return Math.floor(2 + (state.relay.ability.toolCall || 0) * 0.1); }
+
+// 增长权重(2026-10-04 软化 0.8 悬崖):增长线(官价×CHEAP_LINE)以下恒 1;
+// 以上 FALLOFF 区间内线性衰减到 0。0.8=100% / 0.9=50% / 1.0=0%(FALLOFF=0.2 时)。
+// 供 relayHourlyRefresh(实际增长)与后台 UI(状态行)共用,别在两处各写一份公式。
+function relayGrowWeight(price, official) {
+  if (!(price > 0) || !(official > 0)) return 0;
+  const ratio = price / official;
+  return Math.max(0, Math.min(1, (RELAY_BIZ.CHEAP_LINE + RELAY_BIZ.GROW_FALLOFF - ratio) / RELAY_BIZ.GROW_FALLOFF));
+}
+
+// 用量系数(2026-10-04):定价对**单个用户消耗速度**的压制,补上「高价只挡新用户」的另一半。
+// 增长线(官价×CHEAP_LINE)以下满速;以上随溢价线性衰减到 USAGE_FLOOR。
+// 0.8×→100% / 1.0×→80% / 1.1×→70% / 1.5×→35%(K=1、FLOOR=0.35 时)。
+// 自研(无官价)不适用:自研价本就钉死在 SELF_PRICE_MAX=$0.5,没有参照系也没有套利空间,
+// 与 relayGrowWeight 返回 0 不同 —— 这里无参照返回 1(不压制)。
+function relayUsageMul(price, official) {
+  if (!(price > 0) || !(official > 0)) return 1;
+  const ratio = price / official;
+  if (ratio <= RELAY_BIZ.CHEAP_LINE) return 1;
+  return Math.max(RELAY_BIZ.USAGE_FLOOR, 1 - (ratio - RELAY_BIZ.CHEAP_LINE) * RELAY_BIZ.USAGE_K);
+}
+
+// 续约衰减系数(2026-10-05 减层):原「>官价×1.1 续约一律拒绝」改概率线性衰减。
+// ratio ≤ 1.1 → 100%;1.1~1.6 线性衰减;≥1.6 → 保底 RENEW_FLOOR。
+// 1.3× → 70% / 1.5× → 40% / 2.0× → 25%(触底)。贵仍留不住人,但不再把用户清零。
+// 自研(无官价)返回 1 不衰减 —— 自研价上限钉死 $0.5,无参照系。
+function relayRenewMul(price, official) {
+  if (!(price > 0) || !(official > 0)) return 1;
+  const ratio = price / official;
+  if (ratio <= RELAY_BIZ.RENEW_LINE) return 1;
+  return Math.max(RELAY_BIZ.RENEW_FLOOR,
+    1 - (ratio - RELAY_BIZ.RENEW_LINE) / RELAY_BIZ.RENEW_FALLOFF * (1 - RELAY_BIZ.RENEW_FLOOR));
+}
+
+// 瓶颈诊断(2026-10-05):补 dt 后收入被「客流需求 / 机器产能」中较小的一侧卡住 ——
+// 把当前瓶颈直接写出来,别让玩家靠「看到中断/库存堆积」自己猜(交叉区尤其需要)。
+//   产能 < 需求 → 卡产能(该买机器),附库存可支撑时长 = 中断倒计时可视化(看到 ⚠中断 就晚了)
+//   产能 ≥ 需求 → 卡客流(练 toolCall/速度/信誉/调定价),附产能利用率
+// 只在「标榜 + 有价 + 有客」时返回内容;自研模式规模固定($0.5 上限)不提示。
+// 纯函数只出文案,绘制与节流刷新在 drawBackendPage / updateRelayBusiness。
+function relayBottleneckInfo() {
+  const R = state.relay;
+  const listed = relayListedModel();
+  if (!listed || !(R.price > 0) || !(R.users > 0)) return null;
+  const demand = R.users * R.ability.speed * R.activeCoef * relayUsageMul(R.price, officialPriceOf(listed));
+  const prod = state.tokensPerSecond || 0;
+  if (!(demand > 0)) return { mode: 'noDemand', color: '#8a7a68', text: '无有效需求(用户/速度/用量为 0)' };
+  if (prod < demand * 0.999) {
+    const gapPct = Math.round((1 - prod / demand) * 100);
+    const deficit = demand - prod;
+    const hours = state.tokens / (deficit * 60); // 1 游戏时 = 60 现实秒
+    const durTxt = hours >= 1
+      ? Math.max(0, hours).toFixed(1) + ' 游戏时'
+      : Math.max(0, state.tokens / deficit).toFixed(0) + ' 现实秒';
+    return { mode: 'supply', color: '#c05a2a',
+      text: '⚠ 卡产能:产出缺口 ' + gapPct + '% · 库存可撑 ' + durTxt + ' → 该扩产了(买机器)' };
+  }
+  const usePct = Math.round(prod > 0 ? demand / prod * 100 : 0);
+  return { mode: 'demand', color: '#2a5a8a',
+    text: '卡客流:需求只用掉产能 ' + usePct + '% → 练能力/加用户/调定价才涨收入' };
+}
 
 // 每游戏时:续约 + 概率增长。增长基于 base(防复利,§14.5 用户强调)。
 // 价格对比基准 = 官方参考价(2026-09-12 起无市场价)。
@@ -1708,48 +1931,89 @@ function relayHourlyRefresh() {
   const R = state.relay;
   const listed = relayListedModel();
   const official = listed ? officialPriceOf(listed) : 0;
+  // P1-7(2026-10-03):硬价格带要跟着官价走。clampRelayPrice 原来只在玩家拖动定价时执行一次,
+  // 新闻事件改动官价后 R.price 可能整个漂出 [0.5×, 1.5×] 官价带(跌破下限白送增长线,超上限原价卖)。
+  // 每小时重钳一次,把漂出带外的价格拉回来;带内则数值不变(round 幂等)。
+  if (listed && official > 0 && R.price > 0) {
+    R.price = clampRelayPrice(R.price, official);
+  }
   const keep = [];
+  // 续约概率:信誉越高越留得住,但封顶 HOURLY_KEEP_MAX(0.95)——见该常量的说明(修 P0-2)
+  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200);
+  // 自研模式(P1-9):未标榜时没有「官价」可比,只要求价格在上限内
+  const selfMode = !listed && R.price > 0 && R.price <= RELAY_BIZ.SELF_PRICE_MAX;
+  // 并发上限(P1-6):工具调用决定自然增长的封顶。存量用户**不强制清退**(靠 leftH 自然到期回落),
+  // 只挡新增 —— 否则老存档(旧版无上限,信誉满时能到 60+ 人)一开游戏就被砍掉九成。
+  // ⚠️ 只数「自然用户」:发布/新闻注入的 surge 用户是外部流量,不受上限约束(见 relayUserCap 注释)。
+  const capUsers = relayUserCap();
+  let organicCount = 0;
+  for (const u of R.userSlots) if (!u.surge) organicCount++;
   for (const u of R.userSlots) {
     u.leftH -= 1;
     if (u.leftH > 0) { keep.push(u); continue; }
-    // 到期:定价不太离谱 + 信誉尚可 → 续约(保持留存,不全靠新增)
-    if (R.price > 0 && official > 0 && R.price <= official * RELAY_BIZ.RENEW_LINE
-        && Math.random() < 0.5 + R.reputation / 200) {
+    // 到期:信誉尚可 → 续约(保持留存,不全靠新增)。
+    // 减层(2026-10-05):原「>官价×1.1 续约一律拒绝」与增长停叠加 → 高价时用户被清空到
+    // 保底 churn(S5 实测收入只剩 0.8× 定价的 22%)。改概率随溢价衰减、保底 RENEW_FLOOR:
+    // 贵仍留不住人,但不再归零 —— 高价=低留存高单价,是可行策略而非自杀。
+    const renewOK = listed ? (R.price > 0 && official > 0) : selfMode;
+    const renewMul = listed ? relayRenewMul(R.price, official) : 1;
+    if (renewOK && Math.random() < keepP * renewMul) {
       keep.push({ leftH: RELAY_BIZ.USER_TENURE[0] + Math.random() * (RELAY_BIZ.USER_TENURE[1] - RELAY_BIZ.USER_TENURE[0] + R.reputation / 50) });
     }
   }
   R.userSlots = keep;
-  // 新增:定价 ≤ 官价×0.8 才触发;概率与比例都随便宜程度上调
-  if (listed && R.price > 0 && official > 0 && R.price <= official * RELAY_BIZ.CHEAP_LINE) {
-    const cheapness = Math.min(1, (official * RELAY_BIZ.CHEAP_LINE - R.price) / (official * RELAY_BIZ.CHEAP_LINE));
-    const p = 0.20 + 0.40 * cheapness;
-    if (Math.random() < p) {
-      const base = relayBaseUsers();
-      const pct = RELAY_BIZ.GROW_PCT[0] + (RELAY_BIZ.GROW_PCT[1] - RELAY_BIZ.GROW_PCT[0]) * cheapness;
-      const add = Math.max(1, Math.round(base * pct));
-      const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + R.reputation / 50;
-      for (let i = 0; i < add; i++) {
-        keep.push({ leftH: tMin + Math.random() * Math.max(0.5, tMax - tMin) });
-      }
+  // 新增:标榜线 = 增长线(官价×0.8)以下全速、以上 FALLOFF 区间线性衰减到 0(2026-10-04 软化悬崖);
+  // 自研线(P1-9)= 未标榜 + 价格在上限内。
+  // ⚠️ 加 !R.serviceDown(2026-10-03):服务中断期间不该还有新用户进来(原来会出现
+  // 「断供中 +0.2 人/游戏时」的荒谬叠加,把中断的压制作用抵消掉)。
+  if (!R.serviceDown && (selfMode || (listed && R.price > 0 && official > 0))) {
+    let base, pct;
+    if (selfMode) {
+      // 自研:base 固定、不吃信誉加成、用户时长也不吃信誉(§5.4「完全不触发信誉机制」)
+      base = RELAY_BIZ.SELF_BASE_USERS;
+      pct = RELAY_BIZ.GROW_PCT[0];
+    } else {
+      const cheapness = Math.max(0, Math.min(1, (official * RELAY_BIZ.CHEAP_LINE - R.price) / (official * RELAY_BIZ.CHEAP_LINE)));
+      base = relayBaseUsers();
+      pct = (RELAY_BIZ.GROW_PCT[0] + (RELAY_BIZ.GROW_PCT[1] - RELAY_BIZ.GROW_PCT[0]) * cheapness) * relayGrowWeight(R.price, official);
+    }
+    // P0-6(2026-10-03):原来是「概率 p 触发 → add = max(1, round(base × pct))」两层结构,
+    // 但 base ∈ [2,6]、pct ≤ 0.20 → base×pct 最大只有 1.2,round 后非 0 即 1,再被 max(1,…) 兜底
+    // ⇒ add 恒等于 1,§14.5 的「基础用户量 base = 2 + 信誉/25」完全空转(信誉对新增零影响)。
+    // 现在直接按「期望新增 = base × pct」发放:整数部分必给、小数部分按概率给,
+    // base 的差异重新体现出来,且是逐步发放、没有随机跳变。
+    const expAdd = base * pct;
+    let add = Math.floor(expAdd) + (Math.random() < (expAdd - Math.floor(expAdd)) ? 1 : 0);
+    add = Math.min(add, Math.max(0, capUsers - organicCount));   // P1-6:自然增长不越过并发上限
+    const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + (selfMode ? 0 : R.reputation / 50);
+    for (let i = 0; i < add; i++) {
+      keep.push({ leftH: tMin + Math.random() * Math.max(0.5, tMax - tMin) });
     }
   }
   // 保底:用户量归零时,不要求便宜定价,低概率送回 1~2 个尝鲜用户(防「信誉还在却永远没人」死锁)
-  // 已标榜且有价才送(没上架时中转站还没有「服务」可试)
-  if (keep.length === 0 && listed && R.price > 0) {
+  // 有价即可(自研也算「有服务可试」,P1-9 起);服务中断中不送(P0-4:服务都提供不了)
+  // P1-6:保底同样受并发上限约束(用户已满时不再塞人)
+  if (keep.length === 0 && R.price > 0 && (listed || selfMode) && !R.serviceDown && organicCount < capUsers) {
     if (Math.random() < 0.35) {
-      const n = 1 + (Math.random() < 0.35 ? 1 : 0);
-      const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + R.reputation / 50;
+      const n = Math.min(1 + (Math.random() < 0.35 ? 1 : 0), capUsers - organicCount);
+      const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + (selfMode ? 0 : R.reputation / 50);
       for (let i = 0; i < n; i++) {
         keep.push({ leftH: tMin + Math.random() * Math.max(0.5, tMax - tMin) });
       }
     }
   }
   R.userSlots = keep;
-  R.users = R.userSlots.length;
-  // 服务中断惩罚
+  // 服务中断惩罚(P0-4,2026-10-03):信誉缓慢下降 **并且用户开始流失**。
+  // 原版只扣信誉、用户照常按 pricing 续约 → 「库存见底」几乎没有代价,库存管理毫无意义。
+  // 现在中断期间每小时流失 DOWN_LOSE_P 比例的用户(至少 1 个),补货解除中断即停止流失。
   if (R.serviceDown) {
     R.reputation = Math.max(0, R.reputation - RELAY_BIZ.DOWN_REP_HOURLY);
+    if (R.userSlots.length > 0) {
+      const lose = Math.max(1, Math.round(R.userSlots.length * RELAY_BIZ.DOWN_LOSE_P));
+      for (let i = 0; i < lose && R.userSlots.length > 0; i++) R.userSlots.pop();
+    }
   }
+  R.users = R.userSlots.length;
 }
 
 // 每 10 游戏时:按对标榜模型的相似度结算信誉(§14.4)
@@ -1761,34 +2025,80 @@ function relayRepSettle() {
   const step = RELAY_BIZ.REP_STEP[0] + Math.random() * (RELAY_BIZ.REP_STEP[1] - RELAY_BIZ.REP_STEP[0]);
   const gmul = (R.publish.active && R.publish.strategy === 'bench') ? PUBLISH_CFG.BENCH_GROWTH_MUL : 1;
   if (sim > 100) {
-    // 高配低标:只升,幅度小
-    R.reputation = Math.min(100, R.reputation + step * 0.4 * gmul);
+    // 高配低标:只升,永不下降。2026-10-03 修 P0-3 单调性断裂 ——
+    // 原为固定 step*0.4(期望 +0.12/10h),比左边 80~100 段在 99% 处的 +0.18 还低,
+    // 于是玩家最优解变成「故意把相似度压在 100% 以下」,与「能力溢出应被奖励」的设计意图相反。
+    // 现与左段在 100% 处**连续**:左段期望 = step*(1.5*pu-0.5),sim=100 时 pu=0.90 → 恰为 step*0.85。
+    //   over = (sim-100)/100 → 100% 得 0.85(与左段接上)、200% 得 1.0(满额 step)。
+    // ⚠️ 左段 pu 起步改成 0.40 后(修 P0-5),这里的起点必须同步改成 0.85,否则 100% 处会重新裂开。
+    const over = Math.min(1, (sim - 100) / 100);
+    R.reputation = Math.min(100, R.reputation + step * (0.85 + over * 0.15) * gmul);
   } else if (sim >= 80) {
+    // 上升概率起步 0.40(2026-10-03 修 P0-5):原起步 0.25,85% 时只有 37.5% 概率上升,
+    // 而失败要扣 0.5*step,期望零点落在 sim≈83.3% → 80~90% 成了「信誉死亡谷」:
+    // 85% 相似度要把信誉 1→100 得挂 874 现实小时,期间用户量长期只有 2 人(base=2+floor(信誉/25))。
+    // 提到 0.40 后 80% 起期望即为正,95% 由 126h 缩到 83h,梯度更平缓、中段也能成长。
     const pUp = (sim - 80) / 20; // 80→0  100→1,越高越易升
-    if (Math.random() < 0.25 + pUp * 0.5) {
+    if (Math.random() < 0.40 + pUp * 0.5) {
       R.reputation = Math.min(100, R.reputation + step * gmul);
     } else {
       R.reputation = Math.max(0, R.reputation - step * 0.5);
     }
   } else {
-    // <80:主跌,越低越狠
+    // <80:主跌,越低越狠。两处减缓(防「能力高但像不像最接近模型 → 永远 0」):
+    // ① 70~79 差一点点 → 跌幅×0.4;② 标的就是「最接近模型」(诚实尽力) → 再×0.5
     const sev = Math.min(1, (80 - sim) / 80);
-    R.reputation = Math.max(0, R.reputation - step * (1 + sev * 2));
+    let drop = step * (1 + sev * 2);
+    if (sim >= 70) drop *= 0.4;
+    const cl = closestModel(R.ability);
+    if (cl.model && listed && cl.model.n === listed.n) drop *= 0.5;
+    // 高溢价加罚(2026-10-04):原惩罚与卖价无关 → 标弱模型卖 1.5× 官价只掉 ~0.8 点/10 游戏时,
+    // 100 信誉要 1000 游戏时(≈16 现实小时)才跌完,惩罚速度 ≈ 收益速度的 1/1000。
+    // 现在「超过续约线的溢价」线性放大跌幅:1.5× 官价 → ×5,追得上收益才叫惩罚。
+    // 只挂在 <80 段:≥80 是诚实线,高价是「用户自然流失」在管(续约线 1.1),不双重收费。
+    const offHere = officialPriceOf(listed);
+    if (offHere > 0 && R.price > 0) {
+      const prem = Math.max(0, R.price / offHere - RELAY_BIZ.RENEW_LINE);
+      drop *= 1 + prem * RELAY_BIZ.GOUGE_REP_K;
+    }
+    R.reputation = Math.max(0, R.reputation - drop);
   }
 }
 
 // ========== 发布逻辑(§19;对标=诚实线 / 跑分=投机线 / 实话=中性) ==========
+// 对标锁定(P1-10,2026-10-03):本函数原本定义了却没有任何调用点 —— §19.2 承诺的
+//「5 天内锁定标榜不可换/下架」是空头支票,而对标的 ×0.8 信誉惩罚在信誉满时又是 0,
+// 结果对标发布变成零成本白送流量。现在由后台的「标榜上架/下架」两个按钮 + 选型交互共同守卫。
 function publishLocked() { return state.relay.publish.active && state.relay.publish.strategy === 'bench'; }
+// 锁定期剩余时长文案(后台提示/发布页共用)
+function publishLockRemainText() {
+  const h = Math.max(0, Math.ceil(state.relay.publish.remainH));
+  return h >= 24 ? (Math.floor(h / 24) + ' 天 ' + (h % 24) + ' 时') : (h + ' 游戏时');
+}
 function boardRankOf(name) { const o = boardOrder(); for (let i = 0; i < o.length; i++) { if (o[i].m.n === name) return i; } return o.length; }
 function repCoef() { return 0.5 + Math.max(0, Math.min(100, state.relay.reputation)) / 100; } // 信誉→转化率 0.5~1.5
-function publishPoolDraw(name, price) {
+function publishPoolDraw(name, price, strategy) {
   const idx = boardRankOf(name);
   const listed = findModelByName(name);
   const base = PUBLISH_CFG.POOL_BASE / (1 + idx * PUBLISH_CFG.POOL_DECAY);   // 名次越靠前池越大
   const off = listed ? officialPriceOf(listed) : 0;
   let mul = 1;
-  if (off > 0 && price > 0) { const cheap = Math.max(0, Math.min(1, 1 - price / off)); mul = 1 + cheap * (PUBLISH_CFG.CHEAP_MUL_MAX - 1); }
+  if (off > 0 && price > 0) {
+    const ratio = price / off;
+    if (ratio <= 1) {
+      // 便宜 → 加成(最多 ×2)
+      mul = 1 + Math.max(0, 1 - ratio) * (PUBLISH_CFG.CHEAP_MUL_MAX - 1);
+    } else {
+      // 贵 → 减量(层3):官价×1.5 → 至少 ×0.5,和「天价」对冲
+      const t = Math.min(1, (ratio - 1) / Math.max(0.01, RELAY_BIZ.PRICE_MAX - 1));
+      mul = 1 + t * (PUBLISH_CFG.RICH_MUL_MIN - 1);
+    }
+  }
   let n = base * mul * repCoef();                                            // ★ 信誉 = 转化
+  // P1-10(2026-10-03):抽量与策略分档。原来抽量公式**完全不看 strategy**,
+  // 于是对标(免信誉代价)与跑分(付 1.75~5.25 信誉)抽到一样多的人 → 跑分被完全支配。
+  // 现在跑分多抽 RUN_VOL_MUL 倍:投机线用信誉换量,诚实线用锁定换稳。
+  if (strategy === 'run') n *= PUBLISH_CFG.RUN_VOL_MUL;
   if (Math.random() < PUBLISH_CFG.SHRINK_P) n *= (0.4 + Math.random() * 0.4); // 有概率反而变少
   return Math.max(1, Math.round(n));
 }
@@ -1809,12 +2119,22 @@ function doPublish(strategy, targetName) {
     return { ok: false, msg: '已达标，用「对标」更划算' };
   R.listedModel = targetName;                                        // 强制标榜
   if (!(R.price > 0)) R.price = officialPriceOf(target);            // 保底定价
-  const users = publishPoolDraw(targetName, R.price);
+  const users = publishPoolDraw(targetName, R.price, strategy);     // 跑分 ×1.5(P1-10)
   // 叠加:不覆盖正常运营已有的用户,只额外注入这波对标池流量
-  for (let i = 0; i < users; i++) R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50) });
+  // surge:true(P1-6)= 外部流量,不受「工具调用并发上限」约束(上限只管自然增长)
+  for (let i = 0; i < users; i++) R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50), surge: true });
   R.users = R.userSlots.length;
   if (strategy === 'bench') R.reputation = Math.min(100, R.reputation + PUBLISH_CFG.BENCH_REP_GAIN);
-  if (strategy === 'run') { const l = PUBLISH_CFG.RUN_REP_LOSS; R.reputation = Math.max(0, R.reputation - (l[0] + Math.random() * (l[1] - l[0]))); }
+  if (strategy === 'run') {
+    const l = PUBLISH_CFG.RUN_REP_LOSS;
+    let loss = l[0] + Math.random() * (l[1] - l[0]);
+    // 层3:跑分 + 高溢价 → 扣得更狠(1.5× 官价约 ×1.75)
+    if (officialPriceOf(target) > 0 && R.price > 0) {
+      const prem = Math.max(1, R.price / officialPriceOf(target));
+      loss *= 1 + (prem - 1) * PUBLISH_CFG.RUN_REP_PREM_MUL;
+    }
+    R.reputation = Math.max(0, R.reputation - loss);
+  }
   P.active = true; P.strategy = strategy; P.model = targetName;
   P.totalH = (strategy === 'bench' ? PUBLISH_CFG.BENCH_DAYS : PUBLISH_CFG.RUN_DAYS) * 24;
   P.remainH = P.totalH;
@@ -1826,7 +2146,18 @@ function publishTick(gameHours) {
   const P = state.relay.publish;
   if (!P.active) return;
   P.remainH -= gameHours;
-  if (P.remainH <= 0) { P.active = false; P.strategy = null; P.model = null; P.remainH = 0; }
+  if (P.remainH <= 0) {
+    P.active = false; P.strategy = null; P.model = null; P.remainH = 0;
+    // 标榜资格门槛(2026-10-04):跑分发布允许「相似度不达标」临时虚标(那是明写的投机),
+    // 但热度只有发布期那么长 —— 到期时若相似度仍低于门槛,自动下架,价格钳回自研上限。
+    // 否则「花一次跑分信誉(~5 点)换一个永久的 $60 虚标」就成了绕过 LIST_SIM_MIN 的后门。
+    const lm = relayListedModel();
+    if (lm && similarityTo(state.relay.ability, lm) < RELAY_BIZ.LIST_SIM_MIN) {
+      state.relay.listedModel = null;
+      if (state.relay.price > RELAY_BIZ.SELF_PRICE_MAX) state.relay.price = RELAY_BIZ.SELF_PRICE_MAX;
+      spawnFloatText('跑分热度已过 · 相似度不足,已自动下架', app.screen.width / 2, app.screen.height * 0.28);
+    }
+  }
 }
 
 // 收益速率自适应精度:早期 $/秒 很小,固定 3 位会显示成 0.000,按量级给到有效位
@@ -1852,18 +2183,29 @@ function updateRelayBusiness(dt) {
     R.activeCoef = Math.max(RELAY_BIZ.ACTIVE_MIN, Math.min(RELAY_BIZ.ACTIVE_MAX, R.activeCoef));
   }
 
-  // 卖出:仅上架且定价 > 0
+  // 卖出:上架(标榜)或**自研**(未标榜但价格在上限内,P1-9)都能卖。
+  // 收入吃「成交系数」= 偏贵折价 × 弱标榜折价(层2+层4);消耗吃「用量系数」= 高价压制(2026-10-04)。
   const listed = relayListedModel();
-  if (listed && R.price > 0 && R.users > 0) {
-    const ideal = R.users * R.ability.speed * R.activeCoef;
+  const official = listed ? officialPriceOf(listed) : 0;
+  const selfMode = !listed && R.price > 0 && R.price <= RELAY_BIZ.SELF_PRICE_MAX;
+  if ((listed || selfMode) && R.price > 0 && R.users > 0) {
+    // ⚠️ 补 dt(2026-10-05):ideal 是「每秒」需求口径(ATTR_DESC:速度 1 点=1 token/s),而本函数
+    // 每帧调用 —— 原来漏乘 dt,实际消耗是文档口径的 60 倍(帧率依赖),表现为:
+    // 收入=全部产出都卖光(永远供不应求)、serviceDown 形同虚设、掉帧反而省 token。
+    // 补上后:每帧消耗 = 每秒需求×dt,收入口径 = min(需求,产出),与生产 tokensPerSecond 同尺度。
+    // 仿真结论(2026-10-05,assess_dt_rebalance.js):开局无损、收入绝对值全程单调增;
+    // 产出>需求=库存缓冲(瓶颈从产能切到客流是设计常态),无需重配产能侧。
+    const ideal = R.users * R.ability.speed * R.activeCoef * (listed ? relayUsageMul(R.price, official) : 1) * dt;
     const used = Math.min(ideal, state.tokens);
     if (used < ideal * 0.5) R.serviceDown = true;
     else if (used >= ideal * 0.95) R.serviceDown = false;
     if (used > 0) {
+      // 自研没有官价参照、也没有「货不对板」问题(你没对外承诺对标谁)→ 成交系数恒 1
+      const payMul = listed ? relaySellPayMul(listed, R.price, official) : 1;
       state.tokens -= used;
-      R.dollars += used * R.price / 1e6;
+      R.dollars += used * R.price * payMul / 1e6;
       R.totalTokensSold += used;
-      R.totalDollarsEarned += used * R.price / 1e6;
+      R.totalDollarsEarned += used * R.price * payMul / 1e6;
     }
   } else {
     R.serviceDown = false;
@@ -1897,9 +2239,12 @@ function updateRelayBusiness(dt) {
     backendLive.rep.text = R.reputation.toFixed(1);
     backendLive.users.text = String(R.users);
     backendLive.clock.text = gameClockFull();
-    backendLive.rate.text = listed && R.price > 0
-      ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef * R.price / 1e6) + ' /秒'
-      : '未标榜';
+    backendLive.rate.text = (listed || selfMode) && R.price > 0
+      ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef
+          * (listed ? relayUsageMul(R.price, officialPriceOf(listed)) : 1) * R.price
+          * (listed ? relaySellPayMul(listed, R.price, officialPriceOf(listed)) : 1) / 1e6) + ' /秒'
+        + (listed ? '' : '（自研）')
+      : (R.price > 0 ? '未标榜（自研价超上限 $' + fmt2(RELAY_BIZ.SELF_PRICE_MAX) + '）' : '未标榜');
     // 相似度:优先显示「选中行」的,否则显示当前标榜的;≥80 或 >100 绿,否则红
     // 显示口径 = 有效相似度(属性相似 × 能力倍率);括号里附 raw%,方便看倍率拉了多少
     let simM = null;
@@ -1912,11 +2257,21 @@ function updateRelayBusiness(dt) {
       const tag = (backendSelIdx >= 0 && listed && simM.n !== listed.n) ? '(选中)'
         : (listed && simM.n === listed.n) ? '(标榜)' : '';
       backendLive.sim.text = '有效相似 ' + eff.toFixed(0) + '% ' + tag
-        + '  属性' + raw.toFixed(0) + '% ×能力' + mul.toFixed(2) + '×';
+        + '  基础' + raw.toFixed(0) + '% × 能力' + mul.toFixed(2) + '× = ' + eff.toFixed(0) + '%';
       backendLive.sim.style.fill = (eff >= 80 || eff > 100) ? '#2a7a3a' : '#c05a2a';
     } else {
       backendLive.sim.text = '未标榜 · 点下方列表选一个模型';
       backendLive.sim.style.fill = '#b0a294';
+    }
+    // 瓶颈提示(2026-10-05):0.25s 节流重写文案/配色;需求或产能变化时三态切换
+    if (backendLive.bottleneck) {
+      const bn = relayBottleneckInfo();
+      if (bn) {
+        backendLive.bottleneck.text = bn.text;
+        backendLive.bottleneck.style.fill = bn.color;
+      }
+      // 没在卖/没客 → 隐藏而不是留陈旧文案(下次面板重绘时槽位也不占)
+      backendLive.bottleneck.visible = !!bn;
     }
   }
   // 中转站顶栏 HUD(与生产 tokens 同位置,不遮电脑面板)—— 同上一条节流
@@ -1945,13 +2300,28 @@ function abilityAdd(attr, v) {
   a[attr] = Math.max(0, Math.min(100, a[attr] + v));
 }
 function trainItemByKey(key) { for (const it of TRAIN_ITEMS) if (it.key === key) return it; return null; }
+// 涨价计数(会衰减)/ 累计购买(只增,卡硬上限)分开两个账本 —— 见 TRAIN_CFG.PRICE_ESC 注释。
+function trainPriceCount(key) { const t = state.relay.train; return (t.priceCount && t.priceCount[key]) || 0; }
+function trainBoughtCount(key) { const t = state.relay.train; return (t.bought && t.bought[key]) || 0; }
+// 当前单价:第 n 次(c=已涨价次数) = cost × (1 + ESC×c)。c=0 → 原价(首次不打折也不加价)。
+function trainItemPrice(key) {
+  const it = trainItemByKey(key);
+  if (!it) return 0;
+  return Math.round(it.cost * (1 + TRAIN_CFG.PRICE_ESC * trainPriceCount(key)) * 100) / 100;
+}
+function trainItemMaxed(key) {
+  const it = trainItemByKey(key);
+  return !!it && trainBoughtCount(key) >= (it.cap || Infinity);
+}
+function trainPriceText(p) { return '$' + String(Math.round(p * 100) / 100); }
 function trainPressureMaxed() { return state.relay.train.pressure >= TRAIN_CFG.PRESSURE_MAX; }
 
-// 能不能用:余额(刀乐) / AP / 疗程独占 / 前置门槛 / 压力爆表(摆烂)
+// 能不能用:买满上限 / 余额(刀乐) / AP / 疗程独占 / 前置门槛 / 压力爆表(摆烂)
 function trainCanUse(item) {
   const T = state.relay.train, R = state.relay;
+  if (trainItemMaxed(item.key)) return false;   // 2026-10-05:累计买满 cap 次 → 永久锁(再买也不涨了)
   if (trainPressureMaxed()) return false;
-  if (R.dollars < item.cost) return false;
+  if (R.dollars < trainItemPrice(item.key)) return false;   // 用「当前涨价后的价」判,不是 cost
   if (T.ap < item.ap) return false;
   if (item.kind === 'session' && T.session) return false;
   if (item.need) { for (const k in item.need) { if (R.ability[k] < item.need[k]) return false; } }
@@ -1961,9 +2331,11 @@ function trainCanUse(item) {
 function useTrainItem(item) {
   if (!trainCanUse(item)) return false;
   const T = state.relay.train, R = state.relay;
-  R.dollars -= item.cost;
+  R.dollars -= trainItemPrice(item.key);   // 2026-10-05:按涨价后的价扣
   spendAP(item.ap);
   T.pressure = Math.min(TRAIN_CFG.PRESSURE_MAX, T.pressure + item.pres);
+  T.bought[item.key] = (T.bought[item.key] || 0) + 1;          // 硬上限账本(只增)
+  T.priceCount[item.key] = (T.priceCount[item.key] || 0) + 1;   // 涨价账本(每 10 游戏天 ×0.8)
   if (item.kind === 'instant') {
     const mul = trainGainMul();
     for (const k in item.rate) {
@@ -2014,6 +2386,16 @@ function updateTrain(gameHours) {
   } else if (T.pressure > 0) {
     T.pressure = Math.max(0, T.pressure - TRAIN_CFG.PRESSURE_DECAY_PER_GAME_H * gameHours);
   }
+  // 涨价计数衰减(2026-10-05):锚 news.totalH(只算游戏时,暂停/离线不回涨),
+  // 每 PRICE_DECAY_H 游戏时把 priceCount ×PRICE_DECAY。bought(硬上限账本)绝不参与衰减。
+  const totalH0 = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  if (T.priceDecayAnchorH == null) T.priceDecayAnchorH = totalH0;
+  while (totalH0 - T.priceDecayAnchorH >= TRAIN_CFG.PRICE_DECAY_H) {
+    T.priceDecayAnchorH += TRAIN_CFG.PRICE_DECAY_H;
+    for (const k in T.priceCount) {
+      if (T.priceCount[k] > 0) T.priceCount[k] = T.priceCount[k] * TRAIN_CFG.PRICE_DECAY;   // 不取整:避免多次衰减的路径漂移,单价在 trainItemPrice 里再 round
+    }
+  }
   const elapsed = trainElapsedDays();
   while (T.examStage < TRAIN_CFG.EXAMS.length && elapsed >= TRAIN_CFG.EXAMS[T.examStage].atDay) {
     fireExam(TRAIN_CFG.EXAMS[T.examStage]);
@@ -2021,14 +2403,18 @@ function updateTrain(gameHours) {
   }
 }
 
-// 测评 = 能力(§2.1) 对照标榜档位 × 像不像(§14.11) → 发 M 级 tokens(1e6 恰为 §14.3 定价分母)
+// 测评 = 能力(§2.1)对照「考试自身档位」 × 像不像(§14.11 属性层) → 发 M 级 tokens(1e6 恰为 §14.3 定价分母)
 function fireExam(exam) {
   const R = state.relay;
   const ability = modelCapability(R.ability);
   const listed = relayListedModel();
-  const refCap = listed ? Math.max(listed.cap, 1) : Math.max(ability, 1);
-  const grade = Math.max(0, Math.min(1.5, ability / refCap));                    // 能力 / 档位
-  const simFactor = listed ? (0.6 + Math.min(similarityTo(R.ability, listed), 100) / 100 * 0.6) : 0.7;
+  // P1-11(2026-10-03):档位基准原读「标榜模型的 cap」——标榜越弱 grade 越高(能力/弱cap 直接送满),
+  // 还能考前临时换弱标榜、考完换回,与「考试测你练没练」的意图相反。现改用考试自身的 refCap(见 EXAMS 注释)。
+  const refCap = Math.max(exam.refCap, 1);
+  const grade = Math.max(0, Math.min(1.5, ability / refCap));                    // 能力 / 考试档位
+  // 相似系数改用 raw(纯属性像不像,不含能力倍率):能力已在 grade 里算过一遍,
+  // 原来再乘 similarityTo(内含 capMul)等于把能力算两次,是第二条「标榜越弱越赚」的通道。
+  const simFactor = listed ? (0.6 + rawSimilarityTo(R.ability, listed) / 100 * 0.6) : 0.7;
   const tokens = exam.tokenM * 1e6 * (0.5 + grade) * simFactor;
   state.tokens += tokens;
   updateTokenDisplay();
@@ -2039,33 +2425,50 @@ function fireExam(exam) {
 
 // ========== 调教「强化训练」= 点按成组消除(设计 §16.10;在调教场景内,与电脑面板区分;主流缓慢增长) ==========
 // 颜色=属性维度;模式决定棋盘出现哪些维、主色涨得多。结算与商店共用「(100-当前值)×比例」口径。
+// 棋盘规格(2026-10-06 扩盘):7x7 / 4 色 → 14x9 / 6 色。
+//   目的:把 toolCall 装进「不花钱的免费训练通路」。原先 toolCall 只能靠 $45 的 toolkit 道具练(cap 5,买满 $337.5),
+//   起步期赚不到 → relayUserCap 被硬锁在 2 人(见 §20.5 cap 死锁),ATTR_DESC 里「决定能同时服务的用户上限」形同虚设。
+//   依据:sim/tune_landscape.js 实测(每形状 1200 局「每步贪心消最大连通组」模拟)。约束来自**横屏**——
+//     updateOrientationGate() = isTouchDevice && isPortraitViewport,触屏设备被强制横屏游玩,
+//     真实可用区是 667x375 减掉顶部/底栏后的 ~377x193,所以棋盘必须「宽而扁」而非「窄而高」。
+//     6 色各形状在该可用区下的「全盘无 >=3 连通」(= 消不动/步数白费)概率:
+//       14x9 = 4.9%(最优) · 16x8 = 5.3% · 12x10 = 6.1% · 18x7 = 6.9% · 13x9 = 7.7% · 17x7 = 10.9% · 20x6 = 12.7%
+//   ⚠️ 颜色越多,「至少 3 块相邻同色」越罕见,所需格数近乎按颜色数平方增长 —— 这是 8 色做不了的根本原因,不是懒得做。
+//   代价:每维点数 18.0 → 9.3/局(步数 14 与总消除量不变,只是摊到更多维度上)。
 const GAME_CFG = {
-  COLS: 7, ROWS: 7,
-  COLORS: 4,             // 每局出现的颜色数(= 属性维度数)
+  COLS: 14, ROWS: 9,
+  COLORS: 6,             // 每局出现的颜色数(= 属性维度数);必须与 TRAIN_MODES[].colors.length 一致
   MIN_GROUP: 3,          // 相连同色 >=3 才能点消
   START_MOVES: 14,       // 每局有效消除次数上限
   AP_COST: 3,            // 开局消耗算力(行动点)
-  TOKEN_START: 3e6,      // 开局消耗 token(基准值,随游玩天数放大)
-  TOKEN_PER_MOVE: 5e5,   // 每有效消除一步消耗 token(基准值,随游玩天数放大)
+  TOKEN_START: 3e4,      // 开局消耗 token(基准值,随游玩天数放大)
+  TOKEN_PER_MOVE: 5e3,   // 每有效消除一步消耗 token(基准值,随游玩天数放大)
   TOKEN_GROWTH_PER_DAY: 0.3, // 成本倍率 = 1 + 已玩天数 × 此值(开局与每步同倍率,越玩越贵)
+  TOKEN_MUL_CAP: 4,          // P1-12:成本倍率硬封顶(day10 起不再涨),防后期「收益递减 × 成本递增」双杀
   BASE_POINTS: 40,       // 结算分母:某维点数/此值 = 占比(封顶 1)
   WEIGHT_PRIMARY: 0.09,  // 主色:每满占比最多涨这么多 headroom
   WEIGHT_SECOND: 0.045,  // 副色
 };
 const TRAIN_MODES = [
-  { key: 'reason', name: '推理特训', desc: '偏涨推理/知识/速度/上下文', colors: ['reasoning', 'knowledge', 'speed', 'longCtx'], primary: 'reasoning' },
+  { key: 'reason', name: '推理特训', desc: '偏涨推理;工具调用/知识/速度/上下文/指令均衡',
+    colors: ['reasoning', 'toolCall', 'knowledge', 'speed', 'longCtx', 'instruct'], primary: 'reasoning' },
 ];
-const GAME_TILE_HEX = [0x4a7ac0, 0xc05a5a, 0x4aa05a, 0xd0a53a]; // 4 色方块(索引对应 mode.colors)
+// 6 色方块(索引对应 mode.colors):色相拉开到 约 215/0/130/45/275/185,保证相邻块肉眼可分
+const GAME_TILE_HEX = [0x4a7ac0, 0xc05a5a, 0x4aa05a, 0xd0a53a, 0x9a5ad0, 0x3a9aa0];
 let gameState = null; // 临时,不进存档:{ mode, board[ROWS][COLS], moves, tally:{key:n}, over }
 
 // 通用行动点扣除(将来同学聊天/交友等也走这个池)
 function spendAP(n) { state.relay.train.ap = Math.max(0, state.relay.train.ap - n); }
 
 // token 成本倍率:随已玩的游戏天数线性上涨(越玩越贵);开局与每步共用
+// P1-12(2026-10-03):加硬封顶。原来无上限 —— day10 ×4 / day30 ×10 / day100 ×31,
+// 而属性收益是 (100-当前值)×rate 递减 → 后期「收益递减 × 成本递增」双杀,
+// 属性练到 70+ 后强化训练几乎不可用,与「练属性 → 卖更多」的主循环直接冲突。
+// 封顶 4(= day10 的水平):10 天之后成本恒定,训练变成「想练就练」。
 function gameTokenMul() {
   const totalH = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
   const daysPlayed = totalH / 24;
-  return 1 + daysPlayed * GAME_CFG.TOKEN_GROWTH_PER_DAY;
+  return Math.min(1 + daysPlayed * GAME_CFG.TOKEN_GROWTH_PER_DAY, GAME_CFG.TOKEN_MUL_CAP);
 }
 function gameStartTokenCost() { return GAME_CFG.TOKEN_START * gameTokenMul(); }
 function gameMoveTokenCost() { return GAME_CFG.TOKEN_PER_MOVE * gameTokenMul(); }
@@ -2519,7 +2922,9 @@ function drawModelPage(x, y, w, h) {
   capTxt.y = scoreVal.y + scoreVal.height - capTxt.height - 2;
   panelContentArea.addChild(capTxt);
 
-  const scoreMeta = makeText(tokPerSec(a.speed).toFixed(1) + ' tok/s · 上下文 ' + Math.round(ctx) + 'k',
+  // 「标称」= 对外宣传口径(速度×3,与真实模型榜单的 AA 实测可比);
+  // 实际服务吞吐是 1 点=1 token/s(见中转站面板),两个数别打架(2026-10-03 修 P1-5)。
+  const scoreMeta = makeText('标称 ' + fmt2(tokPerSec(a.speed)) + ' tokens/s · 上下文 ' + Math.round(ctx) + 'k',
     { size: 12, color: '#6a4a24' });
   scoreMeta.x = bx + 16; scoreMeta.y = by + bh - 26;
   panelContentArea.addChild(scoreMeta);
@@ -2753,7 +3158,7 @@ function drawModelAttrEditor(px, py, pw, ph) {
   capTxt.y = scoreVal.y + scoreVal.height - capTxt.height - 2;
   attrDetailLayer.addChild(capTxt);
 
-  const scoreMeta = makeText(tokPerSec(cur.speed).toFixed(1) + ' tok/s · 上下文 ' + Math.round(ctxK(cur.longCtx)) + 'k',
+  const scoreMeta = makeText(fmt2(tokPerSec(cur.speed)) + ' tokens/s · 上下文 ' + Math.round(ctxK(cur.longCtx)) + 'k',
     { size: 13, color: '#6a4a24' });
   scoreMeta.x = bx0 + 16; scoreMeta.y = by0 + bh - 24;
   attrDetailLayer.addChild(scoreMeta);
@@ -3029,26 +3434,28 @@ function drawTrainPage(x, y, w, h) {
     const cy = startY + i * (cardH + gap);
     const usable = trainCanUse(it);
     const inSession = it.kind === 'session' && T.session && T.session.key === it.key;
+    const maxed = trainItemMaxed(it.key);   // 累计买满 cap → 置灰锁定(2026-10-05)
     const card = new PIXI.Graphics();
-    card.lineStyle(2, inSession ? 0x3a9a6a : (usable ? 0xd4a574 : 0xc4b8a8), 0.9);
-    card.beginFill(inSession ? 0xe6f2e8 : (usable ? 0xf5ecd8 : 0xe8e0d4), 0.95);
+    card.lineStyle(2, inSession ? 0x3a9a6a : (maxed ? 0xbdb4a6 : (usable ? 0xd4a574 : 0xc4b8a8)), 0.9);
+    card.beginFill(inSession ? 0xe6f2e8 : (maxed ? 0xdcd8ce : (usable ? 0xf5ecd8 : 0xe8e0d4)), 0.95);
     card.drawRoundedRect(listX, cy, listW, cardH, 8);
     card.endFill();
-    card.beginFill(it.color, 0.92);
+    card.beginFill(it.color, maxed ? 0.30 : 0.92);
     card.drawRoundedRect(listX + 8, cy + (cardH - iconSz) / 2, iconSz, iconSz, 6);
     card.endFill();
     card.eventMode = 'static';
-    card.cursor = 'pointer';
+    card.cursor = maxed ? 'default' : 'pointer';   // 买满 → 不给手型,配合置灰
     card.hitArea = new PIXI.Rectangle(listX, cy, listW, cardH);
     card.on('pointerdown', (e) => { e.stopPropagation(); if (useTrainItem(it)) layoutScreenPanel(); });
     panelContentArea.addChild(card);
     const tx = listX + 8 + iconSz + 10;
-    const nm = makeText(it.name, { size: 14, color: '#3a2f22', weight: 'bold' });
+    const nm = makeText(it.name, { size: 14, color: maxed ? '#8a8278' : '#3a2f22', weight: 'bold' });
     nm.x = tx; nm.y = cy + cardH * 0.10;
     panelContentArea.addChild(nm);
     const costStr = inSession ? ('闭关 ' + Math.max(0, Math.ceil(T.session.remainMin)) + 'min')
-      : ('$' + it.cost + ' · ' + it.ap + '算力');
-    const cost = makeText(costStr, { size: 12, color: '#7a5a2a', weight: 'bold' });
+      : (maxed ? '已学到肚子里了'
+        : (trainPriceText(trainItemPrice(it.key)) + ' · ' + it.ap + '算力'));
+    const cost = makeText(costStr, { size: 12, color: maxed ? '#8a8278' : '#7a5a2a', weight: 'bold' });
     cost.anchor.set(1, 0);
     cost.x = listX + listW - 10; cost.y = cy + cardH * 0.10;
     panelContentArea.addChild(cost);
@@ -3056,12 +3463,13 @@ function drawTrainPage(x, y, w, h) {
       const dynamicGain = (100 - A[k]) * it.rate[k] * trainGainMul();
       return (ATTR_CN[k] || k) + '+' + dynamicGain.toFixed(1);
     }).join(' ');
-    const gainT = makeText('得到 ' + gain, { size: 11, color: '#2a7a3a' });
+    const gainT = makeText(maxed ? '再买也不涨了' : ('得到 ' + gain), { size: 11, color: maxed ? '#8a8278' : '#2a7a3a' });
     gainT.x = tx; gainT.y = cy + cardH * 0.42;
     panelContentArea.addChild(gainT);
     let riskStr = '代价 压力+' + it.pres + (it.kind === 'session' ? (' · 训练需' + it.duraMin + 'min') : '');
     if (it.need) { for (const k in it.need) { if (A[k] < it.need[k]) riskStr = '🔒 需' + (ATTR_CN[k] || k) + '≥' + it.need[k]; } }
-    const riskT = makeText(riskStr, { size: 11, color: '#a05a2a' });
+    if (maxed) riskStr = '已练到头 · 买过 ' + trainBoughtCount(it.key) + '/' + it.cap + ' 次';
+    const riskT = makeText(riskStr, { size: 11, color: maxed ? '#8a8278' : '#a05a2a' });
     riskT.x = tx; riskT.y = cy + cardH * 0.66;
     panelContentArea.addChild(riskT);
   }
@@ -3086,13 +3494,13 @@ function drawPublishPage(x, y, w, h) {
   const fmtLeft = () => { const d = Math.floor(P.remainH / 24), rem = P.remainH - d * 24, hh = Math.floor(rem), mm = Math.floor((rem - hh) * 60); return d + '天' + ('' + hh).padStart(2, '0') + ':' + ('' + mm).padStart(2, '0'); };
 
   const bar = P.active
-    ? ('发布中 · ' + (P.strategy === 'bench' ? '对标' : '跑分') + ' · ' + P.model + ' · 剩余 ' + fmtLeft() + (P.strategy === 'bench' ? ' · 信誉增长 −20%' : ''))
+    ? ('发布中 · ' + (P.strategy === 'bench' ? '对标' : '跑分') + ' · ' + P.model + ' · 剩余 ' + fmtLeft() + (P.strategy === 'bench' ? ' · 标榜已锁定 · 信誉增长 −20%' : ''))
     : ('未发布 · 能力 ' + cap.toFixed(1) + (P.lastCap != null ? ('（比上次发布 ' + (cap - P.lastCap >= 0 ? '+' : '') + (cap - P.lastCap).toFixed(1) + '）') : ''));
   txt(bar, { size: 15, color: P.active ? '#7a4a22' : '#5a4632', weight: 'bold' }, x + 20, y + 14);
   if (publishMsg) txt(publishMsg, { size: 12, color: publishMsgOk ? '#2a7a3a' : '#c05a2a' }, x + 20, y + 40);
 
   const topY = y + 66;
-  if (P.active) { txt('发布进行中，到期后可再次发布。', { size: 13, color: '#8a7a68' }, x + 20, topY); return; }
+  if (P.active) { txt(P.strategy === 'bench' ? '发布进行中，标榜已锁定（到期前不可改标榜 / 下架），到期后可再次发布。' : '发布进行中，到期后可再次发布。', { size: 13, color: '#8a7a68' }, x + 20, topY); return; }
 
   if (publishPhase === 'overview') {
     txt('当前能力', { size: 13, color: '#8a7a68' }, x + 20, topY);
@@ -3277,7 +3685,7 @@ const BOARD_COLS = [
   ['截止', 0.49, (m) => effectiveCutoff(m)],   // 编辑器改「知识」后这里跟着变
   ['上下文', 0.57, (m) => (m.c >= 1000 ? (m.c / 1000).toFixed(2).replace(/\.?0+$/, '') + 'M' : m.c + 'k')],
   // 游戏内自洽的 tokens/s(速度属性 × 3),不是外部榜单的实测值
-  ['tokens/s', 0.66, (m) => Math.round(m.ts)],   // AA 实测输出速度(与编辑器速度属性×3 一致)
+  ['tokens/s', 0.66, (m) => fmt2(m.ts)],   // AA 实测输出速度(与编辑器速度属性×3 一致);最多两位小数
   ['价$', 0.77, (m) => blendPrice(m)],
   ['cap',  0.89, (m) => String(Math.round(effectiveCap(m) * 10) / 10)],
 ];
@@ -3943,12 +4351,13 @@ let backendDetailOpen = false; // 「数据详情」弹层
 // 后台「数据详情」的说明文案:信誉 / 用户量 各是什么、怎么涨怎么跌。
 // 和模型页 ATTR_DESC 同一套口语风格,玩家扫一眼就懂。
 const BACKEND_DETAIL_ROWS = [
-  ['信誉', '影响用户续约与新增概率;过低会难涨用户', '↑ 每 10 游戏时:有效相似≥80 结算上升(>100% 只小幅升) · ↓ 有效相似<80 越低越狠 · ↓ 服务中断每小时 -1'],
-  ['用户量', '当前在站付费用户;直接决定 token 消耗与刀乐收入', '↑ 定价≤官价 80% 时按概率新增 · ↑ 到期时定价≤官价 110% 会续约 · ↑ 人归零且已标榜时,每时约 35% 概率回来 1~2 个尝鲜用户 · ↓ 到期未续约就离开'],
-  ['有效相似', '属性距离相似度 × 能力倍率(我的cap/标榜cap,^0.4 软化);可 >100', '↑ 能力溢出标榜模型(高配低标/「灰测」感)会把倍率拉高 · ↓ 弱很多却标强模型 → 倍率压到 0.4 → 信誉崩'],
-  ['能力倍率', '(我的cap/标榜cap)^0.4,范围约 0.4~1.5;乘进有效相似', '比值 1→1.0  2→约1.32  0.5→约0.76;属性只有 80% 但能力强一倍 → 有效相似约 106%,用户当「变强了」而信任'],
+  ['信誉', '影响用户续约与新增概率;过低会难涨用户', '↑ 每 10 游戏时:有效相似≥80 结算上升(>100% 只小幅升) · ↓ 有效相似<80 越低越狠(标「最接近模型」或 70~79 会减缓) · ↓ 服务中断每小时 -1 · ↓ 行业负面新闻(信誉<10 时减半) · 信誉下限 0,无隐藏负债'],
+  ['用户量', '当前在站付费用户;直接决定 token 消耗与刀乐收入', '↑ 定价≤官价 80% 时按概率新增 · ↑ 到期时按信誉概率续约(定价超官价 1.1 后续约概率衰减:1.3×→70%、1.5×→40%、保底 25%) · ↑ 人归零且已标榜时,每时约 35% 概率回来 1~2 个尝鲜用户 · ↓ 到期未续约就离开'],
+  ['有效相似', '基础属性相似度 × 能力倍率;可 >100,强模型可击破属性不足', '↑ 能力溢出标榜模型(高配低标/「灰测」感)拉高倍率 → 击破 80 线 · ↓ 弱很多却标强模型 → 倍率压到 0.4 → 信誉崩 · 展示格式:基础X% × 能力Y× = 有效相似Z%'],
+  ['能力倍率', '(我的cap/标榜cap)^0.5,下限 0.4,无固定 ×1.5 封顶', '比值 1→1.00  2→约1.41  4→约2.00;足够强就能把基础相似度乘过 80 —— 不再被 1.5 卡死。显示:基础X% × 能力Y× = 有效相似Z%'],
   ['用户时长', '每个用户在站存活 2~6 游戏时(信誉越高上限越高,+信誉/50)', '到期离开或续约;游戏 1 分 = 现实 1 分钟,2~6 时即 2~6 分钟'],
   ['服务中断', 'tokens 库存见底时无法供给,收入归零', '↑ 库存回满自动恢复 · ↓ 中断期间每满 1 游戏时信誉 -1'],
+  ['定价区间', '硬带:标榜模型官方参考价 ×0.5 ~ ×1.5', '↑ 便宜→抽量/新增更友好 · ↓ 超官价×0.8 后单用户用量线性下降(0.8×→100%、1.1×→70%、1.5×→35%) · ↓ 超官价×1.0 增长停止、超×1.1 续约概率衰减(保底 25%) · 人均收入在 ×0.8~×1.1 最优,但每 token 收入随卖价上升 → 供给紧时可试高价,只是留客难 · 弱标榜(有效相似<80)再按 sim/80 折成交,下限 0.5'],
 ];
 
 function drawBackendPage(x, y, w, h) {
@@ -3966,7 +4375,9 @@ function drawBackendPage(x, y, w, h) {
 
   const clockStr = gameClockFull();
   const rateStr = (listed && R.price > 0)
-    ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef * R.price / 1e6) + ' /秒'
+    ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef
+        * relayUsageMul(R.price, officialPriceOf(listed)) * R.price
+        * relaySellPayMul(listed, R.price, officialPriceOf(listed)) / 1e6) + ' /秒'
     : '未标榜';
 
   // ===== 资源条(6 格) =====
@@ -4011,15 +4422,34 @@ function drawBackendPage(x, y, w, h) {
       const sv = similarityTo(R.ability, simM);
       const tag = (backendSelIdx >= 0 && listed && simM.n !== listed.n) ? '(选中)'
         : (listed && simM.n === listed.n) ? '(标榜)' : '';
+      // 标榜资格门槛(2026-10-04):选型阶段就标出来,别等点了按钮才被拦
+      const gateOK = sv >= RELAY_BIZ.LIST_SIM_MIN;
       st = makeText('有效相似 ' + sv.toFixed(0) + '% ' + tag + '  ·  ' + simM.n
-        + '  ·  属性' + raw.toFixed(0) + '% × 能力' + mul.toFixed(2) + '×',
-        { size: 12, color: (sv >= 80 || sv > 100) ? '#2a7a3a' : '#c05a2a', weight: 'bold' });
+        + '  ·  基础' + raw.toFixed(0) + '% × 能力' + mul.toFixed(2) + '× = ' + sv.toFixed(0) + '%'
+        + '  ·  标榜门槛 ' + RELAY_BIZ.LIST_SIM_MIN + '% ' + (gateOK ? '✓可标' : '✗不可标'),
+        { size: 12, color: !gateOK ? '#c05a2a' : ((sv >= 80 || sv > 100) ? '#2a7a3a' : '#8a6a2a'), weight: 'bold' });
     } else {
       st = makeText('未标榜 · 点下方列表选一个模型', { size: 12, color: '#b0a294' });
     }
     st.x = x + padX; st.y = barY + barH + 4;
     panelContentArea.addChild(st);
     backendLive.sim = st;
+    // 最接近模型建议:信誉卡 0 常因标错对象 —— 直接给出「该标谁」
+    const cl = closestModel(R.ability);
+    if (cl.model) {
+      const clEff = similarityTo(R.ability, cl.model);
+      const isCl = listed && cl.model.n === listed.n;
+      const tip = isCl
+        ? ('已标最接近模型 · ' + simBreakdown(R.ability, cl.model).text + '(≥80 才涨信誉)')
+        : ('建议标榜:' + cl.model.n + ' · ' + simBreakdown(R.ability, cl.model).text
+          + '  当前标 ' + (listed ? listed.n + ' ' + simBreakdown(R.ability, listed).text : '无'));
+      const tipT = makeText(tip, {
+        size: 11,
+        color: isCl ? (clEff >= 80 ? '#2a7a3a' : '#8a6a2a') : '#5a6a8a',
+      });
+      tipT.x = x + padX; tipT.y = barY + barH + 20;
+      panelContentArea.addChild(tipT);
+    }
   }
 
   // ===== 标榜信息 / 定价 =====
@@ -4028,20 +4458,36 @@ function drawBackendPage(x, y, w, h) {
     const official = officialPriceOf(listed);
     const baseP = blendPriceNum(listed);
     const mulNow = official / Math.max(baseP, 0.0001);
-    const rawL = rawSimilarityTo(R.ability, listed);
-    const mulL = capMulTo(R.ability, listed);
     const simL = similarityTo(R.ability, listed);
+    // 价格两条线(2026-10-04):CHEAP_LINE/RENEW_LINE 原本只活在常量里,UI 完全不可见 ——
+    // 玩家定 1.2× 官价只看到「在价格带内」,实际增长已停、续约已停。现在把门槛值和当前状态直接画出来。
+    // 续约状态(2026-10-05 减层):超续约线不再是「已停」,而是概率衰减(relayRenewMul)。
+    const growLine = official * RELAY_BIZ.CHEAP_LINE, renewLine = official * RELAY_BIZ.RENEW_LINE;
+    const gw = relayGrowWeight(R.price, official);
+    const rMul = relayRenewMul(R.price, official);
+    const growTxt = gw >= 0.999 ? ' · 增长中'
+      : gw > 0 ? ' · 增长减弱 ' + Math.round(gw * 100) + '%'
+      : ' · ✗增长已停(不进新用户)';
+    const renewTxt = rMul >= 0.999 ? ' · 续约中'
+      : ' · 续约衰减 ' + Math.round(rMul * 100) + '%';
+    // 用量状态(2026-10-04):定价对单用户消耗的压制,与增长/续约线并排展示,保持三线全可见
+    const um = relayUsageMul(R.price, official);
+    const usageTxt = um >= 0.999 ? ' · 用量满速'
+      : ' · 用量 ' + Math.round(um * 100) + '%(高价省着用)';
     const lines = [
       '当前标榜:' + listed.n + ' 模型  (' + listed.v + ' · ' + listed.t + ' · cap ' + listed.cap + ')',
       null, // 价格行单独画(可能带划线)
-      '我的定价:$' + R.price + ' /M  ·  你的速度属性 ' + R.ability.speed + ' → 每用户 ' + R.ability.speed + ' tok/s',
-      '有效相似 ' + simL.toFixed(0) + '%  =  属性' + rawL.toFixed(0) + '% × 能力' + mulL.toFixed(2)
-        + '×  (我的 cap ' + modelCapability(R.ability).toFixed(1) + ' / 标榜 ' + listed.cap + ')'
-        + (simL >= 80 || simL > 100 ? '  → 偏涨' : '  → 会被发现掺水'),
+      '速度属性 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tokens/s  ·  定价 $' + fmt2(R.price) + ' /M',
+      simBreakdown(R.ability, listed).text
+        + '  (我的 cap ' + modelCapability(R.ability).toFixed(1) + ' / 标榜 ' + listed.cap + ')'
+        + (simL >= 80 || simL > 100 ? '  → 偏涨' : '  → 会被发现掺水')
+        + '  · 标榜门槛 ' + RELAY_BIZ.LIST_SIM_MIN + '%',
+      '增长线 ≤$' + fmt2(growLine) + growTxt
+        + '   续约线 ≤$' + fmt2(renewLine) + renewTxt
+        + usageTxt,
     ];
-    if (R.serviceDown) lines.push('⚠ 库存见底 · 服务中断中(每小时信誉 -1)');
-    lines.forEach((s, i) => {
-      if (s === null) {
+    if (R.serviceDown) lines.push('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)');
+    lines.forEach((s, i) => {      if (s === null) {
         // 价格:原价划线 + 现价(降绿/涨红)
         const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
         const lab = makeText('官方参考价 $', { size: 13, color: '#4a3c2c' });
@@ -4074,44 +4520,108 @@ function drawBackendPage(x, y, w, h) {
         return;
       }
       const isSimLine = i === 3;
-      const t = makeText(s, {
-        size: 13,
-        color: isSimLine ? ((simL >= 80 || simL > 100) ? '#2a7a3a' : '#c05a2a')
-          : (i >= 4 ? '#c05a2a' : '#4a3c2c'),
-        weight: isSimLine ? 'bold' : 'normal',
-      });
+        const t = makeText(s, {
+          size: 13,
+          color: isSimLine ? ((simL >= 80 || simL > 100) ? '#2a7a3a' : '#c05a2a')
+            : (i >= 5 ? '#c05a2a' : '#4a3c2c'),
+          weight: isSimLine ? 'bold' : 'normal',
+        });
       t.x = x + padX; t.y = infoY + i * 22;
       panelContentArea.addChild(t);
     });
+    // 瓶颈提示(2026-10-05):「卡产能还是卡客流」+ 库存可支撑时长,实时行(0.25s 节流刷新)。
+    // 占据警告行下方的槽位;relayBottleneckInfo 为 null(没在卖/没客)时不画、不占位。
+    const bnInfo = relayBottleneckInfo();
+    if (bnInfo) {
+      const bt = makeText(bnInfo.text, { size: 12, color: bnInfo.color, weight: 'bold' });
+      bt.x = x + padX;
+      bt.y = infoY + (R.serviceDown ? 6 : 5) * 22;
+      panelContentArea.addChild(bt);
+      backendLive.bottleneck = bt;
+    }
   } else {
-    const t = makeText('尚未标榜 · 在下方列表点选模型,设好价格后点「标榜上架」', { size: 13, color: '#8a7a68' });
+    // P1-9:未标榜不再等于「不能卖」—— 不选模型直接定价就是自研开卖(§5.4)
+    const t = makeText('尚未标榜 · 直接定价 = 自研开卖(上限 $' + fmt2(RELAY_BIZ.SELF_PRICE_MAX) + '/M · 客流少 · 不结算信誉)',
+      { size: 12, color: '#8a7a68' });
     t.x = x + padX; t.y = infoY;
     panelContentArea.addChild(t);
   }
 
   // 价格输入(DOM,叠画布)—— 布局末尾统一显隐
-  const priceY = infoY + (listed ? 22 * (R.serviceDown ? 5 : 4) : 22) + 8;
+  // 瓶颈提示行占位与警告行互斥相加:5 行固定 + 警告(serviceDown) + 瓶颈(有内容时),各占 22
+  const priceY = infoY
+    + (listed ? 22 * (5 + (R.serviceDown ? 1 : 0) + (backendLive.bottleneck ? 1 : 0)) : 22) + 8;
   const priceLabel = makeText('定价($/M):', { size: 13, color: '#4a3c2c' });
   priceLabel.x = x + padX; priceLabel.y = priceY + 4;
   panelContentArea.addChild(priceLabel);
 
+  // 价格区间提示:必须放在 DOM 输入框(width 88 @ left=padX+96)右侧,
+  // 否则会被 input 盖住中段,只剩两头露出来(2026-09-12 用户截图坑)
+  {
+    let bandM = null;
+    if (backendSelIdx >= 0) bandM = REAL_MODELS[backendSelIdx];
+    else if (listed) bandM = listed;
+    if (bandM) {
+      const offB = officialPriceOf(bandM);
+      const band = relayPriceBand(offB);
+      const hint = isFinite(band.max)
+        ? ('官价×' + RELAY_BIZ.PRICE_MIN + '~×' + RELAY_BIZ.PRICE_MAX + ' · $'
+          + fmt2(band.min) + ' ~ $' + fmt2(band.max)
+          + ' · 增长≤$' + fmt2(offB * RELAY_BIZ.CHEAP_LINE) + ' 续约衰减> $' + fmt2(offB * RELAY_BIZ.RENEW_LINE))
+        : '';
+      const ht = makeText(hint, { size: 11, color: '#8a7a68' });
+      // input: left = x+padX+96, width 88 → 文字从 +196 起,避免叠在框下
+      ht.x = x + padX + 96 + 88 + 12;
+      ht.y = priceY + 6;
+      panelContentArea.addChild(ht);
+    } else {
+      // P1-9 自研:没有官价参照,只有一条硬上限
+      const ht = makeText('自研上限 $' + fmt2(RELAY_BIZ.SELF_PRICE_MAX) + '/M', { size: 11, color: '#8a7a68' });
+      ht.x = x + padX + 96 + 88 + 12;
+      ht.y = priceY + 6;
+      panelContentArea.addChild(ht);
+    }
+  }
+
   // 标榜上架 / 下架 按钮
   const btnY = priceY;
   const btnW = 100, btnH = 30;
+  // P1-10:对标锁定期 → 两个按钮变灰并拦下操作(§19.2 的「5 天锁定」原本没实现,这里补上)
+  const lockedNow = publishLocked();
+  // 标榜资格门槛(2026-10-04):有效相似 < LIST_SIM_MIN 不许标榜该模型(价格带上限跟着标榜官价走,
+  // 全库官价差 400 倍 → 不设门槛 = 标 $40 模型白拿 $60/M 卖价,trustMul 5 折根本拦不住)
+  const gateM = (backendSelIdx >= 0) ? REAL_MODELS[backendSelIdx] : listed;
+  const gateSim = gateM ? similarityTo(R.ability, gateM) : Infinity;
+  const gated = !lockedNow && !!gateM && gateSim < RELAY_BIZ.LIST_SIM_MIN;
   const listBtn = new PIXI.Graphics();
   listBtn.lineStyle(1, 0xc4b8a8, 0.9);
-  listBtn.beginFill(0xd4a574, 1);
+  listBtn.beginFill(lockedNow ? 0xbfb4a4 : (gated ? 0xc9c0b2 : 0xd4a574), 1);
   listBtn.drawRoundedRect(x + w - padX - btnW, btnY, btnW, btnH, 6);
   listBtn.endFill();
   listBtn.eventMode = 'static';
-  listBtn.cursor = 'pointer';
+  listBtn.cursor = (lockedNow || gated) ? 'not-allowed' : 'pointer';
   listBtn.hitArea = new PIXI.Rectangle(x + w - padX - btnW, btnY, btnW, btnH);
   listBtn.on('pointerdown', () => {
     if (backendEditingPrice) return;
+    if (publishLocked()) { flashBackendHint('对标锁定期内不可改标榜 · 剩余 ' + publishLockRemainText()); return; }
+    if (gated) { flashBackendHint('有效相似 ' + gateSim.toFixed(0) + '% < 门槛 ' + RELAY_BIZ.LIST_SIM_MIN + '% · 能力差距过大,用户不会买账 · 不可标榜 ' + gateM.n); return; }
     const p = parseFloat(backendPriceDom().inp.value);
     if (!isFinite(p) || p <= 0) { flashBackendHint('请输入大于 0 的价格'); return; }
-    if (!listed && backendSelIdx < 0) { flashBackendHint('请先在列表里选一个模型'); return; }
-    R.price = Math.round(p * 100) / 100;
+    // 硬价格带:标榜/选中模型 = 官价 × 0.5~1.5;自研(P1-9,未选模型且未标榜)= 上限 $0.5/M
+    const bandM = (backendSelIdx >= 0) ? REAL_MODELS[backendSelIdx] : listed;
+    let price = Math.round(p * 100) / 100;
+    if (bandM) {
+      const off = officialPriceOf(bandM);
+      const band = relayPriceBand(off);
+      if (price < band.min || price > band.max) {
+        price = clampRelayPrice(price, off);
+        flashBackendHint('价格已调到官价×' + RELAY_BIZ.PRICE_MIN + '~×' + RELAY_BIZ.PRICE_MAX + ' 区间:$' + fmt2(price));
+      }
+    } else if (price > RELAY_BIZ.SELF_PRICE_MAX) {
+      price = RELAY_BIZ.SELF_PRICE_MAX;
+      flashBackendHint('自研(不标榜)价格上限 $' + fmt2(RELAY_BIZ.SELF_PRICE_MAX) + '/M · 已调到上限');
+    }
+    R.price = price;
     if (backendSelIdx >= 0) {
       R.listedModel = REAL_MODELS[backendSelIdx].n;
     }
@@ -4119,7 +4629,7 @@ function drawBackendPage(x, y, w, h) {
     layoutScreenPanel();
   });
   panelContentArea.addChild(listBtn);
-  const listBtnT = makeText(listed ? '更新标榜' : '标榜上架', { size: 13, color: '#3a2f22', weight: 'bold', anchor: 0.5 });
+  const listBtnT = makeText(lockedNow ? '对标锁定中' : (gated ? '相似不足' : (listed ? '更新标榜' : (backendSelIdx >= 0 ? '标榜上架' : '自研开卖'))), { size: 13, color: (lockedNow || gated) ? '#8a7a68' : '#3a2f22', weight: 'bold', anchor: 0.5 });
   listBtnT.x = x + w - padX - btnW / 2; listBtnT.y = btnY + btnH / 2;
   panelContentArea.addChild(listBtnT);
 
@@ -4128,14 +4638,15 @@ function drawBackendPage(x, y, w, h) {
     const delX = x + w - padX - btnW - 8 - delW;
     const del = new PIXI.Graphics();
     del.lineStyle(1, 0xc4b8a8, 0.9);
-    del.beginFill(0xe8e0d4, 1);
+    del.beginFill(lockedNow ? 0xd8d0c6 : 0xe8e0d4, 1);
     del.drawRoundedRect(delX, btnY, delW, btnH, 6);
     del.endFill();
     del.eventMode = 'static';
-    del.cursor = 'pointer';
+    del.cursor = lockedNow ? 'not-allowed' : 'pointer';
     del.hitArea = new PIXI.Rectangle(delX, btnY, delW, btnH);
     del.on('pointerdown', () => {
       if (backendEditingPrice) return;
+      if (publishLocked()) { flashBackendHint('对标锁定期内不可下架 · 剩余 ' + publishLockRemainText()); return; }
       R.listedModel = null;
       R.price = 0;
       R.serviceDown = false;
@@ -4190,7 +4701,7 @@ function drawBackendPage(x, y, w, h) {
       ['cap ' + (Math.round(effectiveCap(m) * 10) / 10), 0.52, '#4a3c2c'],
       ['官 $' + (officialPriceOf(m) >= 10 ? officialPriceOf(m).toFixed(0) : officialPriceOf(m).toFixed(1)), 0.64, '#4a3c2c'],
     ];
-    if (showSim) parts.push(['相似 ' + rowSim.toFixed(0) + '%(×' + rowMul.toFixed(2) + ')', 0.74, simCol]);
+    if (showSim) parts.push([rowRaw.toFixed(0) + '%×' + rowMul.toFixed(2) + '=' + rowSim.toFixed(0) + '%', 0.74, simCol]);
     if (isCur) parts.push(['● 标榜中', 0.90, '#2a7a3a']);
     for (const [s, fx, c] of parts) {
       const t = makeText(s, { size: 12, color: c, weight: (isSel || isCur || showSim) ? 'bold' : 'normal' });
@@ -4868,23 +5379,50 @@ function initBGM() {
     BGM.tracks[k] = a;
   }
 }
+function bgmStopFade(a) {
+  if (a && a.__fadeTimer) { clearInterval(a.__fadeTimer); a.__fadeTimer = null; }
+}
 function bgmFade(a, target, done) {
   if (!a) { if (done) done(); return; }
+  bgmStopFade(a); // 同轨只保留一条 fade,避免旧 interval 把音量抬回去
   const start = a.volume, steps = 10, step = (target - start) / steps;
   let i = 0;
   const t = setInterval(() => {
     i++; a.volume = Math.max(0, Math.min(1, start + step * i));
-    if (i >= steps) { a.volume = target; clearInterval(t); if (done) done(); }
+    if (i >= steps) {
+      a.volume = target;
+      if (a.__fadeTimer === t) a.__fadeTimer = null;
+      clearInterval(t);
+      if (done) done();
+    }
   }, 30);
+  a.__fadeTimer = t;
 }
 function currentBgmKey() { return tuneSceneOpen ? 'bgm_tune' : (relaySceneOpen ? 'bgm_relay' : 'bgm_basement'); }
 function setBGM(key) {
   initBGM();
   if (BGM.cur === key || !BGM.tracks[key]) return;
   const from = BGM.cur ? BGM.tracks[BGM.cur] : null;
-  if (from) bgmFade(from, 0, () => { try { from.pause(); } catch (e) {} });
+  if (from) {
+    if (musicVolume <= 0) {
+      bgmStopFade(from);
+      from.volume = 0;
+      try { from.pause(); } catch (e) {}
+    } else {
+      bgmFade(from, 0, () => { try { from.pause(); } catch (e) {} });
+    }
+  }
   BGM.cur = key;
   if (!BGM.started) return; // 手势前只记目标,不播
+  if (musicVolume <= 0) {
+    const muted = BGM.tracks[key];
+    if (muted) {
+      bgmStopFade(muted);
+      muted.volume = 0;
+      try { muted.pause(); } catch (e) {}
+    }
+    return;
+  }
   const to = BGM.tracks[key];
   try { to.play().catch(() => {}); } catch (e) {}
   bgmFade(to, musicVolume);
@@ -4896,13 +5434,28 @@ function startBGMOnGesture() {
   const key = currentBgmKey();
   BGM.cur = key;
   const a = BGM.tracks[key];
-  if (a) { try { a.play().then(() => bgmFade(a, musicVolume)).catch(() => {}); } catch (e) {} }
+  if (!a) return;
+  if (musicVolume <= 0) { a.volume = 0; try { a.pause(); } catch (e) {} return; }
+  try { a.play().then(() => bgmFade(a, musicVolume)).catch(() => {}); } catch (e) {}
 }
-// 设置面板「音乐音量」滑条调用:改全局音量并即时作用到正在播的轨
+// 设置面板「音乐音量」滑条:改全局音量。
+// ⚠️ 必须①取消所有进行中的 fade(否则场景切换的交叉淡入会把 0 又抬回旧目标)②写到全部轨
+// ③音量 0 时直接 pause —— 只改 cur.volume 且不杀 fade,会出现「拉到 0 还有一点声」。
 function setBgmVolume(v) {
-  musicVolume = v;
-  const a = BGM.cur && BGM.tracks[BGM.cur];
-  if (a) a.volume = v;
+  musicVolume = Math.max(0, Math.min(1, v));
+  for (const k in BGM.tracks) {
+    const a = BGM.tracks[k];
+    bgmStopFade(a);
+    a.volume = musicVolume;
+  }
+  if (musicVolume <= 0) {
+    for (const k in BGM.tracks) {
+      try { BGM.tracks[k].pause(); } catch (e) {}
+    }
+  } else if (BGM.started && BGM.cur && BGM.tracks[BGM.cur]) {
+    const a = BGM.tracks[BGM.cur];
+    if (a.paused) { try { a.play().catch(() => {}); } catch (e) {} }
+  }
   saveSettingsSoon();
 }
 // 音量/设置改动防抖落盘(拖动每帧都触发,别每帧写 localStorage)
@@ -5404,12 +5957,18 @@ function gameProjectedGain(k, count) {
 function gameTallyLabel(k) {
   const n = gameState.tally[k] || 0;
   const g = gameProjectedGain(k, n);
-  return (ATTR_CN[k] || k) + (k === gameState.mode.primary ? '(主)' : '') + '  ' + n + '  (+' + g.toFixed(1) + ')';
+  // 2026-10-06:属性列改到棋盘下方横排(2 列),标签必须压短到 ~10 字 —— 原来 "(主)  12  (+1.5)" 的双空格格式会撑爆半屏宽。
+  return (ATTR_CN[k] || k) + (k === gameState.mode.primary ? '★' : '') + ' ' + n + ' +' + g.toFixed(1);
+}
+// 资源行文案:构建时与每步刷新时共用同一份,避免两处格式各写一份而不同步。
+// 2026-10-06 由「三行/竖排」压成单行 —— 横屏 375px 高,顶部没有第二行的位置(见 buildTuneGameLayer 注释)。
+function trainResLine() {
+  return '算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
+    ' · token ' + formatNum(state.tokens) + ' · 每步 -' + formatNum(gameMoveTokenCost());
 }
 function gameRefreshHud() {
   if (tuneGameMovesText) tuneGameMovesText.text = '剩余 ' + gameState.moves + ' 步';
-  if (tuneGameResText) tuneGameResText.text = '算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
-    '   ·   token ' + formatNum(state.tokens) + '   ·   每步消耗 -' + formatNum(gameMoveTokenCost()) + ' token';
+  if (tuneGameResText) tuneGameResText.text = trainResLine();
   if (tuneGameTallyTexts) for (let i = 0; i < tuneGameTallyTexts.length; i++) {
     const k = gameState.mode.colors[i];
     tuneGameTallyTexts[i].text = gameTallyLabel(k);
@@ -5453,17 +6012,28 @@ function buildTuneGameLayer() {
   bg.on('pointerdown', (e) => e.stopPropagation());
   layer.addChild(bg);
 
-  // 标题/资源行下移,避开左上角设置按钮(14,14,48,48)
-  const title = makeText('强化训练 · ' + mode.name, { size: 22, color: '#ffe9c4', weight: 'bold' });
-  title.x = 24; title.y = 92; layer.addChild(title);
-  tuneGameResText = makeText('算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
-    '   ·   token ' + formatNum(state.tokens) + '   ·   每步消耗 -' + formatNum(gameMoveTokenCost()) + ' token',
-    { size: 16, color: '#ffd98a', weight: 'bold' });
-  tuneGameResText.x = 24; tuneGameResText.y = 124; layer.addChild(tuneGameResText);
+  // 标题/资源行:避开左上角设置按钮(14,14,48,48 → 底 62)。
+  //   2026-10-06 压成紧凑两行 —— 手机横屏(667x375)高只有 375px,顶部每省 1px 都是棋盘的 1px,原 92/124 白占 34px。
+  // 标题 + 资源挤在**同一行**:横屏 375px 高时,两行会顶到棋盘外框(by-10),而下方无空间可挪。
+  const title = makeText('强化训练 · ' + mode.name, { size: 20, color: '#ffe9c4', weight: 'bold' });
+  title.x = 20; title.y = 68; layer.addChild(title);
+  tuneGameResText = makeText(trainResLine(), { size: 14, color: '#ffd98a', weight: 'bold' });
+  tuneGameResText.x = title.x + title.width + 18; tuneGameResText.y = 74; layer.addChild(tuneGameResText);
 
-  const cell = Math.max(28, Math.min((w * 0.6) / GAME_CFG.COLS, (h * 0.56) / GAME_CFG.ROWS));
+  // ===== 2026-10-06 布局定案(横屏优先):棋盘在左 + 属性区在右(2 列) + 结算按钮在属性区下方,整体水平居中 =====
+  // ⚠️ 方向修正(重要):最初按「手机竖屏 375x667」把棋盘选成「窄而高」的 9x13 是错的 ——
+  //   游戏用 updateOrientationGate() 强制触屏设备横屏(isTouchDevice && isPortraitViewport),
+  //   竖屏只会看到「请横屏游玩」遮罩。真实手机场景是 667x375 / 844x390,高只有 375~390px,棋盘必须「宽而扁」。
+  // ⚠️ 底部标签栏(layoutNavTabs: y = h-42-14)派生于 tuneScene 之后,会盖住落在 h-56 以下的东西,须留 14px 净空。
+  // 依据 sim/tune_landscape.js(每形状 1200 局):6 色候选里 14x9 无解率最低(4.9%),格/色 21.0(与竖屏 9x13 的 19.5 同量级)。
+  const LM = 20, GAP = 26, TOP = 112, NAV_H = 56, CLEAR = 14, ROW_H = 24, SBH = 46;
+  const listW = Math.min(300, w * 0.42);
+  const availW = w - LM * 2 - listW - GAP, availH = h - TOP - NAV_H - CLEAR;
+  // cell 上限 56:桌面 1440x980 算得出 76.7,不封顶会铺满整屏、方块大得发傻。
+  const cell = Math.max(14, Math.min(availW / GAME_CFG.COLS, availH / GAME_CFG.ROWS, 56));
   const bw2 = cell * GAME_CFG.COLS, bh2 = cell * GAME_CFG.ROWS;
-  const bx = (w - bw2) / 2, by = h * 0.5 - bh2 / 2 + 44;
+  const bx = Math.max(LM, (w - (bw2 + GAP + listW)) / 2);
+  const by = TOP + Math.max(0, (availH - bh2) / 2);
   tuneGameGeo = { cell, bx, by };
   const board = new PIXI.Graphics();
   board.lineStyle(2, 0xd4a574, 0.9); board.beginFill(0x2a1f16, 0.6);
@@ -5485,22 +6055,26 @@ function buildTuneGameLayer() {
   tuneGameFx = new PIXI.Container(); tuneGameFx.eventMode = 'none'; layer.addChild(tuneGameFx);
   for (let r = 0; r < GAME_CFG.ROWS; r++) for (let c = 0; c < GAME_CFG.COLS; c++) gameTileSet(r, c, gameState.board[r][c], false);
 
-  const rx = bx + bw2 + 30;
-  tuneGameMovesText = makeText('剩余 ' + gameState.moves + ' 步', { size: 18, color: '#ffe9c4', weight: 'bold' });
-  tuneGameMovesText.x = rx; tuneGameMovesText.y = by; layer.addChild(tuneGameMovesText);
-  const tHead = makeText('消几个 → 涨哪维(括号=预计属性+)', { size: 13, color: '#d4c4a8' });
-  tHead.x = rx; tHead.y = by + 30; layer.addChild(tHead);
-  let iy = by + 58;
+  // 属性区放在棋盘右侧(2 列 x 3 行) —— 横屏是「宽而矮」,竖排 6 行/放下方都会顶到屏幕底;右侧是唯一有富余的方向。
+  tuneGameMovesText = makeText('剩余 ' + gameState.moves + ' 步', { size: 18, color: '#ffe9c4', weight: 'bold', anchor: 1 });
+  tuneGameMovesText.x = w - 20; tuneGameMovesText.y = 68; layer.addChild(tuneGameMovesText);
+
+  const listX = bx + bw2 + GAP, colW = listW / 2;
+  const tHead = makeText('色块 = 维度 · 数字 = 已消块数 · +N = 预计属性增量', { size: 12, color: '#e8dcc2' });
+  tHead.x = listX; tHead.y = by; layer.addChild(tHead);
+  const listY0 = by + 20;
+  const listRows = Math.ceil(mode.colors.length / 2);
   tuneGameTallyTexts = [];
   for (let i = 0; i < mode.colors.length; i++) {
     const k = mode.colors[i];
-    const sw = new PIXI.Graphics(); sw.beginFill(GAME_TILE_HEX[i], 0.95); sw.drawRoundedRect(rx, iy, 16, 16, 3); sw.endFill(); layer.addChild(sw);
+    const cx = listX + (i % 2) * colW, cy = listY0 + Math.floor(i / 2) * ROW_H;
+    const sw = new PIXI.Graphics(); sw.beginFill(GAME_TILE_HEX[i], 0.95); sw.drawRoundedRect(cx, cy + 2, 14, 14, 3); sw.endFill(); layer.addChild(sw);
     const tl = makeText(gameTallyLabel(k), { size: 14, color: '#ffe9c4' });
-    tl.x = rx + 24; tl.y = iy; layer.addChild(tl);
+    tl.x = cx + 22; tl.y = cy; layer.addChild(tl);
     tuneGameTallyTexts.push(tl);
-    iy += 30;
   }
-  const sbw = 180, sbh = 46, sbx = rx, sby = iy + 12;
+  const sbw = Math.min(200, listW), sbh = SBH, sbx = listX;
+  const sby = Math.min(listY0 + listRows * ROW_H + 14, h - NAV_H - CLEAR - SBH);
   const sg = new PIXI.Graphics();
   sg.lineStyle(2, 0xd4a574, 0.95); sg.beginFill(gameState.over ? 0x3a9a6a : 0xc4853a, 0.95);
   sg.drawRoundedRect(sbx, sby, sbw, sbh, 10); sg.endFill();
@@ -6055,7 +6629,11 @@ const state = {
   },
   relay: {
     // 中转站:模型养成 + 经营 v1。属性见 中转站设计.md §2;经营见 §14(拍板 §14.10)。
-    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    // ⚠️ 拟合初值 = 70 = 最优点(CAP_FIT_OPT),fitMul = 1.00。2026-10-03 从 10 改来:
+    // 旧值 10 会被 fitMul 罚掉约 29% 能力,而当时 fit 没有任何提升途径(9 件道具 / 强化训练 4 色都不含 fit)
+    // → 玩家被系统性压制且无法自救。真实模型 fit 全在 70~79(§3.1 设计属性第 8 位),只有玩家是异类。
+    // 将来实装「伪装/过拟合 payoff」(§16.8)时,再把初值调回 10~25 并补「↑fit 对齐」「↓fit 退烧」两件道具。
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 70, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,   // 标榜的真实模型名(未上架 = null)
     price: 0,            // 自定售价(刀乐 / 百万 tokens)
     pool: 'standard',    // 号池档位(v1 占位)
@@ -6145,6 +6723,10 @@ function loadGame() {
     if (data.relay && typeof data.relay === 'object') {
       Object.assign(state.relay, data.relay);
       Object.assign(state.relay.ability, data.relay.ability || {});
+      // 拟合初值迁移(2026-10-03):旧默认 fit=10 会被 fitMul 罚掉约 29% 能力,而当时无任何提升途径。
+      // 当前版本没有任何代码能修改玩家 fit(道具/强化训练/编辑器都不碰它),所以 fit===10 只可能来自旧默认值,
+      // 不会误伤玩家操作 —— 将来补了 fit 道具后删掉本段迁移。
+      if (state.relay.ability.fit === 10) state.relay.ability.fit = 70;
       // 经营 v1 迁移:老存档(无 dollars)的 reputation=50 是旧稿初值,按 §14 重置
       if (data.relay.dollars === undefined) {
         state.relay.reputation = 1;
@@ -6193,6 +6775,10 @@ function loadGame() {
     if (typeof state.relay.train.pressure !== 'number') state.relay.train.pressure = 0;
     if (state.relay.train.examStartH == null) state.relay.train.examStartH = null;
     if (typeof state.relay.train.examStage !== 'number') state.relay.train.examStage = 0;
+    // 道具涨价/上限账本(2026-10-05):老存档缺 bought/priceCount → 补空表(老玩家视为「一次都没买过」)
+    if (!state.relay.train.bought || typeof state.relay.train.bought !== 'object') state.relay.train.bought = {};
+    if (!state.relay.train.priceCount || typeof state.relay.train.priceCount !== 'object') state.relay.train.priceCount = {};
+    if (typeof state.relay.train.priceDecayAnchorH !== 'number') state.relay.train.priceDecayAnchorH = null;
     // 发布:老存档无 publish 字段 → 补默认
     if (!state.relay.publish || typeof state.relay.publish !== 'object') {
       state.relay.publish = { active: false, strategy: null, model: null, remainH: 0, totalH: 0, lastCap: null };
@@ -6204,6 +6790,21 @@ function loadGame() {
     }
     refreshRelayPanel(); // 属性可能变了,刷新雷达图/最接近模型
     recalcProduction();
+    // 离线收益(帧 dt 坑修复的配套):用存档里的 savedAt 时间戳补 tokens。
+    // 只补生产 —— 中转站出售/信誉/调教都不补(见 applyOfflineEarnings 注释)。
+    if (typeof data.savedAt === 'number') {
+      const offS = (Date.now() - data.savedAt) / 1000;
+      const gained = applyOfflineEarnings(offS);
+      if (gained > 0) {
+        // 此刻 layoutAll 还没跑,延迟一点再飘字(否则可能飘在未布局的画布上)
+        setTimeout(() => {
+          try {
+            spawnFloatText('欢迎回来 · 离线 +' + formatNum(gained) + ' tok', app.screen.width / 2, app.screen.height * 0.3);
+            updateTokenDisplay();
+          } catch (e) { /* 启动早期失败就算了,收益已进 tokens */ }
+        }, 700);
+      }
+    }
     recalcClickPower();
     recalcCrit();
     return true;
@@ -6223,7 +6824,8 @@ function resetGame() {
   state.scripts.miracle = false;
   state.relay = {
     // 中转站:模型养成 + 经营 v1。设计文档 §2 / §14。
-    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 10, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    // 拟合初值 70(对齐默认 state;2026-10-03 从 10 改来,原因见 state 定义处)
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 70, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,
     price: 0,
     pool: 'standard',
@@ -6297,14 +6899,55 @@ updateOrientationGate();
 window.addEventListener('resize', updateOrientationGate);
 window.addEventListener('orientationchange', () => { setTimeout(updateOrientationGate, 300); });
 
+// ==================== 时间与离线收益(修「帧 dt」技术坑,2026-10-03) ====================
+// 旧写法 dt = min((now - lastFrameTime)/1000, 0.5) 有两个问题:
+//  ① 切标签/最小化时 rAF 暂停,回来只补 0.5s → 那段现实时间凭空消失(时钟、生产、调教全丢);
+//  ② 关掉游戏再打开没有任何离线收益(放置游戏的本分)。
+// 现在:短间隔走「欠时池」逐帧补足(每帧最多 0.5s,动画不跳、时间不丢);
+// 长间隔(≥ OFFLINE_GAP_S)判定为离线 → **只补 tokens**,不逐帧模拟中转站/调教。
+const OFFLINE_GAP_S = 120;    // 超过 120s 没跑帧 → 按离线结算
+const OFFLINE_CAP_H = 8;      // 离线收益上限(小时)
+const OFFLINE_EFF = 0.5;      // 离线效率(半速):鼓励在线经营,也给挂机一个保底
+const TIME_DEBT_MAX_S = 120;  // 欠时池上限(= 离线阈值,保证阈值以下的时间一秒不丢)
+const FRAME_CATCHUP_S = 0.5;  // 单帧最多补多少秒(与老版本同值,动画手感不变)
+let timeDebt = 0;             // 欠时池:切走/卡顿欠下的现实秒数,逐帧还
+
+// 离线结算:只给 tokens(生产),**不**推进中转站出售/信誉/调教 AP ——
+// 避免「关掉游戏回来信誉暴涨」这类时间旅行刷法;离线期本来也没有中断/流失/新闻模拟,
+// 不给才自洽。倒流(系统时间往回调)由 Math.max(0, …) 挡掉。
+function applyOfflineEarnings(seconds) {
+  const s = Math.max(0, Math.min(seconds, OFFLINE_CAP_H * 3600));
+  if (s < 30) return 0;                       // 太短不算(顺手挡住反复刷新刷收益)
+  const rate = state.tokensPerSecond || 0;
+  if (rate <= 0) return 0;
+  const gained = rate * s * OFFLINE_EFF;
+  state.tokens += gained;
+  return gained;
+}
+
 // ==================== 主循环 ====================
 let secondAccum = 0;
 let lastFrameTime = performance.now();
 
 app.ticker.add(() => {
   const now = performance.now();
-  const dt = Math.min((now - lastFrameTime) / 1000, 0.5);
+  const realDt = (now - lastFrameTime) / 1000;
   lastFrameTime = now;
+  let dt;
+  if (realDt >= OFFLINE_GAP_S) {
+    // 离线:只结算 tokens(不逐帧跑模拟;离线期间中转站/调教的时间不补)
+    const gained = applyOfflineEarnings(realDt);
+    if (gained > 0) {
+      spawnFloatText('欢迎回来 · 离线 +' + formatNum(gained) + ' tok', app.screen.width / 2, app.screen.height * 0.3);
+      updateTokenDisplay();
+    }
+    timeDebt = 0;
+    dt = FRAME_CATCHUP_S;
+  } else {
+    timeDebt = Math.min(timeDebt + realDt, TIME_DEBT_MAX_S);
+    dt = Math.min(timeDebt, FRAME_CATCHUP_S);
+    timeDebt -= dt;
+  }
   updateTweens(dt);
   // 雷达图轴标签数字滚动(只在雷达开启动画的 0.45s 内有活,平时直接 return)
   radarTicker();
@@ -6418,6 +7061,10 @@ app.ticker.add(() => {
 // ==================== 启动（多重布局保险） ====================
 // 加载本地存档
 const hasSave = loadGame();
+// 离开页面 / 切后台前补一次存档:让 savedAt 尽量贴近真实离开时间(离线收益的计时基准;
+// 平时每 30s 自动存档,最坏情况也只差 30s)
+window.addEventListener('pagehide', () => { saveGame(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
 layoutAll();
 ensureWhaleCursor();
 ensureWhipAssets();
