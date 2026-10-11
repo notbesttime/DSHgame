@@ -1099,6 +1099,16 @@ const CAP_NORM = 1.25;         // 归一化:满配正好 100
 // 指令/工具/速度填剩余份额;合计 = 1.0。硬门槛同步软化:知识 0.35→0.18、多模态 0.30→0.20。
 const SIM_KEYS = ['reasoning', 'multimodal', 'params', 'longCtx', 'knowledge', 'instruct', 'toolCall', 'speed'];
 const SIM_W = { reasoning: 0.24, multimodal: 0.16, params: 0.13, longCtx: 0.11, knowledge: 0.09, instruct: 0.10, toolCall: 0.10, speed: 0.07 };
+// 「我比标榜对象强」的维度,距离按此系数折减(1 = 双向对称,即 2026-10-11 之前的行为)。
+// 2026-10-11 星光定稿:距离原本用 Math.abs() 双向对称 →「我强 2 倍」和「我弱 2 倍」扣一样多,
+// 于是「不像就主跌」实际罚的是**跨谱系标榜**,与强弱无关,与「能力溢出应被奖励」的设计意图相反。
+// 取值依据(扫描 K ∈ {1, 0.7, 0.5, 0.3, 0.15, 0}):
+//     高配低标误判主跌率  12% → 3%   (K=0.3)
+//     低配高标免罚率      9% → 10%   (几乎不动 ← 说明只修了「我更强」那一侧,精准)
+//     各档位最高可卖官价   全档位不变  (「练强了才能卖贵」这条线没被放水)
+//     跨谱系玩家 closestModel 推荐 78 分(自己都不及格)→ 93 分(可执行)
+// 取 0.3 而非 0:保留 30% ——「我更强但交付属性确实不同」仍算轻微差异,不是完全免费。
+const SIM_OVER_K = 0.3;
 const SIM_GATE_KNOWLEDGE = 0.18; // 知识截止落后 >3 月(原 0.35,过重)
 const SIM_GATE_MULTIMODAL = 0.20; // 多模态档位不够(原 0.30)
 const SIM_SAT = 1.0;           // 加权距离 ≥ 1.0 → 相似度 0
@@ -1284,7 +1294,8 @@ function closestModel(a) {
   for (const m of REAL_MODELS) {
     const ma = modelToAttrs(m);
     let d = 0;
-    for (const k of SIM_KEYS) d += SIM_W[k] * Math.abs((a[k] || 0) - (ma[k] || 0)) / 100;
+    // ⚠️ 与 rawSimilarityTo 内的循环保持逐字一致(方向折扣见 SIM_OVER_K 定义处),否则口径分叉。
+    for (const k of SIM_KEYS) { const df = (a[k] || 0) - (ma[k] || 0); d += SIM_W[k] * (df > 0 ? df * SIM_OVER_K : -df) / 100; }
     const mCut = monthsFromStr(m.k);
     if (cutoff < mCut - 3) d += SIM_GATE_KNOWLEDGE;
     if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
@@ -1449,11 +1460,15 @@ function findModelByName(n) {
 }
 // 对「某个指定模型」的属性相似度(逐维覆盖加权,0~100,不含能力倍率)。
 // SIM_KEYS 含参数;硬门槛已软化(知识0.18/多模态0.20)。SIM_SAT=1.0 距离满 1 才归零。
+// ⚠️ 2026-10-11 起距离**不再对称**:我比它强的维度按 SIM_OVER_K 折减,只有「我更弱」才全额扣。
+//    「相似」的语义因此是「我能不能兑现这个标榜」——只能我不如它,不能它不如我(见 SIM_OVER_K 定义处)。
 function rawSimilarityTo(a, m) {
   const ma = modelToAttrs(m);
   const cutoff = cutoffMonths(a.knowledge);
   let d = 0;
-  for (const k of SIM_KEYS) d += SIM_W[k] * Math.abs((a[k] || 0) - (ma[k] || 0)) / 100;
+  // 距离只算「我比它弱」的那一侧:我更强(df>0)的部分按 SIM_OVER_K 折减(取值依据见 SIM_OVER_K 定义处)。
+  // ⚠️ closestModel 里有一份**逐字相同**的循环,两处必须同步改,否则「最接近模型」与「有效相似」口径打架。
+  for (const k of SIM_KEYS) { const df = (a[k] || 0) - (ma[k] || 0); d += SIM_W[k] * (df > 0 ? df * SIM_OVER_K : -df) / 100; }
   if (cutoff < monthsFromStr(m.k) - 3) d += SIM_GATE_KNOWLEDGE;
   if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
   return Math.max(0, 100 * (1 - d / SIM_SAT));

@@ -44,12 +44,20 @@ function exC(n) {
   return SRC.slice(i, j + 1);
 }
 
+// SIM_OVER_K 支持 env 覆盖,用于「单向 vs 双向」前后对照:
+//     SIM_OVER_K=1 node sim/startup_loop.js   → 等价 2026-10-11 之前的双向实现
+//     node sim/startup_loop.js                → 当前源码里的值(0.3)
+// 之所以能这么对照:SIM_OVER_K=1 时 `df > 0 ? df * 1 : -df` 恒等于 Math.abs(df),即改动前的算法。
+let SIM_OVER_K_SRC = exC('SIM_OVER_K');
+if (process.env.SIM_OVER_K) SIM_OVER_K_SRC = SIM_OVER_K_SRC.replace(/=\s*[\d.]+/, '= ' + Number(process.env.SIM_OVER_K));
+
 const CODE = [
   exC('CTX_MAX_K'), exC('KNOW_M0'), exC('KNOW_M1'), exC('TOK_PER_SPEED_POINT'),
   exC('CAP_W'), exC('CAP_SPEED_W'), exC('CAP_CTX_W_LO'), exC('CAP_CTX_W_HI'),
   exC('CAP_MM_W_LOW'), exC('CAP_MM_W_MID'), exC('CAP_MM_W_HIGH'),
   exC('CAP_FIT_OPT'), exC('CAP_FIT_PENALTY'), exC('CAP_FIT_EXP'), exC('CAP_NORM'),
   exC('SIM_KEYS'), exC('SIM_W'), exC('SIM_SAT'), exC('SIM_GATE_KNOWLEDGE'), exC('SIM_GATE_MULTIMODAL'),
+  SIM_OVER_K_SRC,   // 2026-10-11 加:rawSimilarityTo/closestModel 的方向折扣系数(env 可覆盖,见上)
   exC('CAP_MUL_EXP'), exC('CAP_MUL_MIN'), exC('CAP_MUL_MAX'),
   exC('REAL_MODELS'),
   exC('RELAY_BIZ'), exC('PUBLISH_CFG'), exC('TRAIN_CFG'), exC('TRAIN_ITEMS'),
