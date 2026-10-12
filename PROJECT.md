@@ -25,13 +25,25 @@ DSHgame/
 │   ├── raw/                 原始素材(来源,不参与构建)。⚠️ 已加进 .gitignore,但其中 16 个文件
 │   │                        在早期被跟踪过、仍在版本库里(walk_video.mp4 等关键原始素材已入库)
 │   ├── compressed/          第一代压缩(png/jpg)。**build.py 已不引用**;仍是 recompress_assets.py 的输入
-│   └── compressed_webp/     ★ 第二代 WebP(build.py 引用的全部 19 张都在这里,含 tune_bg)
+│   ├── compressed_webp/     ★ 第二代 WebP:`build.py` 的 `ASSET_FILES` 引用其中 **26 张**(全部内联)
+│   │                        ⚠️ 目录里另有 1 张 `tune_desk_girl.webp` **未被引用**(历史遗留,可清)
+│   └── audio/               ★ 三首 BGM(AAC 64k `.m4a`,~2.9M)—— **只外链、绝不内联**(见「两种构建模式」)
+├── sim/                   ★ 仿真/标定脚手架(不参与构建;改数值前先在这里算,别靠手感)
+│   ├── startup_loop.js      起步期 30 天经济诊断(日表 + 汇总 + ⚖平账校验);
+│   │                        `module.exports = { makeSim, CODE, INIT }`,只在 `require.main===module` 时跑仿真 → 供其他测试复用沙箱
+│   ├── verify_gouge.js      层5「虚标成交折价」断言 20 项(秒级,不跑仿真)
+│   ├── verify_users.js      base/cap 两条人数约束断言 35 项(秒级)
+│   ├── tune_gouge_scan.js   虚标罚系数扫描(EXP 网格)   tune_users_scan.js  信誉→客流联合扫描(base×cap)
+│   ├── tune_board_scale/shape/scan.js、tune_coverage.js、tune_landscape.js  棋盘扩色与属性覆盖调参
+│   └── layout_check.js      各屏尺寸下「列车」棋盘布局是否溢出/压底栏
 ```
 
 ★ = 当前有效流水线 = 根目录这些脚本是活的:
-`build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`。
+`build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`,
+以及 `sim/` 下 11 个仿真脚本(1 个诊断 + 2 个断言 + 7 个调参 + 1 个布局检查)。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
+⚠️ `.gitignore` 有 `_*.js` 规则 —— **不要用 `_` 开头命名活脚本**(曾因此删掉过 `check_syntax.js`,见坑36)。
 
 > ⚠️ **`index_template.html` 里的 `REAL_MODELS` 是生成物,不要手改。**
 > 真实模型库的唯一数据源是《中转站设计.md》§3.1 的数据表(改文档就能离线调榜,不用进游戏)。
@@ -49,27 +61,120 @@ python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
 node server.js             # http://localhost:8765(根目录自动补 index.html,可直接预览 /dist/)
 ```
 
+**仿真 / 数值回归(改经济数值前后都要跑;`sim/` 不参与构建)**:
+
+```bash
+node sim/startup_loop.js         # 30 天经济诊断:诚实线 vs 跑分线 + ⚖平账校验 + 瓶颈链路
+node sim/verify_users.js         # base/cap 两条人数约束断言(秒级,改人数相关必跑)
+node sim/verify_gouge.js         # 层5 虚标折价断言(秒级,改价格/信誉层必跑)
+node sim/tune_users_scan.js      # 信誉→客流 参数联合扫描(base × cap,5 档)
+CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十几秒)
+```
+
+脚手架的环境变量开关(`startup_loop.js`,用来做「改动前后同源码对照」,**不用手抄旧值**):
+
+| 变量 | 作用 |
+|---|---|
+| `DAYS=30` | 仿真天数(调参可 `DAYS=15` 砍成本) |
+| `SUMMARY_ONLY=1` | 只打 `SUMMARY|` 一行 + 汇总块(扫描用) |
+| `LIST_POLICY=sim\|price` | `sim`=挑最像的(诚实线)/ `price`=挑收入最高(投机线)。**默认 `price`;读「诚实线」结论必须显式传 `sim`** |
+| `BASE_REP_DIV` / `BASE_MCAP_DIV` / `BASE_MCAP_FLOOR` | 覆盖 `relayBaseUsers` 三项(信誉项分母 / 能力项分母 / 能力门槛) |
+| `CAP_K` | 覆盖 `relayUserCap` 的 toolCall 系数(现 0.2) |
+| `SIM_OVER_K` / `REP_LOSS_MUL` / `TOK_START` / `TOK_MOVE` | 覆盖相似度折扣 / 跑分扣信誉 / 小游戏 token 成本 |
+
+⚠️ **这些覆盖块是 if 链,新增时务必逐个 env 单独传一次验证** —— 曾经写成
+`if (BASE_MCAP_DIV) { …BASE_REP_DIV… }`,于是**只传 `BASE_REP_DIV` 时整块跳过**、扫出「改了等于没改」的假结论(§20.12 5c)。
+
 **两种构建模式(2026-09-10 新增,共用同一份 `index_template.html` 与 `ASSET_FILES`)**：
 
 | | `python build.py` | `python build.py --dist` |
 |---|---|---|
 | 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
 | 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
-| 体积 | **1985KB**(整个文件) | 首访 **1622KB**;回访只需重下 100KB 的 index.html |
+| 体积(2026-10-12 实测) | **2527KB**(整个文件) | 首访 **4960KB** = HTML **352KB** + `pixi.<hash>.js` **445KB** + `assets/` **4232KB**;回访只需重下 **352KB** 的 index.html |
 | 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
 | 能否离线 | 能 | 不能(需要 http 服务) |
+
+> 体积构成(为什么单文件涨到 2.5M):图片仍全部内联;**3 首 BGM 走外链**(`assets/audio/*.m4a` 共 ~2.9M,绝不内联)
+> ⇒ **单文件「本体」不再完全自包含**,离线分发要连 `assets/audio/` 一起拷。
+> `--dist` 侧 `assets/` 的 4.2M 里约 2.9M 就是这三首音频,其余是 26 张 WebP。改素材后体积会变,**以当场测得为准**。
 
 改游戏永远只改 `index_template.html`;发布前记得跑 `--dist`,本地看效果跑 `python server.js` 后开 `/dist/`。
 
 ## 素材流水线
 
-- `build.py` 顶部 `ASSET_FILES` 字典是**资产唯一数据源**:新增素材加一行即可(旧版清单写两遍的坑已修)。
+- `build.py` 顶部的 `ASSET_FILES`(**图片**)与 `AUDIO_FILES`(**音频**)是**资产唯一数据源**:新增素材加一行即可
+  (旧版清单写两遍的坑已修)。2026-10-12 实为 **26 张 WebP + 3 首 m4a**。
 - 素材走 `recompress_assets.py` 转 WebP(PNG 按游戏内显示尺寸×2 出图,质量 85-88;大背景保持 1920 宽,质量 82-85)。
-- 18 个内联素材**已全部是 WebP**(2026-09-10 完成背景迁移,不再有 JPG)。
-- 修改 compressed/ 原图后必须重跑 recompress 才会影响构建。
+- **26 个内联素材已全部是 WebP**(2026-09-10 完成背景迁移,不再有 JPG);音频不走这条线,直接放 `assets/audio/`。
+- 修改 `compressed/` 原图后必须重跑 recompress 才会影响构建。
+- ⚠️ 新增纹理后**必须补 `texture.on('update')` 监听**,否则依赖纹理尺寸的布局会在未解码时算出 NaN 边界(见「已知事项」)。
 
-## 当前进度(2026-09-12)
+## 当前进度
 
+> **最新一轮:2026-10-12(§20.11 / §20.12)** —— 中转站经济的两条链都收口了:
+> **定价链**(虚标罚换锚 + 相似度闸 + 幂律)与**人数链**(客源/并发两旋钮一起松),
+> 30 天快照里**诚实线首次反超跑分线(1.15×)**。完整推导、扫描表与踩坑见《中转站设计.md》§20.5–§20.12。
+
+### 当前生效数值链(2026-10-12)
+
+> 这一节写的是「**现在代码里真的是多少**」,不是设计意图。改数值前先读这里,改完跑 `sim/verify_users.js` + `sim/verify_gouge.js`。
+
+**人数(客流)—— 两条腿,谁小谁说话:**
+
+| 量 | 公式 | 真实上限 |
+|---|---|---|
+| 客源基数 `relayBaseUsers` | `2 + floor(信誉/8) + floor(max(0, 能力分−20)/8)` | **24**(信誉硬顶 100→+12,能力分满 100→+10) |
+| 并发上限 `relayUserCap` | `floor(2 + toolCall × 0.2)` | **22**(toolCall 100) |
+
+- 门槛 20 ⇒ **开局 base 恒 2**(防早熟通胀);开局 `cap` 由 2 抬到 3,但 `min(base,cap)` 仍是 2 ⇒ **起步期数值完全不变**。
+- 稳态人数 ≈ `base × 增长概率 × 在网时长`,但发放处是 `add = min(add, cap − 在站自然用户)` —— **cap 满了 base 再大也一个不加**。
+- ⚠️ **改一个必须同时看另一个**:2026-10-12 之前 `cap` 上限只有 **12** < `base` 上限 24,
+  base 从 12 往上那半条(信誉项 + 能力项)**整条是死的** —— 当时只提信誉分辨率,诚实收益 `2.09 → 2.09` 一分不动。
+- ⚠️ 信誉是**硬顶 100**(`Math.min(100,…)`),算天花板必须用可达值(`信誉=200` 会算出一条游戏里到不了的假天花板)。
+- 自研模式(不标榜)不走 `relayBaseUsers`,用固定 `SELF_BASE_USERS = 1` ⇒ 与上面两旋钮无关。
+
+**定价 / 成交 —— `relaySellPayMul` 三层:**
+
+- 硬价格带:标榜模型官价 `×0.5 ~ ×1.5`(`PRICE_MIN/MAX`),每小时重钳一次(防新闻改官价后漂出带外)。
+- 增长线 ≤ 官价×0.8(以上按 `GROW_FALLOFF` 线性衰减到 0);续约线 ≤ 官价×1.1(以上概率衰减,保底 25%)。
+- 人均用量:`> 官价×0.8` 后 `relayUsageMul` 下探(高价 = 低留存 + 低单用户用量)。
+- **层5 虚标折价**(2026-10-12,§20.11):`相似度闸(SIM_GATE)` + 阈值 = **法定上限价** `fairPriceOf × 1.5` + 幂律 `(1/over)^GOUGE_PAY_EXP`,
+  `GOUGE_PAY_EXP: 1`。语义:**你标多贵,都只按「你实际值的法定上限价」成交**。
+  `GOUGE_PAY_K` 已不存在(改名为 `GOUGE_PAY_EXP`,`grep GOUGE_PAY_K` 应为空)。
+  ⚠️ `SIM_GATE` 属于 **`PUBLISH_CFG`**,不在 `RELAY_BIZ` —— 放错对象会取到 `undefined`,`x >= undefined` **恒为 false** ⇒
+  闸门静默失效、误伤照旧,而 `check_syntax.js` 与仿真**都不会报错**(只有单元断言抓得到)。
+- ⚠️ `sim ≥ 80` 属诚实线,**层5 故意豁免**(与 `relayRepSettle` 的 `<80` 分支对齐);高价由既有三层收费,不重复收费。
+
+**当前平衡快照**(`LIST_POLICY=sim`,30 游戏天,口径 = **刀乐 + 道具$**):
+
+| 线 | 毛$ | 用户 | 已卖 | token 平账 |
+|---|---|---|---|---|
+| 诚实线 | **3.03** | 14 | 11.72M | ✅ 残差 8e-6 |
+| 跑分线 | 2.64 | 1 | — | ✅ |
+| **诚实 ÷ 跑分** | **1.15 ✅ 首次反超** | | | |
+
+- ⚠️ 这只是 **D30 快照**,`DAYS=60/90` **尚未跑**(当前固定 30 天)。
+- ⚠️ **口径铁律**:`刀乐` 是**现金余额**,跑分线会把它砸进训练道具 ⇒ **收益必须算 `刀乐 + 道具$`**。
+  只用刀乐比会得出**完全相反**的结论(§20.11 一;上一轮「诚实反超」的假结论就是这么来的)。
+- 改动是**定向**的:投机线(`LIST_POLICY=price`)毛收益 `2.64 → 2.64`(**0.0%**)—— 它信誉恒 0 ⇒ 信誉项两版都是 0,不白捡流量。
+
+### 自检体系(2026-10-12 已搭好,改数值前后都跑)
+
+| 层 | 手段 | 抓什么 |
+|---|---|---|
+| 构建 | `node check_syntax.js` | 语法 / `ASSETS` key 拼错 / 素材缺失 |
+| 单元 | `sim/verify_users.js`(35 项)、`sim/verify_gouge.js`(20 项) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
+| 扫描 | `sim/tune_users_scan.js`、`sim/tune_gouge_scan.js` | 系数取值 + 「两旋钮一起扫」的交叉对照 |
+| 端到端 | `sim/startup_loop.js`(日表 + 汇总 + 平账) | 闭环走没走通、平没平账、瓶颈在哪条腿 |
+| 界面 | `local-ui-verify`(Edge + CDP,`uidiag.js`) | 真实产物渲染 / JS 异常 / **canvas 文案宽度** |
+
+⚠️ `verify_*.js` 的**除数/门槛/系数是从源码文本正则取的**,不手抄进测试 —— 这样"落进代码的值"与"扫描选出的值"
+对不上时会当场 FAIL。`verify_*.js` 复用 `startup_loop.js` 导出的 `makeSim` 沙箱,不再各抄一份抽取清单。
+
+---
+
+> 以下为 2026-09-12 起的既有内容(**未失效**,仍是当前实现):
 > 本轮还包含:全局鲸鱼光标、调教道具/鞭子、课桌落座、Q 版 idle、日报文案闭源修正等,细节见下「调教场景」与「社区日报」。
 
 ### 协作约定(用户)
@@ -350,6 +455,14 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 - 水冷:每 10-120s 骰一次,19% 得 tokens×20%。
 - 机箱:可拖拽抛掷,重力/反弹/墙碰撞;≥9 张 3080 换升级贴图。
 - 中转站标签:server>0 时显示。中转站时生产逻辑继续运行(token不暂停),但生产场景渲染元素隐藏以提升性能。
+- **中转站经济(速查,2026-10-12)**:
+  - 时间:1 现实秒 = 1 游戏分,24 现实分 = 1 游戏日;存档 30 秒自动落盘。
+  - 信誉:初始 1,**硬顶 100**;每 10 游戏时结算一次(按对**当前标榜模型**的有效相似度分档:>100 只升 / 80~100 双向 / <80 主跌且越低越狠);未上架不结算;断供每小时 −1。
+  - 用户:初始 2;每小时刷新 = ① 到期续约(概率吃信誉,封顶 95%)② 概率增长(基数 `relayBaseUsers`,**不看当前人数**,防复利)③ 兜底(人归零且已标榜有价 → 每时约 35% 送回 1~2 个尝鲜)。
+  - 收益:每秒刀乐 = `min(需求, 产出) × 定价 / 1e6`;需求 = `用户 × 速度 × 活跃系数 × 人均用量 × 成交折价`。
+  - 产能:RTX3080 5 tok/s + A100 50 tok/s;库存见底 → 服务中断(收入 0 且掉信誉)。
+  - 调教小游戏(主要成长引擎):每局烧 `TOKEN_START(3e4) + 14 × TOKEN_PER_MOVE(5e3) ≈ 0.1M` tok。
+  - 数值细节与公式推导见《中转站设计.md》§14 / §20.x;**改数值前先读 PROJECT.md「当前生效数值链」**。
 
 ## 代码导航(index_template.html 内的分节注释)
 
@@ -375,9 +488,29 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
   - 本地 `server.js` 把 `.m4a` 报成 `application/octet-stream`,`<audio>` 靠内容嗅探仍能播(实测 `canPlayType('audio/mp4;…mp4a.40.2')`=probably、时长可解码);VibeHub 若给正确 MIME 更稳,无需为此改 server.js。
   - 换轨是**交叉淡入淡出**(`bgmFade` 用 setInterval 改 volume),不是硬切;`closeTuneScene` 会先 `settleGame` 再切回上一首,别把这两步顺序写反。
 
+- **中转站人数:`relayBaseUsers`(客源)与 `relayUserCap`(并发)是一对耦合约束,改一个必须同时看另一个**。
+  发放处是 `add = min(add, cap − 在站自然用户)`,**谁小谁说话**。2026-10-12 前 `cap` 上限 12 < `base` 上限 24,
+  base 从 12 往上那半条整条是死的 —— 于是「只提信誉分辨率」实测收益一分不动,极易被误读成「信誉对客流没影响」。
+  ⇒ 改完**必须**跑 `node sim/verify_users.js`(35 项,秒级)与 `sim/tune_users_scan.js`(两旋钮交叉对照)。
+  信誉**硬顶 100**,算天花板别用 >100 的值(会得出游戏里到不了的假上限)。
+- **中转站「瓶颈提示」那一行是单行不换行绘制** —— 超了不折行、不报错、JS 也无异常,只会静静画出面板边界。
+  可用宽 = `(屏宽×0.88 − min(200, 屏宽×0.24)) × 0.92` → **1440 屏 982px / 768 屏 452px / 390 屏 230px**。
+  改文案前先量:用 `local-ui-verify` 的 `uidiag.js` 在页内 `canvas.measureText`(字体串必须与 `makeText` 的
+  `TextStyle` 逐字一致:`bold 12px "Microsoft YaHei", "PingFang SC", sans-serif`)。**底线是「不比原来更长」** ——
+  旧文案 339px、`卡产能` 行 367px(≤768 屏本来就装不下,属旧账)。实测宽度与算式已写进 `relayBottleneckInfo` 上方注释。
+- **中转站数值改动前后一律按这个顺序跑一遍**:`node check_syntax.js` →
+  `node sim/verify_users.js` + `node sim/verify_gouge.js` → `node sim/startup_loop.js`(看平账与瓶颈)→ `python build.py`。
+  `verify_*.js` 是**唯一**能抓住「闸门静默失效 / 恒 0 死项」的手段(语法检查与仿真都不会报)。
+
 ## 后续待办(用户规划)
 
 1. **中转站玩法设计**(用户亲自安排——等需求,勿抢先实现)
+   - 截至 2026-10-12 的进度:**经济数值已两轮收口**(§20.11 定价链 / §20.12 人数链),现在等星光下一轮的需求。
+   - 已知未动的三处(详见《中转站设计.md》§20.11 九、§20.12 八):
+     - `doPublish` **保价 UX 坑**(发布时把玩家定价覆盖掉的交互问题);
+     - **60/90 天长窗口验证未跑** —— 现有结论全部基于 `DAYS=30` 快照(命令 `DAYS=60 node sim/startup_loop.js`);
+     - **≤768 宽屏下中转站「瓶颈提示」整行溢出**(旧有状况:旧文案 339px、`卡产能` 行 367px 也都超;
+       要根治得把该行改成两行,并同步 `drawBackendPage` 里 `priceY` 的槽位算式)。
 2. 音频补全:BGM 已实装(三场景各一首、外置 AAC/.m4a),「音乐音量」滑条已接且已持久化(存进 `settings`)。**待办**:加音效(点击/购买等)并接「音效音量」滑条——目前该滑条已持久化但无消费方。
 3. ~~发布 VibeHub 前的适配~~ **已完成**:体积/缓存模型已落地(`--dist` 模式)、移动端适配已做(方案 A + `touch-action:none`)。
    剩下真正发布时的动作见「发布前检查清单」(字体子集化可选、封面截图待备)。
@@ -494,6 +627,40 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 
 
 ## 仓库状态与提交
+
+> 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
+
+### 2026-10-12 中转站经济两端收口(§20.11 定价链 + §20.12 人数链 · 已推送)
+- `f96f427` **信誉换客流:`base`/`cap` 双旋钮一起松 + 瓶颈提示分腿(§20.12)**
+  - `relayBaseUsers` 信誉分母 `25 → 8`(与能力项同分母);`relayUserCap` 系数 `0.1 → 0.2`(上限 22,与 base 上限 24 差 ≤2)。
+  - **真因**:改前 `cap` 上限 12 < `base` 上限 24 ⇒ `base` 从 12 往上那半条(信誉项 + 能力项)**整条是死的**;
+    只提信誉分辨率时诚实收益 `2.09 → 2.09`,一分不动。
+  - `relayBottleneckInfo` 的卡客流分支按 `baseU/capU` 分岔:「客源封顶 → 练属性/攒信誉」/「并发封顶 → 练工具调用」。
+  - 实测(30 天,`LIST_POLICY=sim`,毛收益 = 刀乐 + 道具$):诚实 `2.09 → 3.03`、用户 `7 → 14`、
+    **诚实÷跑分 `0.79 → 1.15`(首次反超)**;投机线 `2.64 → 2.64`(**0.0%**,定向改动不泄漏);
+    开局不变(`base` 2→2 / `cap` 2→3 / `min` 仍 2);token 平账残差 `8e-6`。
+  - 新增 `sim/verify_users.js`(35 断言)、`sim/tune_users_scan.js`;
+    `startup_loop.js` 修掉 `BASE_REP_DIV` 的 no-op(覆盖块只判了 `BASE_MCAP_DIV`)、新增 `CAP_K`、抽取 `relayBottleneckInfo`。
+- `a2ac1e9` **虚标罚三连修:换锚「能力相称价」+ 相似度闸 + 幂律(§20.11)**
+  - `relayGougePayMul` 重写:① `SIM_GATE` 相似度闸(修「高配低标」被误罚)② 阈值抬到**法定上限价** `fairPriceOf × 1.5`
+    (=「虚标」的精确定义,且不再对合法带上半段双重收费)③ 开方改**幂律**。
+  - 新增 `GOUGE_PAY_EXP: 1` 取代 `GOUGE_PAY_K`;`relayRepSettle` 阈值 `RENEW_LINE → PRICE_MAX`。
+  - ⚠️ **口径纠正**:`刀乐` 是现金余额、不是收益(跑分线会把它砸进道具)⇒ 一律用 **刀乐 + 道具$**;
+    上一轮用现金口径得出的「诚实反超」结论据此作废(EXP=0 时虚标真实差距是 **51 倍**,不是 5.5 倍)。
+  - 新增 `sim/verify_gouge.js`(20 断言)、`sim/tune_gouge_scan.js`;`startup_loop.js` 导出 `{ makeSim, CODE, INIT }` 供复用。
+
+### 2026-10-11 相似度与人数上限诊断(§20.9 / §20.10 · 已推送)
+- `cf5aecd` **D-1 强化:`base` 加「模型能力」项 + 信誉归零真因纠正**
+  > ⚠️ **这一笔实际打包了 §20.4–§20.8 的一整轮工作**,提交信息只写了 D-1,查东西别只按信息找:
+  - **棋盘扩盘(§20.6)**:7×7/4 色 → **14×9/6 色**(`toolCall` 死锁解除);属性列改到棋盘下方横排(2 列,标签压短防撑爆)。
+  - **token 墙下调(§20.7)**:`TOKEN_START 3e6→3e4`、`TOKEN_PER_MOVE 5e5→5e3` ⇒ 30 天可玩局数 **0 → 83(诚实)/108(跑分)**,
+    `relayUserCap` 由死锁的 **2** 抬到 **8/9**。
+  - **仿真脚手架首次入库(§20.4)**:`sim/startup_loop.js`、`sim/layout_check.js`、`sim/tune_board_scale/shape/scan.js`、`sim/tune_coverage.js`、`sim/tune_landscape.js`。
+  - `relayBaseUsers` 追加能力项 `floor(max(0, 能力分−20)/8)`(门槛 20 ⇒ 起步期数值不变);
+    信誉恒 0 的**真因** = 标榜对象与自身能力不像(相似 <80 走主跌),**不是**跑分扣信誉。
+  - 新增 `.gitignore` 条目(`.workbuddy/`、`_sim_out.txt`、`__pycache__/` 等)。
+- `aeefa36` **相似度单向化:「不像就主跌」罚错了方向** —— 引入 `SIM_OVER_K`;
+  `rawSimilarityTo` 对「超额交付」(有效相似 >100)不再重复惩罚。
 
 ### 2026-09-26 调教养成 v1 收口(本轮提交，含新素材首次入库)
 - **强化训练消消乐进调教场景**(非电脑面板):`GAME_CFG`/`startGame`/`settleGame`/`buildTuneGameLayer`，开局 3 算力 + token、**每步也扣 token 且随游玩天数涨价**(`gameTokenMul`);切场景**不自动结算**、回调教保持这局(防白耗算力)。修了棋盘多个渲染坑(贴图坐标 pivot/position、臃肿弹跳 `gtween`、消除后新块未刷新的空洞)。
