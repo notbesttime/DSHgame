@@ -70,6 +70,7 @@ const CODE = [
   exF('relayUsageMul'), exF('relayGrowWeight'), exF('relayTrustMul'), exF('relaySellPayMul'),
   exF('fairPriceOf'), exF('relayGougePayMul'),   // 2026-10-12:虚标折价的锚与层5,漏抽会 ReferenceError
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
+  exF('relayBottleneckInfo'),   // 2026-10-12 §20.12:瓶颈提示要能断言「说的哪条腿」,故一并抽取
   exF('findModelByName'), exF('relayListedModel'),
   exF('boardOrder'), exF('effectiveCap'), exF('boardRankOf'), exF('repCoef'),
   exF('publishPoolDraw'), exF('doPublish'), exF('publishTick'),
@@ -148,9 +149,11 @@ function makeSim(seed) {
   // D-1 强化(2026-10-11)：base 追加「模型能力」项。先在这里扫参数，定好再落进游戏代码。
   //   BASE_MCAP_DIV   = 能力项除数 ; BASE_MCAP_FLOOR = 能力扣除门槛(低于它不加成,防开局通胀)
   //   BASE_REP_DIV    = 信誉项除数(默认 25 = 现状)
-  if (process.env.BASE_MCAP_DIV) {
+  if (process.env.BASE_MCAP_DIV || process.env.BASE_REP_DIV) {
+    // ⚠️ 条件必须写 || 而不是只看 BASE_MCAP_DIV:只传 BASE_REP_DIV 时旧版会整块跳过,
+    //    于是"改了信誉除数"实际什么都没改 —— 会扫出一条"信誉无影响"的假结论。
     const rd = Number(process.env.BASE_REP_DIV || 25);
-    const md = Number(process.env.BASE_MCAP_DIV);
+    const md = Number(process.env.BASE_MCAP_DIV || 8);
     const fl = Number(process.env.BASE_MCAP_FLOOR || 20);
     sb.relayBaseUsers = function () {
       const R = sb.state.relay;
@@ -158,6 +161,13 @@ function makeSim(seed) {
       const mc = sb.modelCapability(R.ability);
       return 2 + Math.floor(rep / rd) + Math.floor(Math.max(0, mc - fl) / md);
     };
+  }
+  // CAP_K = relayUserCap 的 toolCall 系数(现 0.1)。§20.12:
+  //   ⚠️ 实测 D30 诚实线 base 9 > cap 8 ⇒ **base 一直被 cap 钳着**,单加基数毫无效果。
+  //     所以「信誉换客流」必须把 base 与 cap 两个旋钮**一起扫**,只扫一个必然得出错误结论(§5 的纪律)。
+  if (process.env.CAP_K) {
+    const ck = Number(process.env.CAP_K);
+    sb.relayUserCap = function () { return Math.floor(2 + (sb.state.relay.ability.toolCall || 0) * ck); };
   }
   if (process.env.REP_LOSS_MUL) {
     // ⚠️ RUN_REP_LOSS 属于 PUBLISH_CFG(别名 PC),不是 RELAY_BIZ —— 放错对象会 TypeError
