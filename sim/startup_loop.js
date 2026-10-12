@@ -68,6 +68,7 @@ const CODE = [
   exF('blendPriceNum'),
   exF('relayPriceBand'), exF('clampRelayPrice'),
   exF('relayUsageMul'), exF('relayGrowWeight'), exF('relayTrustMul'), exF('relaySellPayMul'),
+  exF('fairPriceOf'), exF('relayGougePayMul'),   // 2026-10-12:虚标折价的锚与层5,漏抽会 ReferenceError
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
   exF('findModelByName'), exF('relayListedModel'),
   exF('boardOrder'), exF('effectiveCap'), exF('boardRankOf'), exF('repCoef'),
@@ -96,6 +97,10 @@ const CODE = [
   'var state = null;',
   'var RB = RELAY_BIZ; var UB = updateRelayBusiness; var TM = REAL_MODELS; var TI = TRAIN_ITEMS;',
   'var PC = PUBLISH_CFG; var GC = GAME_CFG; var TCFG = TRAIN_CFG; var TMODES = TRAIN_MODES;',
+  // ⚠️ 顶层 const/let 不会挂到 vm 沙箱对象上(只有 var 与函数声明会)。
+  //    任何要在沙箱外读的常量(REAL_MODELS / SIM_KEYS / RELAY_BIZ …)都必须在这里起别名,
+  //    否则外面拿到的是 undefined —— require 本文件做单元验证的脚本尤其容易踩。
+  'var SKEYS = SIM_KEYS;',
 ].join('\n');
 
 const INIT = `
@@ -159,6 +164,14 @@ function makeSim(seed) {
     const k = Number(process.env.REP_LOSS_MUL);
     sb.PC.RUN_REP_LOSS = [sb.PC.RUN_REP_LOSS[0] * k, sb.PC.RUN_REP_LOSS[1] * k];
   }
+  // 虚标罚力度(2026-10-12)可用 env 覆盖,用于扫描「罚多重才既不误伤诚实、又能压住虚标」。
+  // 传 0 即关掉该层 —— 等价于「只有相似度维度的旧行为」,方便做前后对照。
+  // ⚠️ RB = RELAY_BIZ 是同一个对象引用,改 sb.RB.X 就等于改 RELAY_BIZ.X;但改完必须重新 runInContext(INIT)
+  //    让依赖它的闭包重新建立 —— 这里正好在 INIT 之前,顺序没问题。
+  if (process.env.GOUGE_REP_K !== undefined) sb.RB.GOUGE_REP_K = Number(process.env.GOUGE_REP_K);
+  // 2026-10-12:GOUGE_PAY_K(系数)已被 GOUGE_PAY_EXP(幂指数)取代 —— 见 index_template.html RELAY_BIZ 处推导。
+  // EXP=0.5 退化成旧开方式,便于与「换幂律前」的结论对照。
+  if (process.env.GOUGE_PAY_EXP !== undefined) sb.RB.GOUGE_PAY_EXP = Number(process.env.GOUGE_PAY_EXP);
   vm.runInContext(INIT, sb);
   return sb;
 }
@@ -166,7 +179,8 @@ function makeSim(seed) {
 const CLICKS_PER_SEC = 2;
 const FRAMES_PER_HOUR = 60 * 30;
 const DT = 1 / 30;
-const DAYS = 30;
+// DAYS 支持 env 覆盖:调参扫描时用 DAYS=15 把单跑成本砍半(默认 30 保持历史口径可比)。
+const DAYS = Number(process.env.DAYS) || 30;
 // SUMMARY_ONLY=1 → 只打「SUMMARY|…」一行 + 汇总块，供参数扫描用（不打 30 行日表）
 const SUMMARY_ONLY = !!process.env.SUMMARY_ONLY;
 // LIST_POLICY（2026-10-11）：标榜策略。默认 'price' = 挑「官价×相似度」期望收入最高的（= 现脚本原行为，
@@ -303,6 +317,11 @@ function run(opts) {
           cap: sb.modelCapability(R.ability),
           offic, gw: lm ? sb.relayGrowWeight(R.price, offic) : 0,
           mul: lm ? sb.relayUsageMul(R.price, offic) : 0,
+          // 虚标罚诊断列(2026-10-12):sim=标榜对象相似度, fair=能力相称价, gouge=层5 成交折扣。
+          // ⚠️ 只用来判断「诚实线是否被误伤」:诚实线价 = 官价×0.8 < 续约线 1.1 ⇒ gouge 应恒为 1.00。
+          sim: lm ? sb.similarityTo(R.ability, lm) : 0,
+          fair: sb.fairPriceOf(R.ability),
+          gouge: lm ? sb.relayGougePayMul(lm, R.price) : 1,
           organic: R.userSlots.filter(u => !u.surge).length,
           // 并发上限(2026-10-06 新增):board 加色把 toolCall 塞进免费通路后,
           // 「toolCall → relayUserCap」这条链路才第一次真的能动,必须显式量出来。
@@ -323,6 +342,8 @@ function report(label, r) {
   console.log('【' + label + '】');
   console.log('='.repeat(120));
   console.log('天 |  刀乐$ |  收入/时 | 用户 |  需求tok/h | 产能t/s | 考试M | 已卖M | 库存M | 机器 | 道具 | 调教 | 速/工/推/能力 | 上限/底数');
+  console.log('   尾部诊断: 官$=标榜对象官价 相$=能力相称价(fairPriceOf) 仿=与标榜对象的有效相似度'
+    + ' 增=增长权重 用量=单用户用量系数 虚折=层5虚标成交折扣(1.00=未触发) 自然=自然流量人数');
   for (const x of rows) {
     console.log(
       String(x.day).padStart(2) + ' | ' + ('$' + x.dollars.toFixed(2)).padStart(7)
@@ -338,7 +359,8 @@ function report(label, r) {
       + ' | ' + String(x.miniGames).padStart(4)
       + ' | ' + x.speed.toFixed(0) + '/' + x.toolCall.toFixed(0) + '/' + x.reason.toFixed(0) + '/' + x.cap.toFixed(1)
       + ' | ' + String(x.capU).padStart(3) + ' / ' + String(x.baseU) + ' 信' + x.rep.toFixed(1)
-      + ' 官$' + x.offic.toFixed(1) + ' 增' + x.gw.toFixed(2) + ' 用量' + x.mul.toFixed(2) + ' 自然' + x.organic
+      + ' 官$' + x.offic.toFixed(1) + ' 相$' + x.fair.toFixed(2) + ' 仿' + x.sim.toFixed(0)
+      + ' 增' + x.gw.toFixed(2) + ' 用量' + x.mul.toFixed(2) + ' 虚折' + x.gouge.toFixed(2) + ' 自然' + x.organic
       + ' ' + (x.users >= x.capU ? '⛔撞顶' : '')
     );
   }
@@ -384,7 +406,14 @@ function report(label, r) {
   console.log('   首次买得起道具：' + (r.firstAfford ? ('第 ' + r.firstAfford.day + ' 游戏天 · ' + r.firstAfford.name + ' $' + r.firstAfford.price) : '30 天内从未买得起任何道具'));
 }
 
-const honest = run({ seed: 20261006, publish: false });
-report('诚实线（完全不发布）', honest);
-const runner = run({ seed: 20261006, publish: true });
-report('跑分线（每冷却好就发 —— 摸到最优起步解）', runner);
+// 只在「被直接运行」时跑仿真。被 require 时导出沙箱工厂,给单元验证脚本复用 ——
+// ⚠️ 别在别的脚本里另抄一份「抽取清单」:2026-10-12 就因为手抄漏了 deriveModelAttrs 需要的字段,
+//    造出过一份「高配低标被罚 56%」的假结论(真实 12%)。沙箱只有这一份定义。
+if (require.main === module) {
+  const honest = run({ seed: 20261006, publish: false });
+  report('诚实线（完全不发布）', honest);
+  const runner = run({ seed: 20261006, publish: true });
+  report('跑分线（每冷却好就发 —— 摸到最优起步解）', runner);
+}
+
+module.exports = { makeSim, CODE, INIT };
