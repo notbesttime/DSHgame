@@ -6,7 +6,7 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,约2500行,含少量 CSS/HTML)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-13 实测 7292 行,含少量 CSS/HTML)
 ├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
@@ -91,7 +91,7 @@ CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十�
 |---|---|---|
 | 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
 | 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
-| 体积(2026-10-12 实测) | **2527KB**(整个文件) | 首访 **4960KB** = HTML **352KB** + `pixi.<hash>.js` **445KB** + `assets/` **4232KB**;回访只需重下 **352KB** 的 index.html |
+| 体积(2026-10-13 实测) | **2529KB**(整个文件) | 首访 **4963KB** = HTML **354KB** + `pixi.<hash>.js` **446KB** + `assets/` **4163KB**;回访只需重下 **354KB** 的 index.html |
 | 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
 | 能否离线 | 能 | 不能(需要 http 服务) |
 
@@ -490,6 +490,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 - 启动时序:base64 纹理异步解码,靠 7 个 `texture.on('update')`(bgLight/bgDark/charClosed/charOpen/pcCase/**relayBg/chairSprite**) + 前 60 帧 `layoutFixTicker` 兜底重排,不要删。**新增纹理必须加 update 监听**,否则 layoutRelayScene 等函数会在纹理未就绪时计算,除以0导致 NaN 边界(已踩过坑:中转站行走边界完全失效)。
   - `dist/` 模式下纹理是真·异步 URL 加载(时序比 base64 更晚),**已实测这套兜底仍然够用**(2026-09-10 真实浏览器验证 18 个素材全部就绪、纹理尺寸正确、布局一致)。但以后若新增依赖纹理尺寸的布局,dist 模式要再验一次。
 - layoutRelayScene 中有纹理未加载时的默认尺寸保护(rbgW=1672,rbgH=941),避免除以0。新增依赖纹理尺寸的布局函数时建议同样保护。
+- **WebGL 上下文兜底(2026-10-13)**:移动端切后台时系统可能强制回收 WebGL context(Pixi 自身有丢失/恢复处理:preventDefault + 纹理重传)。模板「启动」段补了玩家侧:丢失瞬间 `saveGame()` + 全屏 DOM 提示 `#ctxLostPrompt`(8 秒未恢复改提示刷新,进度已存),恢复后 `safeRelayout()` 强制重排。⚠️ 自带的 `e.preventDefault()` 不能删——不调则 `webglcontextrestored` 永远不触发;与 Pixi 的监听并存、幂等无冲突。
 - **构建自检用 `check_syntax.js`**(旧名 `_check_syntax.js` 已废弃——以 `_` 开头会被 `.gitignore` 的 `_*.js` 规则吃掉)。检查三件事:① 每个 `<script>` 块单独过语法;② 校验 `ASSETS.xxx` 引用的 key 都在 `build.py` 的 `ASSET_FILES` 中有定义(key 拼错时 `PIXI.Sprite.from(undefined)` 静默拿到空纹理、不报错,肉眼也看不出);③ `build.py` 登记的文件在磁盘上真的存在。改完模板/素材跑一次,退出码非 0 即有错。已实测能抓到"拼错 asset key"和"语法错"两类故障。
   ⚠️ **不要再把这个文件名写进 `.gitignore`**。2026-09-10 曾这么干过一次,结果它既进不了版本库、又被随后的清理脚本一起删掉,构建自检整个消失(见坑36)。
 - **BGM 音频的坑(2026-09-26)**:
@@ -497,6 +498,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
   - **浏览器自动播放限制**:页面加载后不会立刻有声,要等**首次用户手势**(`startBGMOnGesture` 挂在一次性 pointerdown/keydown 上)才起播。别在 `openTuneScene` 里期待 `setBGM` 马上出声——手势前 `setBGM` 只记目标轨、不播。
   - 本地 `server.js` 把 `.m4a` 报成 `application/octet-stream`,`<audio>` 靠内容嗅探仍能播(实测 `canPlayType('audio/mp4;…mp4a.40.2')`=probably、时长可解码);VibeHub 若给正确 MIME 更稳,无需为此改 server.js。
   - 换轨是**交叉淡入淡出**(`bgmFade` 用 setInterval 改 volume),不是硬切;`closeTuneScene` 会先 `settleGame` 再切回上一首,别把这两步顺序写反。
+  - **轨懒加载(2026-10-13)**:`initBGM` 不再启动即建满 3 首 Audio(原先全 preload='auto',首访一次性拉 2.9MB);建轨改走 `ensureBgmTrack(k)` 按需创建——init 只预载当前场景那一轨(默认地下室),`setBGM`/`startBGMOnGesture` 都是先 ensure 再取。只玩生产的玩家不再下载中转站/调教两首(省 ~1.8MB);首次切场景该轨现缓冲,由交叉淡入遮延迟。⚠️ 别把建轨逻辑搬回 `initBGM`(会退回全量预载)。
 
 - **中转站人数:`relayBaseUsers`(客源)与 `relayUserCap`(并发)是一对耦合约束,改一个必须同时看另一个**。
   发放处是 `add = min(add, cap − 在站自然用户)`,**谁小谁说话**。2026-10-12 前 `cap` 上限 12 < `base` 上限 24,
@@ -526,7 +528,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 2. 音频补全:BGM 已实装(三场景各一首、外置 AAC/.m4a),「音乐音量」滑条已接且已持久化(存进 `settings`)。**待办**:加音效(点击/购买等)并接「音效音量」滑条——目前该滑条已持久化但无消费方。
 3. ~~发布 VibeHub 前的适配~~ **已完成**:体积/缓存模型已落地(`--dist` 模式)、移动端适配已做(方案 A + `touch-action:none`)。
    剩下真正发布时的动作见「发布前检查清单」(字体子集化可选、封面截图待备)。
-4. 离线收益(存档已有 savedAt,用户说放到后面考虑)
+4. 离线收益:**tokens 离线补发已实现**(模板「离线收益」段,`loadGame` 按 savedAt 差补);剩余 = **中转站侧离线推进**(离线时刀乐/信誉/用户要不要结算、封顶怎么算)——用户说放到后面考虑
 
 ## VibeHub 发布(目标平台调研,2026-09-10)
 
@@ -641,6 +643,12 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 ## 仓库状态与提交
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
+
+### 2026-10-13 工程加固:WebGL 兜底 + BGM 懒加载 + 一次性脚本归档(本轮未提交)
+- **WebGL 上下文兜底**(模板「启动」段,`visibilitychange` 旁):丢失瞬间 `saveGame()` + 全屏 DOM 提示 `#ctxLostPrompt`(8s 未恢复改提示刷新)+ 恢复后 `safeRelayout()` 强制重排;Pixi 内部的丢失/恢复处理不变,两套监听并存、preventDefault 幂等。
+- **BGM 轨懒加载**:`initBGM` 不再启动即建满 3 首(原先全 preload='auto' = 首访拉 2.9MB),改 `ensureBgmTrack(k)` 按需建,init 只预载当前场景那一轨;只玩生产的玩家省 ~1.8MB。行为差异:首次切场景该轨现缓冲,由交叉淡入遮延迟。
+- **根目录一次性脚本归档**:17 个 `_` 前缀补丁脚本(引用扫描零命中)移入 `attic/`(gitignore 已加显式规则);`_aa_data.json` 被两份文档引用且已被 git 跟踪,保留原位。按坑36 流程:先列保留清单 → 移动(不删,可随时搬回)→ 重跑 build + check_syntax 均过。
+- 自测:`check_syntax` / `verify_users`(35)/ `verify_gouge`(20)全绿;`python build.py` 单文件 **2529KB**、`--dist` 首访 **4963KB**(HTML 354 + pixi 446 + assets 4163);`LIST_POLICY=sim DAYS=30` 诚实/跑分毛收益 **3.03/2.64**,与 §20.13 基线逐位一致(本轮未触经济数值)。
 
 ### 2026-10-12 晚 长窗口验证(§20.13 · 已推送)
 

@@ -5493,14 +5493,22 @@ function setProductionLayersVisible(v) {
 // ==================== 背景音乐(BGM):三场景各一首,循环,切换交叉淡入淡出 ====================
 // 浏览器自动播放策略:首次用户手势前不播;之后 setBGM 按场景切。地下室=默认,中转站=relay,调教=tune。
 const BGM = { tracks: {}, cur: null, started: false, inited: false };
-function initBGM() {
-  if (BGM.inited) return;
-  BGM.inited = true;
-  for (const k in AUDIO) {
+// 轨懒加载(2026-10-13):Audio 对象只在首次要用时创建。原先启动即建满 3 首
+// (全 preload='auto',首访一次性拉 2.9MB);现在只预载当前场景那一轨(默认地下室 ~1.1MB),
+// 中转站/调教两首(~1.8MB)首次切场景才建。后建轨初始 volume=0,由 setBGM/bgmFade 淡入到
+// musicVolume;音量滑条只遍历已建轨,行为不变。⚠️ 建轨一律走 ensureBgmTrack,别搬回 initBGM。
+function ensureBgmTrack(k) {
+  if (!BGM.tracks[k] && AUDIO[k]) {
     const a = new Audio(AUDIO[k]);
     a.loop = true; a.preload = 'auto'; a.volume = 0;
     BGM.tracks[k] = a;
   }
+  return BGM.tracks[k];
+}
+function initBGM() {
+  if (BGM.inited) return;
+  BGM.inited = true;
+  ensureBgmTrack(currentBgmKey()); // 只预载当前场景那一轨,其余按需
 }
 function bgmStopFade(a) {
   if (a && a.__fadeTimer) { clearInterval(a.__fadeTimer); a.__fadeTimer = null; }
@@ -5524,6 +5532,7 @@ function bgmFade(a, target, done) {
 function currentBgmKey() { return tuneSceneOpen ? 'bgm_tune' : (relaySceneOpen ? 'bgm_relay' : 'bgm_basement'); }
 function setBGM(key) {
   initBGM();
+  ensureBgmTrack(key); // 懒加载:先把目标轨建出来再判断;同轨重复调用是 no-op
   if (BGM.cur === key || !BGM.tracks[key]) return;
   const from = BGM.cur ? BGM.tracks[BGM.cur] : null;
   if (from) {
@@ -5556,7 +5565,7 @@ function startBGMOnGesture() {
   BGM.started = true;
   const key = currentBgmKey();
   BGM.cur = key;
-  const a = BGM.tracks[key];
+  const a = ensureBgmTrack(key); // 懒加载:手势到点才建当前场景那一轨
   if (!a) return;
   if (musicVolume <= 0) { a.volume = 0; try { a.pause(); } catch (e) {} return; }
   try { a.play().then(() => bgmFade(a, musicVolume)).catch(() => {}); } catch (e) {}
@@ -7188,6 +7197,30 @@ const hasSave = loadGame();
 // 平时每 30s 自动存档,最坏情况也只差 30s)
 window.addEventListener('pagehide', () => { saveGame(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+// WebGL 上下文兜底(2026-10-13):移动端切后台常被系统强制回收 context。Pixi 内部有丢失/恢复处理
+// (preventDefault + 纹理重传),这里补玩家侧三件事——丢失瞬间立刻存档 + 全屏 DOM 提示 + 恢复后
+// 强制重排一次防布局漂移;8 秒未恢复则提示刷新(进度已自动存)。⚠️ e.preventDefault() 不能删
+// (不调则 webglcontextrestored 永远不触发),与 Pixi 自带的监听并存、幂等无冲突。
+const ctxLostPrompt = document.createElement('div');
+ctxLostPrompt.id = 'ctxLostPrompt';
+ctxLostPrompt.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;display:none;'
+  + 'align-items:center;justify-content:center;background:rgba(13,11,8,.94);z-index:9999;'
+  + 'color:#ffd98a;font:bold 1rem "Microsoft YaHei","PingFang SC",sans-serif;letter-spacing:2px;text-align:center;padding:0 24px;';
+document.body.appendChild(ctxLostPrompt);
+let ctxLostTimer = null;
+app.view.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  saveGame();
+  ctxLostPrompt.textContent = '图形上下文已丢失,正在恢复…';
+  ctxLostPrompt.style.display = 'flex';
+  if (ctxLostTimer) clearTimeout(ctxLostTimer);
+  ctxLostTimer = setTimeout(() => { ctxLostPrompt.textContent = '恢复失败,请刷新页面(进度已自动保存)'; }, 8000);
+}, false);
+app.view.addEventListener('webglcontextrestored', () => {
+  if (ctxLostTimer) { clearTimeout(ctxLostTimer); ctxLostTimer = null; }
+  ctxLostPrompt.style.display = 'none';
+  safeRelayout();
+}, false);
 layoutAll();
 ensureWhaleCursor();
 ensureWhipAssets();
@@ -7201,7 +7234,7 @@ if (hasSave) {
   updateRelayTabVisibility();
 }
 
-// 背景音乐:预载三轨;浏览器自动播放策略要求首次用户手势后才起
+// 背景音乐:只预载当前场景那一轨(其余懒加载);浏览器自动播放策略要求首次用户手势后才起
 initBGM();
 (function armBGM() {
   const go = () => {

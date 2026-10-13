@@ -1,4 +1,4 @@
-﻿# 构建产物(index.html 可由 build.py 重新生成)
+# 构建产物(index.html 可由 build.py 重新生成)
 index.html
 dist/
 
@@ -11,6 +11,10 @@ Thumbs.db
 Desktop.ini
 __pycache__/
 *.pyc
+
+# 归档目录:根目录清理出的一次性补丁脚本挪这里(2026-10-13 起,只挪不删、可随时搬回;
+# _aa_data.json 因被 PROJECT.md/中转站设计.md 引用且已被 git 跟踪,保留在根目录)
+attic/
 
 # ⚠️ 不要把活脚本写进这里!
 # 2026-09-10 曾把 check_syntax.js 显式加到下边,结果它既进不了版本库、又被清理脚本一起删掉,
