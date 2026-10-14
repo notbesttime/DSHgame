@@ -166,7 +166,28 @@ console.log('\n[6] 瓶颈提示:卡客源 / 卡并发 的方向词与 base/cap �
   ok(`新文案不超旧文案宽度:${fw(bnA.text).toFixed(1)} ≤ ${fw(oldTxt).toFixed(1)} 全角当量`,
     fw(bnA.text) <= fw(oldTxt), bnA.text);
   ok('产能利用率三位数时也不超旧文案',
-    fw(bnA.text.replace(/产能只用 \d+%/, '产能只用 100%')) <= fw(oldTxt));
+    fw(bnA.text.replace(/产能 \d+%/, '产能 100%')) <= fw(oldTxt));
+
+  // 2026-10-13:瓶颈提示拆两行(390 屏也不溢出)。断言两行制成立,且**每行**都不比旧单行长。
+  ok('两行制:第二行存在且非空', typeof bnA.text2 === 'string' && bnA.text2.length > 0, String(bnA.text2));
+  ok(`第一行不超旧文案(${fw(bnA.text).toFixed(1)} ≤ ${fw(oldTxt).toFixed(1)})`,
+    fw(bnA.text) <= fw(oldTxt), bnA.text);
+  ok(`第二行不超旧文案(${fw(bnA.text2).toFixed(1)} ≤ ${fw(oldTxt).toFixed(1)})`,
+    fw(bnA.text2) <= fw(oldTxt), bnA.text2);
+  // 极端值(产能 100% + 信誉/能力双满 ⇒ 客源封顶(100≤100))也不许超:390 屏可用宽 230px ÷ 12px ≈ 19.2 全角当量
+  const hard = bnA.text.replace(/产能 \d+%/, '产能 100%').replace(/\(\d+≤\d+\)/, '(100≤100)');
+  ok(`极端值第一行 ≤390 屏可用宽(19.2 全角当量):${fw(hard).toFixed(1)}`,
+    fw(hard) <= 19.2, hard);
+  // 卡产能那一路同样两行制
+  sb.state.relay.price = sb.officialPriceOf(sb.TM[0]) * 0.8;
+  sb.state.tokensPerSecond = 0;                 // 产能 0 ⇒ 走 supply 分支
+  const bnSup = sb.relayBottleneckInfo();
+  ok('卡产能分支也是两行制', !!bnSup && typeof bnSup.text2 === 'string' && bnSup.text2.length > 0,
+    bnSup && bnSup.text2);
+  ok(`卡产能第一行不超旧文案(${fw(bnSup.text).toFixed(1)} ≤ ${fw(oldTxt).toFixed(1)})`,
+    fw(bnSup.text) <= fw(oldTxt), bnSup.text);
+  ok(`卡产能第二行不超旧文案(${fw(bnSup.text2).toFixed(1)} ≤ ${fw(oldTxt).toFixed(1)})`,
+    fw(bnSup.text2) <= fw(oldTxt), bnSup.text2);
 }
 
 console.log('\n' + '─'.repeat(60));

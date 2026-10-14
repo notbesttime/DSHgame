@@ -33,11 +33,11 @@ def parse(txt):
             parts = line.split('|')
             d = {}
             for p in parts[2:]:
-                # \u503c\u53ef\u80fd\u5e26 $ \u524d\u7f00(\u5982 \u5203\u4e50$0.03),\u5148\u5254\u6389\u975e\u6570\u5b57\u518d\u8f6c
-                m = re.match(r'^(\u5203\u4e50|\u9053\u5177\$|\u5c40\u6570|\u5df2\u5356M|\u4fe1\u8a89)(.+)$', p)
+                # 值可能带 $ 前缀(如 刀乐$0.03),先剔掉非数字再转
+                m = re.match(r'^(刀乐|道具\$|局数|已卖M|信誉)(.+)$', p)
                 if m:
                     try:
-                        d[m.group(1)] = float(m.group(2).replace('$', '').replace('\u5934', ''))
+                        d[m.group(1)] = float(m.group(2).replace('$', ''))
                     except ValueError:
                         pass
             rows[parts[1]] = d

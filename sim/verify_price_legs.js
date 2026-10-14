@@ -279,6 +279,51 @@ console.log('\n[8] C4 作用面:不动标价 / 不进层4、层5');
     near(sb.relayGougePayMul(m, R.price), gBefore), gBefore + ' vs ' + sb.relayGougePayMul(m, R.price));
 }
 
+// ── [8b] doPublish 保价提示(§20.11 九 遗留 2;纯提示,不改数值) ─────────────
+console.log('\n[8b] doPublish:换标榜后把「定价 vs 新官价」的后果说出来');
+{
+  const st = sb.state, R = st.relay;
+  const P = R.publish;
+  const setup = (priceMulOfTarget, listedBefore) => {
+    // 先按一个**别的**模型定价(模拟「玩家按旧标的定过价」),再发布一个新标的
+    const target = sb.TM[0];
+    const off = sb.officialPriceOf(target);
+    R.listedModel = listedBefore;
+    R.price = off * priceMulOfTarget;          // 相对**新标的**官价的比例
+    R.reputation = 0;
+    st.tokens = 1e9;
+    R.ability.speed = 10; R.activeCoef = 1; R.users = 2; R.userSlots = [{ leftH: 9 }, { leftH: 9 }];
+    P.active = false;
+    return { target, off };
+  };
+
+  // ① 极价(≥ GROW_NEG_RATIO)⇒ 提示必须出现,且含「净流失」与建议上限
+  const a = setup(RB.PRICE_MAX, sb.TM[0].n);
+  const r1 = sb.doPublish('run', a.target.n);
+  ok('doPublish 返回 ok + msg', !!r1 && r1.ok === true && typeof r1.msg === 'string', JSON.stringify(r1));
+  ok('极价(1.5× 官价 = 上限)时 msg 含「净流失」警告', r1.msg.includes('净流失'), r1.msg);
+  ok('警告里给出了目标上限(CHEAP_LINE)', r1.msg.includes(String(RB.CHEAP_LINE)), r1.msg);
+
+  // ② 便宜价(≤ CHEAP_LINE)⇒ 不该出现流失警告
+  P.active = false;
+  const b = setup(RB.CHEAP_LINE * 0.9, sb.TM[0].n);
+  const r2 = sb.doPublish('run', b.target.n);
+  ok('便宜价(0.72× 官价)时 msg 不含「净流失」', !r2.msg.includes('净流失'), r2.msg);
+
+  // ③ 提示是**纯提示**:发布前后玩家定价不被本函数改掉(重钳发生在每小时 refresh 里)
+  P.active = false;
+  const c = setup(RB.PRICE_MAX, sb.TM[0].n);
+  const before = R.price;
+  sb.doPublish('run', c.target.n);
+  ok('doPublish 本身不改玩家定价(重钳仍归 relayHourlyRefresh)', near(R.price, before), before + ' → ' + R.price);
+
+  // ④ 自研/无官价不炸:定价为 0 时走保底定价,msg 正常
+  P.active = false;
+  const d = setup(0, null);
+  const rd = sb.doPublish('run', d.target.n);
+  ok('定价为 0 时走保底定价且 msg 正常', !!rd && rd.ok === true && typeof rd.msg === 'string', JSON.stringify(rd));
+}
+
 // ── [9] 回归护栏:合法价区间的旧行为一字未动 ────────────────────────────────
 console.log('\n[9] 回归:合法价区间(ratio ≤ 1.0)与改动前完全一致');
 {

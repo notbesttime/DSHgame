@@ -2040,23 +2040,27 @@ function relayBottleneckInfo() {
       ? Math.max(0, hours).toFixed(1) + ' 游戏时'
       : Math.max(0, state.tokens / deficit).toFixed(0) + ' 现实秒';
     return { mode: 'supply', color: '#c05a2a',
-      text: '⚠ 卡产能:产出缺口 ' + gapPct + '% · 库存可撑 ' + durTxt + ' → 该扩产了(买机器)' };
+      text: '⚠ 卡产能:产出缺口 ' + gapPct + '%',
+      text2: '库存可撑 ' + durTxt + ' → 该扩产了' };
   }
   const usePct = Math.round(prod > 0 ? demand / prod * 100 : 0);
   // 2026-10-12(§20.12):把「卡客流」细化为「卡客源 还是 卡并发」。
   // 原来只写「练能力/加用户/调定价」,玩家看不出该练哪条腿 —— 而这两条腿的练法完全不同。
-  // ⚠️ 这一行是**单行不换行**绘制(槽位高度见 drawBackendPage 的 priceY 算式),字数直接决定会不会溢出。
-  //    文案宽度实测(12px bold / 微软雅黑):旧文案 339px、邻居「卡产能」行 367px;
+  // ⚠️ 2026-10-13 起本提示**拆成两行**(text + text2),槽位算法见 drawBackendPage 的 priceY。
   //    面板可用宽 =(屏宽×0.88 − min(200,屏宽×0.24))×0.92 → 1440 宽屏 982px、768 平板 452px、390 手机 230px。
-  //    初稿写成「客源封顶(客源 9 ≤ 并发 16) → 练属性/攒信誉 才涨客源」实测 465px,**比旧文案还长**,
-  //    故压成下面这版(实测 315 / 305px,均短于旧文案);数字只留比较关系,方向词已说明是哪条腿。
-  //    注:768/390 这类窄屏下整行本来就装不下(旧文案 339 与卡产能行 367 也超)——属旧有状况,本次不使其变差。
+  //    单行时代的实测(12px bold 微软雅黑):旧文案 339px、「卡产能」行 367px、后来压过的卡客流行 315px
+  //    —— 这些在 390 屏(230px)本来就装不下,属旧账。
+  //    **本次实测(12px bold 微软雅黑,GDI+ MeasureString;与历史浏览器实测逐点吻合:339.5/366.8/314.9)**:
+  //      卡产能 行1「⚠ 卡产能:产出缺口 12%」= 132.6px、行2「库存可撑 3.2 游戏时 → 该扩产了」= 176.5px
+  //      极端值(缺口 99% / 库存 999.9 游戏时)行2 = 191.3px —— **两行都 ≤230px,390 屏也不溢出**;
+  //      卡客流 行1「卡客流:产能 100% · 客源封顶(100≤100)」= 223.7px(用「产能只用」会到 247.7px ⇒ 压成「产能」)、
+  //      行2「→ 练属性/攒信誉 才涨客源」= 144.8px。
+  //    改文案务必先按上面同一口径量一遍(GDI+ 与浏览器 canvas 在本机实测同值),**每行都不许超过旧单行的宽度**。
   const baseU = relayBaseUsers(), capU = relayUserCap();
-  const leg = baseU <= capU
-    ? '客源封顶(' + baseU + '≤' + capU + ') → 练属性/攒信誉'
-    : '并发封顶(' + capU + '<' + baseU + ') → 练工具调用';
+  const leg = baseU <= capU ? '客源封顶(' + baseU + '≤' + capU + ')' : '并发封顶(' + capU + '<' + baseU + ')';
   return { mode: 'demand', color: '#2a5a8a',
-    text: '卡客流:产能只用 ' + usePct + '% · ' + leg };
+    text: '卡客流:产能 ' + usePct + '% · ' + leg,
+    text2: baseU <= capU ? '→ 练属性/攒信誉 才涨客源' : '→ 练工具调用 才涨并发' };
 }
 
 // 每游戏时:续约 + 概率增长。增长基于 base(防复利,§14.5 用户强调)。
@@ -2266,6 +2270,25 @@ function doPublish(strategy, targetName) {
     return { ok: false, msg: '已达标，用「对标」更划算' };
   R.listedModel = targetName;                                        // 强制标榜
   if (!(R.price > 0)) R.price = officialPriceOf(target);            // 保底定价
+  // 保价 UX(2026-10-13;§20.11 九 遗留 2):换标榜后价格会按**新官价**重钳
+  // (relayHourlyRefresh 里每小时 clampRelayPrice),而玩家是按**旧标的**定的价 ——
+  // 于是常见「发布完增长停了 / 人开始走,却不知道为什么」。这里在发布当下把后果说清楚。
+  // ⚠️ 纯提示:只读状态、不改任何数值(改数值会连带改平衡,那要走报告+仿真流程)。
+  const pubPriceWarn = (() => {
+    const off = officialPriceOf(target);
+    if (!(off > 0) || !(R.price > 0)) return '';
+    const clamped = clampRelayPrice(R.price, off);
+    const ratio = clamped / off;
+    const reclamp = Math.abs(clamped - R.price) > 1e-9
+      ? '(现价 $' + fmt2(R.price) + ' 会被重钳到 $' + fmt2(clamped) + ') ' : '';
+    if (ratio >= RELAY_BIZ.GROW_NEG_RATIO)
+      return reclamp + '⚠ 定价 $' + fmt2(clamped) + ' = 新官价 ' + ratio.toFixed(2)
+        + '× → 用户会净流失;想留人请降到 ' + RELAY_BIZ.CHEAP_LINE + '× 以内';
+    if (ratio > RELAY_BIZ.CHEAP_LINE)
+      return reclamp + '⚠ 定价 $' + fmt2(clamped) + ' = 新官价 ' + ratio.toFixed(2)
+        + '× → 增长已减弱/停止(想涨人请回到 ' + RELAY_BIZ.CHEAP_LINE + '× 以内)';
+    return reclamp + '定价在新官价 ' + ratio.toFixed(2) + '× · 增长线内,影响不大';
+  })();
   const users = publishPoolDraw(targetName, R.price, strategy);     // 跑分 ×1.5(P1-10)
   // 叠加:不覆盖正常运营已有的用户,只额外注入这波对标池流量
   // surge:true(P1-6)= 外部流量,不受「工具调用并发上限」约束(上限只管自然增长)
@@ -2287,7 +2310,8 @@ function doPublish(strategy, targetName) {
   P.remainH = P.totalH;
   P.lastCap = modelCapability(R.ability);
   saveGame();
-  return { ok: true, msg: (strategy === 'bench' ? '已对标发布 ' : '已跑分发布 ') + targetName + '（' + R.users + ' 人 / ' + (P.totalH / 24) + ' 天）' };
+  return { ok: true, msg: (strategy === 'bench' ? '已对标发布 ' : '已跑分发布 ') + targetName
+    + '（' + R.users + ' 人 / ' + (P.totalH / 24) + ' 天）' + (pubPriceWarn ? ' · ' + pubPriceWarn : '') };
 }
 function publishTick(gameHours) {
   const P = state.relay.publish;
@@ -2419,9 +2443,12 @@ function updateRelayBusiness(dt) {
       if (bn) {
         backendLive.bottleneck.text = bn.text;
         backendLive.bottleneck.style.fill = bn.color;
+        // 2026-10-13:瓶颈提示拆两行(窄屏整行溢出),第二行只在有内容时显示
+        if (backendLive.bottleneck2) backendLive.bottleneck2.text = bn.text2 || '';
       }
       // 没在卖/没客 → 隐藏而不是留陈旧文案(下次面板重绘时槽位也不占)
       backendLive.bottleneck.visible = !!bn;
+      if (backendLive.bottleneck2) backendLive.bottleneck2.visible = !!(bn && bn.text2);
     }
   }
   // 中转站顶栏 HUD(与生产 tokens 同位置,不遮电脑面板)—— 同上一条节流
@@ -4553,7 +4580,7 @@ function drawBackendPage(x, y, w, h) {
     ['游戏时钟', clockStr, 'clock', '#2a5a8a'],
     ['收益速率', rateStr, 'rate', '#2a7a3a'],
   ];
-  backendLive = {};
+  backendLive = {};   // 每帧重建;bottleneck / bottleneck2 在本函数内按本帧内容赋值(见瓶颈提示段)
   const gap = 6;
   const colW = (w - padX * 2 - gap * (cols.length - 1)) / cols.length;
   cols.forEach(([label, val, key, color], i) => {
@@ -4616,6 +4643,7 @@ function drawBackendPage(x, y, w, h) {
 
   // ===== 标榜信息 / 定价 =====
   const infoY = y + h * 0.30;
+  let bnLines = 0;                      // 瓶颈提示占几个槽位(0/1/2),由本帧的 relayBottleneckInfo 决定
   if (listed) {
     const official = officialPriceOf(listed);
     const baseP = blendPriceNum(listed);
@@ -4695,12 +4723,24 @@ function drawBackendPage(x, y, w, h) {
     // 瓶颈提示(2026-10-05):「卡产能还是卡客流」+ 库存可支撑时长,实时行(0.25s 节流刷新)。
     // 占据警告行下方的槽位;relayBottleneckInfo 为 null(没在卖/没客)时不画、不占位。
     const bnInfo = relayBottleneckInfo();
+    // 2026-10-13:拆两行(槽位算法见下方 priceY)。bnLines 本帧现算,不用上一帧的残留对象,
+    // 否则「上一帧有瓶颈、这一帧没有」时 priceY 会多留一个空槽。
+    bnLines = bnInfo ? (bnInfo.text2 ? 2 : 1) : 0;
+    backendLive.bottleneck = null;
+    backendLive.bottleneck2 = null;
     if (bnInfo) {
       const bt = makeText(bnInfo.text, { size: 12, color: bnInfo.color, weight: 'bold' });
       bt.x = x + padX;
       bt.y = infoY + (R.serviceDown ? 6 : 5) * 22;
       panelContentArea.addChild(bt);
       backendLive.bottleneck = bt;
+      if (bnInfo.text2) {
+        const bt2 = makeText(bnInfo.text2, { size: 12, color: '#8a7a68' });
+        bt2.x = x + padX;
+        bt2.y = bt.y + 22;
+        panelContentArea.addChild(bt2);
+        backendLive.bottleneck2 = bt2;
+      }
     }
   } else {
     // P1-9:未标榜不再等于「不能卖」—— 不选模型直接定价就是自研开卖(§5.4)
@@ -4713,7 +4753,7 @@ function drawBackendPage(x, y, w, h) {
   // 价格输入(DOM,叠画布)—— 布局末尾统一显隐
   // 瓶颈提示行占位与警告行互斥相加:5 行固定 + 警告(serviceDown) + 瓶颈(有内容时),各占 22
   const priceY = infoY
-    + (listed ? 22 * (5 + (R.serviceDown ? 1 : 0) + (backendLive.bottleneck ? 1 : 0)) : 22) + 8;
+    + (listed ? 22 * (5 + (R.serviceDown ? 1 : 0) + bnLines) : 22) + 8;
   const priceLabel = makeText('定价($/M):', { size: 13, color: '#4a3c2c' });
   priceLabel.x = x + padX; priceLabel.y = priceY + 4;
   panelContentArea.addChild(priceLabel);
