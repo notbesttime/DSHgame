@@ -2,6 +2,8 @@
 #
 #   python build.py            单文件模式(默认):一切 base64 内联 → index.html
 #   python build.py --dist     网页托管模式:代码/hash 资源分离 → dist/(配合平台长缓存)
+#   python build.py --release  发布模式:剔除模板里 __DEBUG_STRIP_BEGIN__/END 标记的调试块,
+#                              并对产物做「零调试痕迹」断言(可与 --dist 组合:--dist --release)
 #
 # 两种模式共用同一份 index_template.html 与同一张 ASSET_FILES 清单,不要各自维护。
 #
@@ -12,6 +14,7 @@
 import base64
 import hashlib
 import os
+import re
 import shutil
 import sys
 
@@ -53,6 +56,11 @@ AUDIO_FILES = {
     "bgm_basement": "assets/audio/bgm_basement.m4a",
     "bgm_relay": "assets/audio/bgm_relay.m4a",
     "bgm_tune": "assets/audio/bgm_tune.m4a",
+    # 操作音效(程序化合成,make_sfx.py 生成):点击/购买/挥鞭/消除。同样只外链、绝不内联。
+    "sfx_click": "assets/audio/sfx_click.wav",
+    "sfx_buy": "assets/audio/sfx_buy.wav",
+    "sfx_whip": "assets/audio/sfx_whip.wav",
+    "sfx_pop": "assets/audio/sfx_pop.wav",
 }
 
 DIST_MODE = "--dist" in sys.argv
@@ -64,8 +72,39 @@ ASSET_BASE = os.environ.get("ASSET_BASE", "").strip()
 if ASSET_BASE and not ASSET_BASE.endswith("/"):
     ASSET_BASE += "/"
 
+# 发布模式(--release):把模板里 __DEBUG_STRIP_BEGIN__/__DEBUG_STRIP_END__ 标记之间的调试块
+# 从产物里整块剔除(模型属性编辑器的调试按钮、/admodel 开关、覆盖表读写、编辑器键盘输入),并做
+# 「零调试痕迹」断言 —— 不信手工删干净,漏了就让构建直接红。
+# 块内若含 `// __RELEASE__`,保留它之后的内容作为正式版实现(整块删不掉的分支这样处理)。
+# 断言在「去掉行注释后的代码」上做:注释是留给开发者看的,不算玩家可见痕迹。
+RELEASE_MODE = "--release" in sys.argv
+DEBUG_STRIP_RE = re.compile(
+    r"//[ \t]*__DEBUG_STRIP_BEGIN__[^\n]*\n(.*?)//[ \t]*__DEBUG_STRIP_END__[^\n]*\n?", re.S)
+RELEASE_BANNED = ["/admodel", "dshgame.modelAttrOverride", "保存到文档", "清空全部",
+                  "saveModelOverrides", "commitModelAttrEdit"]
+
+
+def strip_debug(src):
+    """正式构建剔除调试块;--release 额外断言产物零调试痕迹。"""
+    def repl(m):
+        body = m.group(1)
+        cut = body.find("// __RELEASE__")
+        if cut >= 0:
+            return body[cut + len("// __RELEASE__"):].lstrip("\n")
+        return ""
+
+    out = DEBUG_STRIP_RE.sub(repl, src)
+    if RELEASE_MODE:
+        code_only = re.sub(r"//[^\n]*", "", out)          # 仅用于断言,不改产物
+        hits = [s for s in RELEASE_BANNED if s in code_only]
+        if hits:
+            raise SystemExit(f"[release] 自检失败:产物仍含调试痕迹 {hits}")
+        print(f"[release] 调试痕迹 0 处 OK(剔除 {len(DEBUG_STRIP_RE.findall(src))} 块)")
+    return out
+
+
 with open("index_template.html", "r", encoding="utf-8") as f:
-    TEMPLATE = f.read()
+    TEMPLATE = strip_debug(f.read())
 
 with open("lib/pixi.min.js", "r", encoding="utf-8") as f:
     PIXI_JS = f.read()

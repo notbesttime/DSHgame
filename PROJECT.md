@@ -6,12 +6,14 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-13 实测 7292 行,含少量 CSS/HTML)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-13 实测 7329 行 / 348KB,含少量 CSS/HTML)
 ├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
+├── check_all.py           ★ 一条龙自检:构建 → 语法 → 55 项断言 → 30 天仿真 → dist(失败即停)
+├── make_sfx.py            ★ 四个操作音效的程序化合成器(点击/购买/挥鞭/消除;改音色重跑)
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
 │                            **中转站相关的数值与机制一律以这份文档为准**
@@ -27,7 +29,7 @@ DSHgame/
 │   ├── compressed/          第一代压缩(png/jpg)。**build.py 已不引用**;仍是 recompress_assets.py 的输入
 │   ├── compressed_webp/     ★ 第二代 WebP:`build.py` 的 `ASSET_FILES` 引用其中 **26 张**(全部内联)
 │   │                        ⚠️ 目录里另有 1 张 `tune_desk_girl.webp` **未被引用**(历史遗留,可清)
-│   └── audio/               ★ 三首 BGM(AAC 64k `.m4a`,~2.9M)—— **只外链、绝不内联**(见「两种构建模式」)
+│   └── audio/               ★ 三首 BGM(AAC 64k `.m4a`,~2.9M)+ 四个操作音效(`sfx_*.wav`,~43KB)—— **只外链、绝不内联**(见「两种构建模式」)
 ├── sim/                   ★ 仿真/标定脚手架(不参与构建;改数值前先在这里算,别靠手感)
 │   ├── startup_loop.js      起步期 30 天经济诊断(日表 + 汇总 + ⚖平账校验);
 │   │                        `module.exports = { makeSim, CODE, INIT }`,只在 `require.main===module` 时跑仿真 → 供其他测试复用沙箱
@@ -39,7 +41,8 @@ DSHgame/
 ```
 
 ★ = 当前有效流水线 = 根目录这些脚本是活的:
-`build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`recompress_assets.py`、`cut_chair.py`、`process_assets.py`,
+`build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`check_all.py`、`make_sfx.py`、
+`recompress_assets.py`、`cut_chair.py`、`process_assets.py`,
 以及 `sim/` 下 11 个仿真脚本(1 个诊断 + 2 个断言 + 7 个调参 + 1 个布局检查)。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
@@ -52,8 +55,10 @@ DSHgame/
 ## 常用命令
 
 ```bash
+python check_all.py        # ★ 一条龙自检:构建→语法→55项断言→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
 python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
 python build.py --dist     # 网页托管模式:代码与哈希资源分离 → dist/(发布 VibeHub 用)
+python build.py --release  # 发布模式:剔除调试块 + 断言零调试痕迹(可与 --dist 组合;发布必跑)
 node check_syntax.js       # 构建自检:语法 + ASSETS key + 素材文件存在性(退出码非0即出错)
 python sync_models.py      # 模型库:报告《中转站设计.md》§3.1 与 REAL_MODELS 的差异(不动文件)
 python sync_models.py --write  # 同上,并把文档表写进 index_template.html
@@ -91,7 +96,7 @@ CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十�
 |---|---|---|
 | 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
 | 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
-| 体积(2026-10-13 实测) | **2529KB**(整个文件) | 首访 **4963KB** = HTML **354KB** + `pixi.<hash>.js` **446KB** + `assets/` **4163KB**;回访只需重下 **354KB** 的 index.html |
+| 体积(2026-10-13 实测,模板行尾转 LF 后) | **2522KB**(整个文件) | 首访 **4999KB** = HTML **347KB** + `pixi.<hash>.js` **446KB** + `assets/` **4206KB**(含 BGM 2865 + 音效 43);回访只需重下 **347KB** 的 index.html |
 | 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
 | 能否离线 | 能 | 不能(需要 http 服务) |
 
@@ -481,7 +486,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 ## 已知事项 / 注意
 
 - 浏览器自动化点击 canvas 测试时:**设置面板开着会挡住底部标签**(遮罩全屏),先关面板再点。cua 坐标=CSS 像素(本机 dpr=1),中转站标签中心 ≈ `(0.62×宽, 高-36)`,生产 ≈ `(0.38×宽, 高-36)`。
-- 设置面板「音乐音量」滑条**已接 BGM 且已持久化**:拖动即时改正在播的轨(`setBgmVolume`),换轨淡入也以 `musicVolume` 为目标;音量存进存档 `settings.{music,sfx}`(`saveGame`/`loadGame`,拖动防抖 400ms 落盘),刷新/换设备(同浏览器 localStorage)会跟随用户设置——VibeHub 上即随玩家本地存档持久。默认 0.7。「音效音量」滑条也持久化但仍无消费方(游戏还没有音效)。
+- 设置面板「音乐音量」滑条**已接 BGM 且已持久化**:拖动即时改正在播的轨(`setBgmVolume`),换轨淡入也以 `musicVolume` 为目标;音量存进存档 `settings.{music,sfx}`(`saveGame`/`loadGame`,拖动防抖 400ms 落盘),刷新/换设备(同浏览器 localStorage)会跟随用户设置——VibeHub 上即随玩家本地存档持久。默认 0.7。「音效音量」滑条**已接 SFX(2026-10-13)**:四种操作音效由 `playSfx(name)` 池化播放(池上限 8、超出丢弃),音量每次播放取 `sfxVolume`;素材由 `make_sfx.py` 程序化合成,想换音色直接替换 `assets/audio/sfx_*.wav`。
 - 设置卡片**只有点背景虚影(全屏遮罩)才关闭**;卡片本体 `bg` 设了 `eventMode='static'` + `hitArea` + `pointerdown` 吸收点击,防止点在卡内空白处误触关闭。改 `drawSettingsPanel` 时别把 `bg` 的交互去掉,否则卡内点击会穿透到遮罩又变成一点就关。
 - **后台「收益速率」用 `formatRate` 自适应精度**(`$ /秒`,早期 `users×speed×coef×price/1e6` 极小,固定 `toFixed(3)` 会显示成 `0.000`,像"一直是0")。别退回固定 3 位小数。
 - **强化训练贴图坐标坑**:`tuneGameTiles` 每格 Graphics **必须画在局部坐标(0,0起)、`position` 设成绝对格位、`pivot` 设成局部中心**(缩放/弹跳绕自身中心)。踩过的坑:画在绝对坐标又同时 `pivot.set(绝对中心)+position(0,0)` → 渲染时整体偏移 `-(pivot)`,所有方块堆到左上角 = "棋盘空白、无法游玩"。`hitArea` 也要用局部 `(0,0,cell,cell)`。
@@ -499,6 +504,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
   - 本地 `server.js` 把 `.m4a` 报成 `application/octet-stream`,`<audio>` 靠内容嗅探仍能播(实测 `canPlayType('audio/mp4;…mp4a.40.2')`=probably、时长可解码);VibeHub 若给正确 MIME 更稳,无需为此改 server.js。
   - 换轨是**交叉淡入淡出**(`bgmFade` 用 setInterval 改 volume),不是硬切;`closeTuneScene` 会先 `settleGame` 再切回上一首,别把这两步顺序写反。
   - **轨懒加载(2026-10-13)**:`initBGM` 不再启动即建满 3 首 Audio(原先全 preload='auto',首访一次性拉 2.9MB);建轨改走 `ensureBgmTrack(k)` 按需创建——init 只预载当前场景那一轨(默认地下室),`setBGM`/`startBGMOnGesture` 都是先 ensure 再取。只玩生产的玩家不再下载中转站/调教两首(省 ~1.8MB);首次切场景该轨现缓冲,由交叉淡入遮延迟。⚠️ 别把建轨逻辑搬回 `initBGM`(会退回全量预载)。
+- **SFX 的坑(2026-10-13)**:四个操作音效(`make_sfx.py` 程序化合成,`assets/audio/sfx_*.wav` 共 ~43KB)由 `playSfx(name)` 池化播放。⚠️ **触发点必须挂手动入口,别塞进 `doClick`** —— 自动点击脚本(niger,每秒 3 次)复用 `doClick`,塞进去会 3 次/秒连响。现在挂的四处:`clickMask` 手动点击 / `createBuyItem` 扣款点 / 挥鞭按下 / 强化训练成组消除。
 
 - **中转站人数:`relayBaseUsers`(客源)与 `relayUserCap`(并发)是一对耦合约束,改一个必须同时看另一个**。
   发放处是 `add = min(add, cap − 在站自然用户)`,**谁小谁说话**。2026-10-12 前 `cap` 上限 12 < `base` 上限 24,
@@ -510,7 +516,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
   改文案前先量:用 `local-ui-verify` 的 `uidiag.js` 在页内 `canvas.measureText`(字体串必须与 `makeText` 的
   `TextStyle` 逐字一致:`bold 12px "Microsoft YaHei", "PingFang SC", sans-serif`)。**底线是「不比原来更长」** ——
   旧文案 339px、`卡产能` 行 367px(≤768 屏本来就装不下,属旧账)。实测宽度与算式已写进 `relayBottleneckInfo` 上方注释。
-- **中转站数值改动前后一律按这个顺序跑一遍**:`node check_syntax.js` →
+- **中转站数值改动前后一律按这个顺序跑一遍**(2026-10-13 起可一条命令 `python check_all.py`,失败即停):`node check_syntax.js` →
   `node sim/verify_users.js` + `node sim/verify_gouge.js` → `node sim/startup_loop.js`(看平账与瓶颈)→ `python build.py`。
   `verify_*.js` 是**唯一**能抓住「闸门静默失效 / 恒 0 死项」的手段(语法检查与仿真都不会报)。
 
@@ -525,7 +531,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
        完整数据与候选修法见《中转站设计.md》**§20.13**；**下一步该动「单价」那条腿，候选三条列在 §20.13 六，等星光定**。
      - **≤768 宽屏下中转站「瓶颈提示」整行溢出**(旧有状况:旧文案 339px、`卡产能` 行 367px 也都超;
        要根治得把该行改成两行,并同步 `drawBackendPage` 里 `priceY` 的槽位算式)。
-2. 音频补全:BGM 已实装(三场景各一首、外置 AAC/.m4a),「音乐音量」滑条已接且已持久化(存进 `settings`)。**待办**:加音效(点击/购买等)并接「音效音量」滑条——目前该滑条已持久化但无消费方。
+2. ~~音频补全~~ **已完成(2026-10-13)**:BGM 三场景各一首(外置、轨懒加载)+ 四个操作音效(点击/购买/挥鞭/消除,`make_sfx.py` 程序化合成)已接进 `playSfx()`,消费「音效音量」滑条。想换更精致的音色,替换 `assets/audio/sfx_*.wav` 即可,代码零改动。
 3. ~~发布 VibeHub 前的适配~~ **已完成**:体积/缓存模型已落地(`--dist` 模式)、移动端适配已做(方案 A + `touch-action:none`)。
    剩下真正发布时的动作见「发布前检查清单」(字体子集化可选、封面截图待备)。
 4. 离线收益:**tokens 离线补发已实现**(模板「离线收益」段,`loadGame` 按 savedAt 差补);剩余 = **中转站侧离线推进**(离线时刀乐/信誉/用户要不要结算、封顶怎么算)——用户说放到后面考虑
@@ -623,14 +629,18 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 - **中文文字依赖系统字体**(`"PingFang SC" / "Microsoft YaHei"`):Windows/macOS/iOS 没问题,
   但部分安卓和 Linux 没有这些字体,会回退到别的字体 → **字形宽度变化 → 按像素调过的布局会错位**
   (面板左栏、按钮文字位置等)。VibeHub 也要求非拉丁文字自带字体。
-  实测:把模板里用到的字符(631 个不同字符,其中 532 个汉字)子集化成 **WOFF2 约 198KB**
-  (源字体微软雅黑 19MB)。**可做可不做**:若只面向桌面/主流手机浏览器,风险低;若想稳,就子集化内嵌。
+  实测:把模板里用到的字符(631 个不同字符,其中 532 个汉字)子集化成 **WOFF2 约 198KB**。
+  **字体选择(2026-10-13 定)**:源字体别用微软雅黑 —— 其许可不允许再分发子集文件,发布即踩版权坑;
+  改用开源可嵌入字体(思源黑体 Source Han Sans 等 OFL 授权),子集化后随 dist 分发零风险。
+  **可做可不做**:若只面向桌面/主流手机浏览器,风险低;若想稳,发布前子集化内嵌。
 
 ### 发布前检查清单(真正发布时逐条过)
 
 1. 重新拉取 `/api/skill` 并按其步骤安装/更新官方 CLI(不是用本文档的记忆)。
-2. `python build.py`(或 `--dist`)产出干净目录,确认顶层有 `index.html`,且不含源码/`.git`/raw 素材。
-   ⚠️ dist 现在还含三首 BGM(`dist/assets/bgm_*.m4a`,约 2.9M):首访会下载它们(之后吃 1 年哈希缓存)。别误当"多余文件"删掉。
+2. **`python build.py --dist --release`** 产出干净目录(2026-10-13 起发布必须带 `--release`:自动剔除调试块,
+   并对产物做「零调试痕迹」断言 —— 密令开关、覆盖表读写、编辑器调试按钮、编辑键盘输入全部消失;
+   只读属性面板与搜索框是玩家功能,保留;有残留会直接构建报红)。确认顶层有 `index.html`,且不含源码/`.git`/raw 素材。
+   ⚠️ dist 含三首 BGM(`dist/assets/bgm_*.m4a`,约 2.9M)+ 四个音效(`dist/assets/sfx_*.wav`,~43KB):首访会下载它们(之后吃 1 年哈希缓存)。别误当"多余文件"删掉。
 3. 准备封面 + 截图(≤6 张)放进部署目录内部;准备好 UTF-8 的描述文件(≤2000 字符)与更新说明文件。
 4. `vibehub whoami` 已登录则复用,不要重复 `login`。
 5. `vibehub metadata` 取真实 category/tag ID,不要自己造。
@@ -644,7 +654,30 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
 
-### 2026-10-13 工程加固:WebGL 兜底 + BGM 懒加载 + 一次性脚本归档(本轮未提交)
+### 2026-10-13 自检一条龙 + CI + 发布模式开关 + 操作音效(本轮)
+
+- **`check_all.py` 一条龙自检**:固定顺序 `build.py` → `check_syntax.js` → `verify_users`(35) → `verify_gouge`(20) →
+  `startup_loop`(D30,`LIST_POLICY=sim`) → `build.py --dist`,**失败即停**、退出码非 0;`--skip-sim`/`--skip-dist` 可跳步。
+  ⚠️ 页面/脚本里别用 ✓ ✗ 这类符号:Windows GBK 控制台 print 会直接 `UnicodeEncodeError` 把整条链判红
+  (本轮踩过:6 步全过、只有收尾那行 print 崩了 → 退出码 1,已改 ASCII 文案 + stdout 强制 UTF-8 兜底)。
+- **CI(`.github/workflows/ci.yml`)**:push / PR 触发,ubuntu-latest + node 20 + python 3.12,只跑一条 `python check_all.py`,
+  产物不入库。零依赖(pure stdlib + node 内置),不需要 npm install。首个 CI 运行若因环境差异挂了,照报错修 workflow 即可。
+- **`build.py --release` 发布模式**:模板里用 `// __DEBUG_STRIP_BEGIN__` / `// __DEBUG_STRIP_END__` 标了 5 处调试块
+  (覆盖表 localStorage 读写、编辑器调试按钮整块、覆盖落盘+提交函数、编辑器键盘输入、密令开关),`--release` 整块剔除;
+  块内可写 `// __RELEASE__`,保留其后内容作正式版实现(密令函数替换为恒 `false` → 输入当普通搜索词,调用点零改动)。
+  产物再做「零调试痕迹」断言(**去掉行注释**的代码上查 6 个串:密令字面量/覆盖表键/编辑器函数名/调试按钮文案),有残留直接报红。
+  实测:`--release` 后 `saveModelOverrides`/`commitModelAttrEdit`/`保存到文档`/`清空全部`/覆盖表键全 0,
+  只读属性面板(`drawModelAttrEditor`)与 `playSfx` 保留,产物语法自检同样过;普通构建一切照旧。
+- **操作音效(消费「音效音量」滑条)**:`make_sfx.py` 用纯标准库合成 4 个音效(点击/购买/挥鞭/成组消除),
+  落到 `assets/audio/sfx_*.wav`(共 ~43KB,外链);`playSfx(name)` 池化播放(上限 8、超出丢弃),音量取 `sfxVolume`。
+  触发点全挂手动入口(`clickMask` 手动点击 / `createBuyItem` 扣款点 / 挥鞭按下 / 成组消除),**避开 `doClick`**(自动点击复用它会 3 次/秒连响)。
+- **自测**:`python check_all.py` 全链通过(exit 0)—— 语法 4 块 OK / ASSETS 24 key / 素材 26 文件 / 35+20 断言 /
+  D30 毛收益 诚实 3.03(刀乐 0.03 + 道具 3.00)· 跑分 2.64(平账残差 8e-6 与 -3.4e-4,与 §20.13 基线一致)/
+  单文件 **2522KB**、dist 首访 **4999KB**(HTML 347 + pixi 446 + 素材 4206,其中音效 43KB)。
+  模板 **7329 行 / 348KB**(行数以 node 计;PowerShell `Get-Content`/`Measure-Object` 会少算几十行,别用它对账)。
+- 附带:模板行尾本轮统一为 LF(此前 CRLF),单文件产物因此 2529KB → 2522KB(体积差 ≈ 行数 × 1 字节),非代码删减。
+
+### 2026-10-13 工程加固:WebGL 兜底 + BGM 懒加载 + 一次性脚本归档(已推送 `d412e7b`)
 - **WebGL 上下文兜底**(模板「启动」段,`visibilitychange` 旁):丢失瞬间 `saveGame()` + 全屏 DOM 提示 `#ctxLostPrompt`(8s 未恢复改提示刷新)+ 恢复后 `safeRelayout()` 强制重排;Pixi 内部的丢失/恢复处理不变,两套监听并存、preventDefault 幂等。
 - **BGM 轨懒加载**:`initBGM` 不再启动即建满 3 首(原先全 preload='auto' = 首访拉 2.9MB),改 `ensureBgmTrack(k)` 按需建,init 只预载当前场景那一轨;只玩生产的玩家省 ~1.8MB。行为差异:首次切场景该轨现缓冲,由交叉淡入遮延迟。
 - **根目录一次性脚本归档**:17 个 `_` 前缀补丁脚本(引用扫描零命中)移入 `attic/`(gitignore 已加显式规则);`_aa_data.json` 被两份文档引用且已被 git 跟踪,保留原位。按坑36 流程:先列保留清单 → 移动(不删,可随时搬回)→ 重跑 build + check_syntax 均过。

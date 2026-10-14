@@ -1,0 +1,22 @@
+# 一条龙自检(与本地 python check_all.py 同一条链):
+#   构建单文件 → 逐 script 块语法 + 素材引用/存在性 → 人数 35 项 + 虚标 20 项断言
+#   → 30 天经济仿真(诚实/跑分/平账残差) → dist 构建
+# 任何一步失败即红。构建产物(index.html / dist/)不入库,这里只做验证。
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 一条龙自检
+        run: python check_all.py

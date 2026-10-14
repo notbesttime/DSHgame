@@ -245,6 +245,7 @@ layers.fx.addChild(floatTexts);
 clickMask.on('pointerdown', (e) => {
   if (relaySceneOpen) return; // 中转站时不触发生产点击
   if (state.paused) return;
+  playSfx('click'); // 手动点击才响(自动点击脚本不走这条路径)
   const pos = e.global;
   doClick(pos.x, pos.y);
 });
@@ -679,6 +680,7 @@ function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, on
     const price = priceFn();
     if (state.tokens >= price) {
       state.tokens -= price;
+      playSfx('buy'); // 所有购买共用一个扣款点(机器/散热/脚本/服务器)
       onBuy();
       refreshBuyItem(item, true);
       updateAllBuyButtons();
@@ -2757,10 +2759,13 @@ let radarAnim = true;
 // 影响面就一处:modelToAttrs 末尾把覆盖值合并进去 → 雷达图灰影 + 「最接近的模型」跟着变。
 // 要撤掉:删本块 + modelToAttrs 的合并 + 榜单行点击 + drawModelAttrEditor + keydown 里 editingKey 那段。
 // ponytail: 调试工具,只做 0-100 整数 + 本地存,没做撤销/多存档;正式版整块删。
+let MODEL_ATTR_OVERRIDE = {}; // 覆盖表:调试构建从 localStorage 读;正式构建恒为空表(等价于纯派生属性)
+// __DEBUG_STRIP_BEGIN__ 调试:本机覆盖读取(正式构建剔除)
 const MODEL_ATTR_KEY = 'dshgame.modelAttrOverride';
 let MODEL_ATTR_OVERRIDE = {};
 try { MODEL_ATTR_OVERRIDE = JSON.parse(localStorage.getItem(MODEL_ATTR_KEY) || '{}') || {}; }
 catch (e) { MODEL_ATTR_OVERRIDE = {}; }
+// __DEBUG_STRIP_END__
 let boardPickIdx = -1;   // 正在查看的榜单行(-1 = 无)
 let editingKey = null;   // 正在输入的属性 key(null = 没在输入)
 let editBuf = '';        // 输入缓冲(字符串,提交时转 int)
@@ -3354,6 +3359,7 @@ function drawModelAttrEditor(px, py, pw, ph) {
   vline.lineTo(rx - 4, cy + chh - footH - 4);
   attrDetailLayer.addChild(vline);
 
+  // __DEBUG_STRIP_BEGIN__ 调试按钮整块(重置/清空/导出/导入/保存到文档;正式构建整块剔除)
   if (lbDebug) {   // 调试态专用:已改计数 + 重置/清空/导出/导入/保存到文档(玩家态只读,全部隐藏)
   // 已改计数挪到页脚中间,别和右栏雷达图/轴标签重叠
   const cnt = makeText('已改 ' + Object.keys(MODEL_ATTR_OVERRIDE).length + ' 个模型 · 只存在本机浏览器里',
@@ -3477,8 +3483,10 @@ function drawModelAttrEditor(px, py, pw, ph) {
     });
   }
   }   // if (lbDebug) 闭合(调试按钮整块)
+  // __DEBUG_STRIP_END__
 }
 
+// __DEBUG_STRIP_BEGIN__ 调试:覆盖落盘 + 输入提交(正式构建剔除;玩家态编辑框不挂事件,二者不可达)
 // 【临时调试】覆盖值落盘(键名 MODEL_ATTR_KEY,见定义处)
 function saveModelOverrides() {
   try { localStorage.setItem(MODEL_ATTR_KEY, JSON.stringify(MODEL_ATTR_OVERRIDE)); } catch (e) { /* 隐私模式等,忽略 */ }
@@ -3495,6 +3503,7 @@ function commitModelAttrEdit() {
   editingKey = null; editBuf = ''; editRef = null;
   layoutScreenPanel();
 }
+// __DEBUG_STRIP_END__
 
 // 雷达图轴序 = 用户定义的全部 9 项基础属性(推理/知识/长上下文/速度/指令遵循/工具调用/多模态/拟合/参数)。
 // 前 7 项是"越高越好"的能力维度(与相似度算法 ATTR_KEYS 同集合,只是显示顺序更靠前);
@@ -4078,6 +4087,7 @@ function jumpToModel(i) {
 }
 
 function tryAdmodel(v) {
+// __DEBUG_STRIP_BEGIN__ 调试:/admodel 开关(正式构建替换为恒 false,输入走普通搜索)
   if (v.trim().toLowerCase() !== '/admodel') return false;
   lbDebug = !lbDebug;
   const dom = ensureLbDom();
@@ -4086,6 +4096,9 @@ function tryAdmodel(v) {
   layoutScreenPanel();
   spawnFloatText(lbDebug ? '调试模式已开启' : '调试模式已关闭', app.screen.width / 2, 90);
   return true;
+// __RELEASE__
+  return false; // 正式构建:调试态不可达,输入 /admodel 当普通搜索词
+// __DEBUG_STRIP_END__
 }
 
 // ---------- 内容页:社区(日报流) v1 ----------
@@ -5590,6 +5603,26 @@ function setBgmVolume(v) {
   }
   saveSettingsSoon();
 }
+// ==================== SFX:操作音效(程序化合成,assets/audio/sfx_*;消费设置里的「音效音量」滑条) ====================
+// 触发点:生产点击(clickMask)/ 购买成功(createBuyItem 扣款点)/ 挥鞭(调教选中鞭子时按下)/ 成组消除。
+// 全部由用户手势触发,不受浏览器自动播放策略限制。池化复用、上限 8 并发,超出丢弃(连点不炸内存)。
+// 改音色:改 make_sfx.py 里的参数重跑即可。
+const SFX = { names: { click: 'sfx_click', buy: 'sfx_buy', whip: 'sfx_whip', pop: 'sfx_pop' }, pool: [] };
+function playSfx(name) {
+  const key = SFX.names[name];
+  if (!key || !AUDIO[key] || sfxVolume <= 0) return;
+  let a = null;
+  for (let i = 0; i < SFX.pool.length; i++) { if (SFX.pool[i].ended) { a = SFX.pool[i]; break; } }
+  if (!a) {
+    if (SFX.pool.length >= 8) return;
+    a = new Audio();
+    SFX.pool.push(a);
+  }
+  a.src = AUDIO[key];
+  a.volume = Math.max(0, Math.min(1, sfxVolume));
+  try { a.currentTime = 0; } catch (e) {}
+  try { a.play().catch(() => {}); } catch (e) {}
+}
 // 音量/设置改动防抖落盘(拖动每帧都触发,别每帧写 localStorage)
 let settingsSaveTimer = 0;
 function saveSettingsSoon() {
@@ -5817,6 +5850,7 @@ app.view.addEventListener('pointerdown', (e) => {
   whipCursor.x = p.x;
   whipCursor.y = p.y;
   showWhipFrame(true);
+  playSfx('whip');
   whipCrackTimer = 0.12;
   // 命中人物 → 受击表现(停下 + 换哭脸贴图);重复命中刷新时长
   if (tuneWalker) {
@@ -6118,6 +6152,7 @@ function gameClearAt(r, c) {
   const key = gameState.mode.colors[colorIdx];
   if (key) gameState.tally[key] = (gameState.tally[key] || 0) + cells.length;
   state.tokens -= gameMoveTokenCost(); updateTokenDisplay();
+  playSfx('pop'); // 成组消除确认
   gameState.moves -= 1;
   const before = board.map((row) => row.slice());
   const clearedSet = {};
@@ -6717,6 +6752,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// __DEBUG_STRIP_BEGIN__ 调试:榜单属性编辑器键盘输入(正式构建剔除)
 // 【临时调试】榜单属性编辑器的键盘输入:数字追加、退格、回车提交、ESC 取消。
 // 上面那个 ESC「打开设置」的 handler 开头有 `if (editingKey) return;`,输入时不会误弹设置。
 window.addEventListener('keydown', (e) => {
@@ -6736,6 +6772,7 @@ window.addEventListener('keydown', (e) => {
   if (editRef) editRef.text = editBuf || '0';       // 只更新当前框,不整页重绘
   e.preventDefault();
 });
+// __DEBUG_STRIP_END__
 
 // ==================== 游戏状态 ====================
 const state = {
