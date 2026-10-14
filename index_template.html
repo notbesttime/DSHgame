@@ -1356,6 +1356,19 @@ const RELAY_BIZ = {
   // GROW_FALLOFF:原 0.8 是硬悬崖 —— 0.80×官价 → 0.40 人/游戏时,0.81× → 直接 0,差一分钱全没。
   // 现在增长线以上 FALLOFF 区间内线性衰减到 0(0.8=100%、0.9=50%、1.0=0%),见 relayGrowWeight()。
   GROW_FALLOFF: 0.2,
+  // ===== C2 极价负增长(2026-10-13 P1 单价腿;依据《P1单价腿决策报告.md》§四/§五)=====
+  // ratio ≥ GROW_NEG_RATIO 时 relayGrowWeight 返回 −K ⇒ 增长期望转负,relayHourlyRefresh 按 |add|
+  // 净流失用户(keep.pop();surge 在栈尾 ⇒ 发布注入的那批流量先走)。
+  // 为什么加:D180 跑分线靠「天价 + 发布注入」反超诚实线(52.19 vs 33.74),层5 罚完仍剩 15 倍
+  // 单价优势 —— 只罚「拿不到新客」不够,要让天价开始吐人。K=0.6 实测:跑分线 −21%,诚实线 0 影响。
+  GROW_NEG_K: 0.6,
+  GROW_NEG_RATIO: 1.4,
+  // ===== C4 信誉→愿付溢价(2026-10-13 P1 单价腿)=====
+  // 成交系数 ×(1 + K×信誉/100):信誉越高,同一份 token 卖得越贵。只作用于标榜线 ——
+  // 自研线按 §5.4 设计「完全不触发信誉机制」,保持 1。K=0.6 ⇒ 信誉触顶(100)时 ×1.6。
+  // 为什么加:D180 诚实线信誉 100,但单价腿($0.16)被 375× 定价差吃光 —— 信誉此前只能换客流,
+  // 而客流早已触顶;现在让信誉也换单价。实测:诚实线 +41%,跑分线(信誉 0)逐位零影响。
+  TRUST_PRICE_K: 0.6,
   // ===== 层5 虚标罚的两个旋钮(2026-10-12 星光定稿:换锚 + 加闸 + 抬阈值 + 分层压缩)=====
   //   「分层压缩」= 两个旋钮按量纲各用各的压缩:信誉是累积量 → 开方;成交折扣是瞬时量 → 幂律。
   // ⚠️ 锚点已从「标榜对象官价」换成「能力相称价」(fairPriceOf),理由见该函数处:
@@ -1977,6 +1990,8 @@ function relayUserCap() { return Math.floor(2 + (state.relay.ability.toolCall ||
 function relayGrowWeight(price, official) {
   if (!(price > 0) || !(official > 0)) return 0;
   const ratio = price / official;
+  // C2(2026-10-13):贵过 GROW_NEG_RATIO 不再是「停止增长」而是净流失
+  if (ratio >= RELAY_BIZ.GROW_NEG_RATIO) return -RELAY_BIZ.GROW_NEG_K;
   return Math.max(0, Math.min(1, (RELAY_BIZ.CHEAP_LINE + RELAY_BIZ.GROW_FALLOFF - ratio) / RELAY_BIZ.GROW_FALLOFF));
 }
 
@@ -2103,6 +2118,13 @@ function relayHourlyRefresh() {
     // base 的差异重新体现出来,且是逐步发放、没有随机跳变。
     const expAdd = base * pct;
     let add = Math.floor(expAdd) + (Math.random() < (expAdd - Math.floor(expAdd)) ? 1 : 0);
+    // C2(2026-10-13):add 为负 = 这一游戏时净流失 |add| 个用户。
+    // pop() 从栈尾取 —— surge(发布注入)用户在栈尾,所以「贵到留不住人」先走注入流量。
+    if (add < 0) {
+      const lose = Math.min(keep.length, -add);
+      for (let i = 0; i < lose; i++) keep.pop();
+      add = 0;
+    }
     add = Math.min(add, Math.max(0, capUsers - organicCount));   // P1-6:自然增长不越过并发上限
     const tMin = RELAY_BIZ.USER_TENURE[0], tMax = RELAY_BIZ.USER_TENURE[1] + (selfMode ? 0 : R.reputation / 50);
     for (let i = 0; i < add; i++) {
@@ -2326,7 +2348,9 @@ function updateRelayBusiness(dt) {
     else if (used >= ideal * 0.95) R.serviceDown = false;
     if (used > 0) {
       // 自研没有官价参照、也没有「货不对板」问题(你没对外承诺对标谁)→ 成交系数恒 1
-      const payMul = listed ? relaySellPayMul(listed, R.price, official) : 1;
+      // C4(2026-10-13):信誉愿付溢价。只作用于标榜线(自研线按 §5.4 不触发信誉机制,保持 1)
+      const payMul = (listed ? relaySellPayMul(listed, R.price, official) : 1)
+        * (listed ? 1 + RELAY_BIZ.TRUST_PRICE_K * (R.reputation || 0) / 100 : 1);
       state.tokens -= used;
       R.dollars += used * R.price * payMul / 1e6;
       R.totalTokensSold += used;
@@ -2367,7 +2391,8 @@ function updateRelayBusiness(dt) {
     backendLive.rate.text = (listed || selfMode) && R.price > 0
       ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef
           * (listed ? relayUsageMul(R.price, officialPriceOf(listed)) : 1) * R.price
-          * (listed ? relaySellPayMul(listed, R.price, officialPriceOf(listed)) : 1) / 1e6) + ' /秒'
+          * (listed ? relaySellPayMul(listed, R.price, officialPriceOf(listed)) : 1)
+          * (listed ? 1 + RELAY_BIZ.TRUST_PRICE_K * (R.reputation || 0) / 100 : 1) / 1e6) + ' /秒'
         + (listed ? '' : '（自研）')
       : (R.price > 0 ? '未标榜（自研价超上限 $' + fmt2(RELAY_BIZ.SELF_PRICE_MAX) + '）' : '未标榜');
     // 相似度:优先显示「选中行」的,否则显示当前标榜的;≥80 或 >100 绿,否则红
@@ -4513,7 +4538,8 @@ function drawBackendPage(x, y, w, h) {
   const rateStr = (listed && R.price > 0)
     ? '+$' + formatRate(R.users * R.ability.speed * R.activeCoef
         * relayUsageMul(R.price, officialPriceOf(listed)) * R.price
-        * relaySellPayMul(listed, R.price, officialPriceOf(listed)) / 1e6) + ' /秒'
+        * relaySellPayMul(listed, R.price, officialPriceOf(listed))
+        * (1 + RELAY_BIZ.TRUST_PRICE_K * (R.reputation || 0) / 100) / 1e6) + ' /秒'
     : '未标榜';
 
   // ===== 资源条(6 格) =====
@@ -4603,6 +4629,7 @@ function drawBackendPage(x, y, w, h) {
     const rMul = relayRenewMul(R.price, official);
     const growTxt = gw >= 0.999 ? ' · 增长中'
       : gw > 0 ? ' · 增长减弱 ' + Math.round(gw * 100) + '%'
+      : gw < 0 ? ' · ✗用户净流失(留不住人)'
       : ' · ✗增长已停(不进新用户)';
     const renewTxt = rMul >= 0.999 ? ' · 续约中'
       : ' · 续约衰减 ' + Math.round(rMul * 100) + '%';
