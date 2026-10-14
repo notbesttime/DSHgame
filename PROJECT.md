@@ -12,7 +12,7 @@ DSHgame/
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
-├── check_all.py           ★ 一条龙自检:构建 → 语法 → 55 项断言 → 30 天仿真 → dist(失败即停)
+├── check_all.py           ★ 一条龙自检:构建 → 语法 → 105 项断言 → 30 天仿真 → dist(失败即停)
 ├── make_sfx.py            ★ 四个操作音效的程序化合成器(点击/购买/挥鞭/消除;改音色重跑)
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
@@ -36,6 +36,7 @@ DSHgame/
 │   ├── window_check.py      ★ 四窗口复核器:并行跑 D30/D60/D90/D180,打印「诚实÷跑分」表(改中转站数值前后各跑一次)
 │   ├── verify_gouge.js      层5「虚标成交折价」断言 20 项(秒级,不跑仿真)
 │   ├── verify_users.js      base/cap 两条人数约束断言 35 项(秒级)
+│   ├── verify_price_legs.js  P1 单价腿断言 50 项:C2 极价负增长 / C4 信誉愿付溢价(秒级;含变异自检)── ★ 改这两条腿必跑
 │   ├── tune_gouge_scan.js   虚标罚系数扫描(EXP 网格)   tune_users_scan.js  信誉→客流联合扫描(base×cap)
 │   ├── tune_board_scale/shape/scan.js、tune_coverage.js、tune_landscape.js  棋盘扩色与属性覆盖调参
 │   └── layout_check.js      各屏尺寸下「列车」棋盘布局是否溢出/压底栏
@@ -44,7 +45,7 @@ DSHgame/
 ★ = 当前有效流水线 = 根目录这些脚本是活的:
 `build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`check_all.py`、`make_sfx.py`、
 `recompress_assets.py`、`cut_chair.py`、`process_assets.py`,
-以及 `sim/` 下 11 个仿真脚本(1 个诊断 + 2 个断言 + 7 个调参 + 1 个布局检查)。
+以及 `sim/` 下 12 个仿真脚本(1 个诊断 + 3 个断言 + 7 个调参 + 1 个布局检查)、1 个四窗口复核器 `window_check.py`。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
 ⚠️ `.gitignore` 有 `_*.js` 规则 —— **不要用 `_` 开头命名活脚本**(曾因此删掉过 `check_syntax.js`,见坑36)。
@@ -75,6 +76,7 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 node sim/startup_loop.js         # 30 天经济诊断:诚实线 vs 跑分线 + ⚖平账校验 + 瓶颈链路
 node sim/verify_users.js         # base/cap 两条人数约束断言(秒级,改人数相关必跑)
 node sim/verify_gouge.js         # 层5 虚标折价断言(秒级,改价格/信誉层必跑)
+node sim/verify_price_legs.js   # 单价腿断言:C2 极价负增长 / C4 信誉愿付溢价(秒级,改单价腿必跑)
 node sim/tune_users_scan.js      # 信誉→客流 参数联合扫描(base × cap,5 档)
 CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十几秒)
 ```
@@ -182,7 +184,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 | 层 | 手段 | 抓什么 |
 |---|---|---|
 | 构建 | `node check_syntax.js` | 语法 / `ASSETS` key 拼错 / 素材缺失 |
-| 单元 | `sim/verify_users.js`(35 项)、`sim/verify_gouge.js`(20 项) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
+| 单元 | `sim/verify_users.js`(35)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(50) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
 | 扫描 | `sim/tune_users_scan.js`、`sim/tune_gouge_scan.js` | 系数取值 + 「两旋钮一起扫」的交叉对照 |
 | 端到端 | `sim/startup_loop.js`(日表 + 汇总 + 平账) | 闭环走没走通、平没平账、瓶颈在哪条腿 |
 | 界面 | `local-ui-verify`(Edge + CDP,`uidiag.js`) | 真实产物渲染 / JS 异常 / **canvas 文案宽度** |
@@ -520,7 +522,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
   `TextStyle` 逐字一致:`bold 12px "Microsoft YaHei", "PingFang SC", sans-serif`)。**底线是「不比原来更长」** ——
   旧文案 339px、`卡产能` 行 367px(≤768 屏本来就装不下,属旧账)。实测宽度与算式已写进 `relayBottleneckInfo` 上方注释。
 - **中转站数值改动前后一律按这个顺序跑一遍**(2026-10-13 起可一条命令 `python check_all.py`,失败即停):`node check_syntax.js` →
-  `node sim/verify_users.js` + `node sim/verify_gouge.js` → `node sim/startup_loop.js`(看平账与瓶颈)→ `python build.py`。
+  `node sim/verify_users.js` + `node sim/verify_gouge.js` + `node sim/verify_price_legs.js` → `node sim/startup_loop.js`(看平账与瓶颈)→ `python build.py`。
   `verify_*.js` 是**唯一**能抓住「闸门静默失效 / 恒 0 死项」的手段(语法检查与仿真都不会报)。
 
 ## 后续待办(用户规划)
@@ -660,6 +662,21 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
 
+### 2026-10-13 单价腿断言护栏(`verify_price_legs.js` 50 项)+ 变异自检
+
+- **为什么**:§20.14 刚落地的 C2/C4 两条腿,失败模式都是**静默**的 ——
+  C2 被改回「权重 0」只会让数值悄悄回退到 §20.13 的翻转曲线;C4 若被写进 `relaySellPayMul`(层4/层5 里)
+  就会连虚标罚的语义一起改动,忘了 `listed` 守卫还会让自研线(§5.4 明确不触发信誉)吃到溢价。
+  语法、平账、原有 55 项断言**一个都不会报**。
+- **新增** `sim/verify_price_legs.js`(50 项,秒级):常量护栏 / 阈值边界(1.39 不罚、1.4 起罚,`>=` 语义)/
+  单调性 / **配对对照**(同一随机串下「关 C2」vs「开 C2」跑 6 小时,量级 ≈ base×pct)/ surge 先走 /
+  自研豁免 / **不碰标价、不进层4层5** / 合法价区间与旧公式逐点一致 / 信誉 0·50·100 的倍率(1·1.3·1.6)。
+- **变异自检(确认断言不是摆设)**:临时注入 5 种回归 —— C2 恒 0、C2 阈值改 2.0(带内成死项)、
+  C4 去掉 listed 守卫、C4 污染层4/层5、C2 踢人块失效 —— **5/5 全部被抓红**(exit 1),还原后模板 sha 一致。
+- **接入**:`check_all.py` 新增该步骤 ⇒ 一条龙与 CI 自动覆盖,**105 项断言**(35+20+50)。全链 exit 0。
+- ⚠️ 写断言时踩到一次**自己的**误判:原以为「合法价 ⇒ 层5 = 1」,实测 0.0094 —— 因为测试能力分低于
+  `SIM_GATE`(80)时层5 本来就在罚(与信誉无关)。已改成「结算前后同一次取值比对」。
+  **教训**:断言要钉的是「我改的那个东西没动」,而不是「某个恰好相关的量等于某值」。
 ### 2026-10-13 P1「单价腿」落地:C2 极价负增长 + C4 信誉愿付溢价(已实施)
 
 - **依据**:《P1单价腿决策报告.md》(四条候选 × 四窗口扫描)⇒ 选 C2+C4 双臂,各 K=0.6 / ratio 1.4;
@@ -692,7 +709,7 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
   再落 sim 默认参数 → 游戏代码 → `verify_*` 断言 → §20.13 更新。
 ### 2026-10-13 自检一条龙 + CI + 发布模式开关 + 操作音效(本轮)
 
-- **`check_all.py` 一条龙自检**:固定顺序 `build.py` → `check_syntax.js` → `verify_users`(35) → `verify_gouge`(20) →
+- **`check_all.py` 一条龙自检**:固定顺序 `build.py` → `check_syntax.js` → `verify_users`(35) → `verify_gouge`(20) → `verify_price_legs`(50) →
   `startup_loop`(D30,`LIST_POLICY=sim`) → `build.py --dist`,**失败即停**、退出码非 0;`--skip-sim`/`--skip-dist` 可跳步。
   ⚠️ 页面/脚本里别用 ✓ ✗ 这类符号:Windows GBK 控制台 print 会直接 `UnicodeEncodeError` 把整条链判红
   (本轮踩过:6 步全过、只有收尾那行 print 崩了 → 退出码 1,已改 ASCII 文案 + stdout 强制 UTF-8 兜底)。
