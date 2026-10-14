@@ -51,6 +51,58 @@ function exC(n) {
 let SIM_OVER_K_SRC = exC('SIM_OVER_K');
 if (process.env.SIM_OVER_K) SIM_OVER_K_SRC = SIM_OVER_K_SRC.replace(/=\s*[\d.]+/, '= ' + Number(process.env.SIM_OVER_K));
 
+// ===== P1「单价腿」实验开关(2026-10-13 新增;§20.13 六 四条候选修法的前后对照用) =====
+// 全部走「抽出源码 → 字符串替换注入」,**不改 index_template.html**;不设 env 时零补丁,基线与历史逐位一致。
+//   PRICE_BULK_K=0.2    C1 单价边际递减:成交系数 × 1/(1+K×max(0,人数−1))(批发逻辑:人越多单价越低)
+//   TRUST_PRICE_K=0.3   C4 信誉→愿付溢价:成交系数 × (1+K×信誉/100)
+//   GROW_NEG_K=0.3      C2 极价负增长:relayGrowWeight 在「价 ≥ 官价×GROW_NEG_RATIO」时返回 −K ⇒ 用户净流失
+//   GROW_NEG_RATIO=1.4  C2 的触发倍数(默认 1.4)
+//   TRAIN_TC_K=0.5      C3 训练道具涨价随 toolCall:道具价 × (1+K×toolCall/100)
+const P1 = {
+  bulkK: Number(process.env.PRICE_BULK_K || 0),
+  trustK: Number(process.env.TRUST_PRICE_K || 0),
+  negK: Number(process.env.GROW_NEG_K || 0),
+  negRatio: Number(process.env.GROW_NEG_RATIO || 1.4),
+  tcK: Number(process.env.TRAIN_TC_K || 0),
+};
+
+function applyP1Patches(src) {
+  const hits = [];
+  const rep = (anchor, next, tag) => {
+    const n = src.split(anchor).length - 1;
+    if (n !== 1) throw new Error('P1 patch anchor 命中 ' + n + ' 次(应为 1):' + tag);
+    src = src.replace(anchor, next);
+    hits.push(tag);
+  };
+  if (P1.bulkK || P1.trustK) {
+    rep('const payMul = listed ? relaySellPayMul(listed, R.price, official) : 1;',
+      'const payMul = (listed ? relaySellPayMul(listed, R.price, official) : 1)'
+      + ' * (1 / (1 + ' + P1.bulkK + ' * Math.max(0, R.users - 1)))'
+      + ' * (1 + ' + P1.trustK + ' * (R.reputation || 0) / 100);',
+      'C1/C4 成交系数 payMul');
+  }
+  if (P1.negK) {
+    rep('return Math.max(0, Math.min(1, (RELAY_BIZ.CHEAP_LINE + RELAY_BIZ.GROW_FALLOFF - ratio) / RELAY_BIZ.GROW_FALLOFF));',
+      'return ratio >= ' + P1.negRatio + ' ? -' + P1.negK
+      + ' : Math.max(0, Math.min(1, (RELAY_BIZ.CHEAP_LINE + RELAY_BIZ.GROW_FALLOFF - ratio) / RELAY_BIZ.GROW_FALLOFF));',
+      'C2 relayGrowWeight 转负');
+    rep('add = Math.min(add, Math.max(0, capUsers - organicCount));',
+      'if (add < 0) { const dropP1 = Math.min(keep.length, -add); for (let q1 = 0; q1 < dropP1; q1++) keep.pop(); add = 0; } '
+      + 'add = Math.min(add, Math.max(0, capUsers - organicCount));',
+      'C2 负增长落地(按 |add| 踢人)');
+  }
+  if (P1.tcK) {
+    rep('return Math.round(it.cost * (1 + TRAIN_CFG.PRICE_ESC * trainPriceCount(key)) * 100) / 100;',
+      'return Math.round(it.cost * (1 + TRAIN_CFG.PRICE_ESC * trainPriceCount(key))'
+      + ' * (1 + ' + P1.tcK + ' * (state.relay.ability.toolCall || 0) / 100) * 100) / 100;',
+      'C3 道具价随 toolCall');
+  }
+  return { src, hits };
+}
+
+const P1_ACTIVE = !!(P1.bulkK || P1.trustK || P1.negK || P1.tcK);
+
+
 const CODE = [
   exC('CTX_MAX_K'), exC('KNOW_M0'), exC('KNOW_M1'), exC('TOK_PER_SPEED_POINT'),
   exC('CAP_W'), exC('CAP_SPEED_W'), exC('CAP_CTX_W_LO'), exC('CAP_CTX_W_HI'),
@@ -104,6 +156,12 @@ const CODE = [
   'var SKEYS = SIM_KEYS;',
 ].join('\n');
 
+const P1_APPLIED = P1_ACTIVE ? applyP1Patches(CODE) : { src: CODE, hits: [] };
+if (P1_ACTIVE) {
+  console.log('[P1 实验开关] ' + JSON.stringify(P1));
+  console.log('[P1 注入点] ' + P1_APPLIED.hits.join(' + '));
+}
+
 const INIT = `
   state = {};
   state.tokens = 0;
@@ -133,7 +191,7 @@ function makeSim(seed) {
   M.random = function () { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   const sb = { console, Math: M };
   vm.createContext(sb);
-  vm.runInContext(CODE, sb);
+  vm.runInContext(P1_APPLIED.src, sb);
   // 环境变量覆盖 token 成本:做「改动前后」同代码对照,避免手抄旧值到另一份脚本里。
   //   例:TOK_START=3e6 TOK_MOVE=5e5 node sim/startup_loop.js   → 2026-10-07 下调前的基线
   if (process.env.TOK_START) sb.GC.TOKEN_START = Number(process.env.TOK_START);
