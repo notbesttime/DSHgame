@@ -53,6 +53,207 @@ if (process.env.SIM_OVER_K) SIM_OVER_K_SRC = SIM_OVER_K_SRC.replace(/=\s*[\d.]+/
 
 // ⚠️ 2026-10-13:C2 极价负增长 / C4 信誉愿付溢价已按《P1单价腿决策报告》落进 index_template.html
 //   (RELAY_BIZ.GROW_NEG_* / TRUST_PRICE_K),本文件不再需要实验补丁(留着会双重生效)。
+
+// ===== P2「风险玩法」实验开关(2026-10-13;备料见《P2风险玩法备料.md》) =====
+// 四个机制**都还没进游戏**,这里只在 sim 里注入实验实现(字符串替换注入,不改 index_template.html)。
+// 默认全关 ⇒ 与 §20.14 的四窗口逐位一致(这是「注入没污染基线」的唯一证据,改这里务必复核)。
+//   P2_EVENT_K / P2_EVENT_CAP / P2_EVENT_MODAL_MUL / P2_EVENT_KNOW_MUL / P2_EVENT_GRACE
+//   P2_EVENT_REP_LO / _HI / P2_EVENT_FLOW_MUL / P2_EVENT_FLOW_DAYS            → P2-1 翻车事件
+//   P2_PR_POLICY=deflect|apologize|subsidize|best_ev  + P2_PR_*              → P2-2 公关(依赖 P2-1)
+//   P2_HEAT=1 + P2_HEAT_SPAN / P2_HEAT_MULS / P2_HEAT_MAX / P2_HEAT_DAYS     → P2-3 热点档位
+//   P2_STEALTH_K + P2_STEALTH_LO/_HI + P2_DETECT_*                            → P2-4 过拟合隐蔽度
+const P2 = {
+  evK: Number(process.env.P2_EVENT_K || 0),
+  evCap: Number(process.env.P2_EVENT_CAP || 0.60),
+  evModalMul: Number(process.env.P2_EVENT_MODAL_MUL || 4),
+  evKnowMul: Number(process.env.P2_EVENT_KNOW_MUL || 3),
+  evGrace: process.env.P2_EVENT_GRACE === undefined ? 2 : Number(process.env.P2_EVENT_GRACE),
+  evRepLo: Number(process.env.P2_EVENT_REP_LO || 8),
+  evRepHi: Number(process.env.P2_EVENT_REP_HI || 20),
+  evFlowMul: Number(process.env.P2_EVENT_FLOW_MUL || 0.6),
+  evFlowDays: (process.env.P2_EVENT_FLOW_DAYS || '3,7').split(',').map(Number),
+  // ⚠️ 设计稿 §5.3 的写法是先 clamp 再乘模态/知识倍率 ⇒ 0.2×3×4=2.4>1,事件必发、CAP 形同虚设
+  //    (实测 72/72 结算全触发)。默认 EV_RECLAMP=1:倍率之后再钳一次,让 CAP 成为真上限。
+  //    设 EV_RECLAMP=0 可复现设计稿原式(留作对照,拍板时能看出两种读法的差异)。
+  evReclamp: process.env.P2_EVENT_RECLAMP === undefined ? 1 : Number(process.env.P2_EVENT_RECLAMP),
+  prPolicy: process.env.P2_PR_POLICY || '',
+  prBase: Number(process.env.P2_PR_BASE || 0.35),
+  prRepDiv: Number(process.env.P2_PR_REP_DIV || 200),
+  prInstDiv: Number(process.env.P2_PR_INST_DIV || 300),
+  prSevK: Number(process.env.P2_PR_SEV_K || 0.30),
+  prFloor: Number(process.env.P2_PR_FLOOR || 0.10),
+  prCap: Number(process.env.P2_PR_CAP || 0.90),
+  prSubsidyTok: Number(process.env.P2_PR_SUBSIDY_TOK || 2e6),
+  heatOn: !!process.env.P2_HEAT,
+  heatSpan: (process.env.P2_HEAT_SPAN || '4,9').split(',').map(Number),
+  heatMuls: (process.env.P2_HEAT_MULS || '0.8,0.3,0,-0.3,-0.6').split(',').map(Number),
+  heatMax: Number(process.env.P2_HEAT_MAX || 2),
+  heatDays: (process.env.P2_HEAT_DAYS || '3,10').split(',').map(Number),
+  stK: Number(process.env.P2_STEALTH_K || 0),
+  stLo: Number(process.env.P2_STEALTH_LO || 70),
+  stHi: Number(process.env.P2_STEALTH_HI || 100),
+  detBaseK: Number(process.env.P2_DETECT_BASE_K || 0.5),
+  detModal: Number(process.env.P2_DETECT_MODAL || 3.0),
+  detKnow: Number(process.env.P2_DETECT_KNOW || 2.5),
+  detInstDiv: Number(process.env.P2_DETECT_INST_DIV || 500),
+};
+
+// 注入用的实现体:整块追加到沙箱 CODE 末尾(function 声明会提升,可被前面的函数引用)。
+// ⚠️ 只依赖沙箱里已抽取的东西(state / RELAY_BIZ / modelToAttrs / modelCapability /
+//    similarityTo / cutoffMonths / monthsFromStr / relayListedModel / Math)。
+const P2_RUNTIME = `
+// ⚠️ 实验卫生:P2 机制一律用**私有 PRNG p2rnd()**,绝不碰游戏主随机流(Math.random)。
+//    否则注入代码自身消耗的随机数会让主流程错位 ⇒ 单种子对照被 RNG 噪声污染,
+//    量出来的差异分不清是机制效果还是流错位(2026-10-13 首次冒烟就栽在这里)。
+let p2seed = ` + String(Number(process.env.P2_SEED || 20261013) >>> 0) + `;
+function p2rnd() { p2seed = (p2seed * 1664525 + 1013904223) >>> 0; return p2seed / 4294967296; }
+function p2Ensure() {
+  const R = state.relay;
+  if (!R.p2) R.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, prUsed: 0, prOk: 0,
+                      heat: [], heatNextH: 96 + p2rnd() * 120, heatDone: 0, flowDownH: 0, subsidyTok: 0 };
+  return R.p2;
+}
+function p2Smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+function p2StealthMul(fit) { return P2.stK > 0 ? 1 - P2.stK * p2Smoothstep(P2.stLo, P2.stHi, fit) : 1; }
+// 类别判定(§7 的 5 类):用派生属性里最突出的那一维当类别(设计稿没规定映射,这是可替换的简化)
+function p2CategoryOf(m) {
+  const a = modelToAttrs(m);
+  const sc = { '多模态型': a.multimodal * 1.2, '长上下文型': a.longCtx / 8, 'Agent型': a.toolCall,
+               '推理型': a.reasoning, '廉价快模型型': a.speed / 12 };
+  let best = '推理型', bv = -1;
+  for (const k in sc) { if (sc[k] > bv) { bv = sc[k]; best = k; } }
+  return best;
+}
+function p2HeatTick() {
+  if (!P2.heatOn) return;
+  const R = state.relay, P = p2Ensure();
+  const H = (R.news && R.news.totalH) || 0;
+  P.heat = P.heat.filter(function (h) { return h.untilH > H; });
+  while (H >= P.heatNextH) {
+    P.heatNextH += (P2.heatSpan[0] + p2rnd() * (P2.heatSpan[1] - P2.heatSpan[0])) * 24;
+    if (P.heat.length < P2.heatMax) {
+      const cats = ['推理型', '多模态型', '长上下文型', 'Agent型', '廉价快模型型'];
+      const cat = cats[Math.floor(p2rnd() * cats.length)];
+      const mul = P2.heatMuls[Math.floor(p2rnd() * P2.heatMuls.length)];
+      P.heat.push({ cat: cat, mul: mul,
+        untilH: H + (P2.heatDays[0] + p2rnd() * (P2.heatDays[1] - P2.heatDays[0])) * 24 });
+      P.heatDone++;
+    }
+  }
+}
+function p2HeatMul() {
+  if (!P2.heatOn) return 1;
+  const R = state.relay, P = p2Ensure(), lm = relayListedModel();
+  if (!lm) return 1;
+  const cat = p2CategoryOf(lm);
+  let mul = 1;
+  for (let i = 0; i < P.heat.length; i++) if (P.heat[i].cat === cat) mul += P.heat[i].mul;
+  return Math.max(0.2, mul);
+}
+function p2FlowMul() {
+  const P = p2Ensure();
+  const H = (state.relay.news && state.relay.news.totalH) || 0;
+  for (let i = 0; i < P.events.length; i++) if (P.events[i].untilH > H) return P.events[i].flowMul;
+  return 1;
+}
+function p2PushEvent(R, P, flowMul, sev) {
+  const d = P2.evFlowDays;
+  P.events.push({ untilH: ((R.news && R.news.totalH) || 0) + (d[0] + p2rnd() * Math.max(0, d[1] - d[0])) * 24,
+                  flowMul: flowMul, sev: sev });
+}
+function p2Settle(sim, listed) {
+  if (!(P2.evK > 0) && !(P2.stK > 0)) return;
+  const R = state.relay, P = p2Ensure();
+  const H = (R.news && R.news.totalH) || 0;
+  P.events = P.events.filter(function (e) { return e.untilH > H; });
+  const ma = modelToAttrs(listed);
+  const cutoff = cutoffMonths(R.ability.knowledge);
+  const knowBad = cutoff < monthsFromStr(listed.k) - 3;
+  const modalBad = R.ability.multimodal < ma.multimodal;
+  // ── P2-4 被识破(标榜对象比自己强多少)──
+  if (P2.stK > 0) {
+    const myCap = modelCapability(R.ability), hisCap = Math.max(1, modelCapability(ma));
+    const baseDetect = Math.max(0, Math.min(1, (hisCap - myCap) / hisCap)) * P2.detBaseK;
+    let mul = 1;
+    if (knowBad) mul *= P2.detKnow;
+    if (modalBad) mul *= P2.detModal;
+    mul *= p2StealthMul(R.ability.fit);
+    mul *= (1 - Math.min(1, R.ability.instruct / P2.detInstDiv));
+    if (p2rnd() < baseDetect * mul) {
+      P.detects++;
+      const pr = p2PublicRel(R, P, 0.7, P2.evRepLo + (P2.evRepHi - P2.evRepLo) * 0.7);
+      R.reputation = Math.max(0, R.reputation - pr.loss);
+      if (pr.flow < 1 && P.events.length < 1) p2PushEvent(R, P, pr.flow, 0.7);
+    }
+  }
+  // ── P2-1 翻车事件(货不对板:sim<100 ⇒ gap<0)──
+  if (!(P2.evK > 0)) return;
+  const gap = sim / 100 - 1;
+  if (gap >= -0.05) { P.warnDays = 0; return; }
+  let p = Math.max(0, Math.min(P2.evCap, (-gap - 0.35) * P2.evK));
+  if (knowBad) p *= P2.evKnowMul;
+  if (modalBad) p *= P2.evModalMul;
+  p *= p2StealthMul(R.ability.fit);
+  if (P2.evReclamp) p = Math.min(P2.evCap, p);   // 让 CAP 成为真上限(设计稿原式在 clamp 后才乘倍率 ⇒ 必发)
+  if (P.warnDays < P2.evGrace) { P.warnDays++; return; }
+  if (p2rnd() < p) {
+    P.triggers++;
+    const sev = Math.min(1, -gap);
+    const pr = p2PublicRel(R, P, sev, P2.evRepLo + (P2.evRepHi - P2.evRepLo) * sev);
+    R.reputation = Math.max(0, R.reputation - pr.loss);
+    if (pr.flow < 1 && P.events.length < 1) p2PushEvent(R, P, pr.flow, sev);
+  }
+}
+// P2-2 公关三选一:在损失**落地前**介入,返回 {loss, flow}。
+//   flow = 1 表示客流事件被取消(补贴成功)。「先扣完再返还」会把同一事件算两次,故不采用。
+function p2PublicRel(R, P, sev, repLoss) {
+  if (!P2.prPolicy) return { loss: repLoss, flow: P2.evFlowMul };
+  const pr = Math.max(P2.prFloor, Math.min(P2.prCap,
+    P2.prBase + R.reputation / P2.prRepDiv + R.ability.instruct / P2.prInstDiv - sev * P2.prSevK));
+  const ok = p2rnd() < pr;
+  P.prUsed++; if (ok) P.prOk++;
+  let mode = P2.prPolicy;
+  if (mode === 'best_ev') mode = (sev > 0.5) ? 'apologize' : 'deflect';
+  if (mode === 'deflect')    return { loss: ok ? repLoss * 0.5 : repLoss * 1.5, flow: ok ? P2.evFlowMul : Math.min(0.5, P2.evFlowMul * 0.8) };
+  if (mode === 'apologize')  return { loss: ok ? repLoss * 0.5 : repLoss * 1.1, flow: P2.evFlowMul };
+  if (mode === 'subsidize') {                      // 补贴:花钱买「无事发生」(成功 = 不推客流事件)
+    const cost = P2.prSubsidyTok;
+    if (state.tokens >= cost) {
+      state.tokens -= cost; P.subsidyTok += cost;
+      return ok ? { loss: 0, flow: 1 } : { loss: repLoss, flow: P2.evFlowMul };
+    }
+    return { loss: repLoss, flow: P2.evFlowMul };
+  }
+  return { loss: repLoss, flow: P2.evFlowMul };
+}
+`;
+const P2_ACTIVE = !!(P2.evK || P2.stK || P2.heatOn || P2.prPolicy);
+
+function applyP2Patches(src) {
+  const hits = [];
+  const rep = (anchor, next, tag) => {
+    const n = src.split(anchor).length - 1;
+    if (n !== 1) throw new Error('P2 patch anchor 命中 ' + n + ' 次(应为 1):' + tag);
+    src = src.replace(anchor, next);
+    hits.push(tag);
+  };
+  if (P2.evK || P2.stK) {
+    rep('    R.reputation = Math.max(0, R.reputation - drop);\n  }\n}',
+      '    R.reputation = Math.max(0, R.reputation - drop);\n  }\n  p2Settle(sim, listed);\n}',
+      'P2-1/2/4 挂 relayRepSettle');
+  }
+  if (P2.heatOn || P2.evK || P2.stK) {
+    rep('  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200);',
+      '  p2Ensure(); p2HeatTick();\n  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200) * p2FlowMul();',
+      'P2-3 时钟 + 事件期留存折损');
+    rep('      base = relayBaseUsers();',
+      '      base = relayBaseUsers() * p2HeatMul() * p2FlowMul();',
+      'P2-3 热度乘进新增 + 事件期新增折损');
+  }
+  // ⚠️ P2 配置对象必须**注入进沙箱**(模块作用域的 P2 在 vm 里不可见 —— 实测 ReferenceError)
+  return { src: src + '\nconst P2 = ' + JSON.stringify(P2) + ';\n' + P2_RUNTIME, hits: hits };
+}
+
 const CODE = [
   exC('CTX_MAX_K'), exC('KNOW_M0'), exC('KNOW_M1'), exC('TOK_PER_SPEED_POINT'),
   exC('CAP_W'), exC('CAP_SPEED_W'), exC('CAP_CTX_W_LO'), exC('CAP_CTX_W_HI'),
@@ -106,6 +307,13 @@ const CODE = [
   'var SKEYS = SIM_KEYS;',
 ].join('\n');
 
+// P2 实验补丁:默认全关(不设 env)时 src === CODE,基线与 §20.14 四窗口逐位一致。
+const P2_APPLIED = P2_ACTIVE ? applyP2Patches(CODE) : { src: CODE, hits: [] };
+if (P2_ACTIVE) {
+  console.log('[P2 实验开关] ' + JSON.stringify(P2));
+  console.log('[P2 注入点] ' + P2_APPLIED.hits.join(' + '));
+}
+
 
 const INIT = `
   state = {};
@@ -136,7 +344,7 @@ function makeSim(seed) {
   M.random = function () { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
   const sb = { console, Math: M };
   vm.createContext(sb);
-  vm.runInContext(CODE, sb);
+  vm.runInContext(P2_APPLIED.src, sb);
   // 环境变量覆盖 token 成本:做「改动前后」同代码对照,避免手抄旧值到另一份脚本里。
   //   例:TOK_START=3e6 TOK_MOVE=5e5 node sim/startup_loop.js   → 2026-10-07 下调前的基线
   if (process.env.TOK_START) sb.GC.TOKEN_START = Number(process.env.TOK_START);
@@ -390,7 +598,10 @@ function report(label, r) {
       + '|用户D30=' + lr.users + '|道具$' + st.trainSpent.toFixed(2)
       + '|断供时' + st.downH.toFixed(0) + '/' + (DAYS * 24)
       + '|标榜=' + (R.listedModel || '无') + '|价$' + R.price.toFixed(3)
-      + '|自研=' + ((!sb.relayListedModel() && R.price > 0 && R.price <= sb.RB.SELF_PRICE_MAX) ? '是' : '否'));
+      + '|自研=' + ((!sb.relayListedModel() && R.price > 0 && R.price <= sb.RB.SELF_PRICE_MAX) ? '是' : '否')
+      // P2 机制计数器(仅实验开启时有值):不打印就只能看到净效果,分不清「机制没跑」还是「跑了但没影响」
+      + (R.p2 ? '|P2翻车' + R.p2.triggers + '|P2识破' + R.p2.detects + '|P2公关' + R.p2.prOk + '/' + R.p2.prUsed
+              + '|P2热点' + R.p2.heatDone + '|P2补贴M' + (R.p2.subsidyTok / 1e6).toFixed(2) : ''));
   }
   console.log('\n-- 汇总 --');
   console.log('   token 供给 = 产能 ' + (st.prodTok / 1e6).toFixed(2) + 'M + 考试 ' + (issued / 1e6).toFixed(2) + 'M = ' + (supply / 1e6).toFixed(2) + 'M');
