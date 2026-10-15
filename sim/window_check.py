@@ -41,7 +41,7 @@ def parse(txt):
                     except ValueError:
                         pass
             rows[parts[1]] = d
-        m = re.search(r'\u6b8b\u5dee ([-\d.e+]+)', line)
+        m = re.search(r'残差 ([-\d.e+]+)', line)
         if m:
             resid.append(float(m.group(1)))
     return rows, resid
@@ -75,7 +75,7 @@ def main():
         res = list(ex.map(lambda a: run(*a), jobs))
     print('  耗时 %ds,输出目录 sim/scan_out/%s' % (round(time.time() - t0), os.path.basename(OUTDIR)))
     for p in policies:
-        print('\n【策略 %s】诚实 \u00f7 \u8dd1\u5206(毛收益 = \u5203\u4e50 + \u9053\u5177$)' % p)
+        print('\n【策略 %s】诚实 ÷ 跑分(毛收益 = 刀乐 + 道具$)' % p)
         for d in days_list:
             r = next((x for x in res if x[0] == d and x[1] == p), None)
             if not r:
@@ -87,13 +87,13 @@ def main():
                 continue
             h = rows[keys[0]]
             ru = rows[keys[1]]
-            hg = h.get('\u5203\u4e50', 0) + h.get('\u9053\u5177$', 0)
-            rg = ru.get('\u5203\u4e50', 0) + ru.get('\u9053\u5177$', 0)
-            print('  D%-3d \u8bda\u5b9e %8.2f / \u8dd1\u5206 %8.2f = %.3f   (\u5df2\u5356 %.1fM/%.1fM \u7528\u6237 %s/%s \u4fe1\u8a89 %.1f/%.1f \u6b8b\u5dee %s)'
+            hg = h.get('刀乐', 0) + h.get('道具$', 0)
+            rg = ru.get('刀乐', 0) + ru.get('道具$', 0)
+            print('  D%-3d 诚实 %8.2f / 跑分 %8.2f = %.3f   (已卖 %.1fM/%.1fM 局数 %s/%s 信誉 %.1f/%.1f 残差 %s)'
                   % (d, hg, rg, (hg / rg) if rg else 0,
-                     h.get('\u5df2\u5356M', 0), ru.get('\u5df2\u5356M', 0),
-                     h.get('\u5c40\u6570', 0), ru.get('\u5c40\u6570', 0),
-                     h.get('\u4fe1\u8a89', 0), ru.get('\u4fe1\u8a89', 0),
+                     h.get('已卖M', 0), ru.get('已卖M', 0),
+                     h.get('局数', 0), ru.get('局数', 0),
+                     h.get('信誉', 0), ru.get('信誉', 0),
                      ('%.2e' % max(abs(x) for x in resid)) if resid else '?'))
 
 
