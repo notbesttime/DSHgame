@@ -72,6 +72,9 @@ const P2 = {
   evRepHi: Number(process.env.P2_EVENT_REP_HI || 20),
   evFlowMul: Number(process.env.P2_EVENT_FLOW_MUL || 0.6),
   evFlowDays: (process.env.P2_EVENT_FLOW_DAYS || '3,7').split(',').map(Number),
+  // 冒烟发现 1:投机线的钱来自 doPublish 注入的 surge 用户 ⇒ 只罚「自然客流」等于打空集。
+  // 这个开关让事件期内的发布池抽量也打折(0.5 = 腰斩)。默认 1 = 不折(即发现 1 的「装饰」形态)。
+  evPoolMul: Number(process.env.P2_EVENT_POOL_MUL || 1),
   // ⚠️ 设计稿 §5.3 的写法是先 clamp 再乘模态/知识倍率 ⇒ 0.2×3×4=2.4>1,事件必发、CAP 形同虚设
   //    (实测 72/72 结算全触发)。默认 EV_RECLAMP=1:倍率之后再钳一次,让 CAP 成为真上限。
   //    设 EV_RECLAMP=0 可复现设计稿原式(留作对照,拍板时能看出两种读法的差异)。
@@ -86,7 +89,9 @@ const P2 = {
   prSubsidyTok: Number(process.env.P2_PR_SUBSIDY_TOK || 2e6),
   heatOn: !!process.env.P2_HEAT,
   heatSpan: (process.env.P2_HEAT_SPAN || '4,9').split(',').map(Number),
-  heatMuls: (process.env.P2_HEAT_MULS || '0.8,0.3,0,-0.3,-0.6').split(',').map(Number),
+  // 档位均值必须 = 0(2026-10-14 星光定「期望对称」):设计稿原式 +80/+30/0/−30/−60 均值 +4% ⇒
+  // heat 会变成一条全局收益水位线,而它应当只表达「相对谁更热」。现改为 ±60/±20 对称档。
+  heatMuls: (process.env.P2_HEAT_MULS || '0.6,0.2,0,-0.2,-0.6').split(',').map(Number),
   heatMax: Number(process.env.P2_HEAT_MAX || 2),
   heatDays: (process.env.P2_HEAT_DAYS || '3,10').split(',').map(Number),
   stK: Number(process.env.P2_STEALTH_K || 0),
@@ -149,6 +154,12 @@ function p2HeatMul() {
   let mul = 1;
   for (let i = 0; i < P.heat.length; i++) if (P.heat[i].cat === cat) mul += P.heat[i].mul;
   return Math.max(0.2, mul);
+}
+function p2EventPoolMul() {
+  if (!(P2.evPoolMul !== 1)) return 1;
+  const P = p2Ensure(), H = (state.relay.news && state.relay.news.totalH) || 0;
+  for (let i = 0; i < P.events.length; i++) if (P.events[i].untilH > H) return P2.evPoolMul;
+  return 1;
 }
 function p2FlowMul() {
   const P = p2Ensure();
@@ -249,6 +260,12 @@ function applyP2Patches(src) {
     rep('      base = relayBaseUsers();',
       '      base = relayBaseUsers() * p2HeatMul() * p2FlowMul();',
       'P2-3 热度乘进新增 + 事件期新增折损');
+  }
+  if (P2.evPoolMul !== 1) {
+    // 把事件期的惩罚延伸到发布注入(冒烟发现 1:投机线的钱来自 surge,不罚这里就是装饰)
+    rep('  const users = publishPoolDraw(targetName, R.price, strategy);',
+      '  const users = Math.round(publishPoolDraw(targetName, R.price, strategy) * p2EventPoolMul());',
+      '发现1补救:事件期发布池抽量打折');
   }
   // ⚠️ P2 配置对象必须**注入进沙箱**(模块作用域的 P2 在 vm 里不可见 —— 实测 ReferenceError)
   return { src: src + '\nconst P2 = ' + JSON.stringify(P2) + ';\n' + P2_RUNTIME, hits: hits };
@@ -634,9 +651,11 @@ function report(label, r) {
 // ⚠️ 别在别的脚本里另抄一份「抽取清单」:2026-10-12 就因为手抄漏了 deriveModelAttrs 需要的字段,
 //    造出过一份「高配低标被罚 56%」的假结论(真实 12%)。沙箱只有这一份定义。
 if (require.main === module) {
-  const honest = run({ seed: 20261006, publish: false });
+  // SIM_SEED:多随机机制的对照必须 ≥3 种子取均值(§20.14 冒烟发现 3:单种子会被随机轨迹位移主导)
+  const SEED = Number(process.env.SIM_SEED || 20261006) >>> 0;
+  const honest = run({ seed: SEED, publish: false });
   report('诚实线（完全不发布）', honest);
-  const runner = run({ seed: 20261006, publish: true });
+  const runner = run({ seed: SEED, publish: true });
   report('跑分线（每冷却好就发 —— 摸到最优起步解）', runner);
 }
 

@@ -34,6 +34,7 @@ DSHgame/
 │   ├── startup_loop.js      起步期 30 天经济诊断(日表 + 汇总 + ⚖平账校验);
 │   │                        `module.exports = { makeSim, CODE, INIT }`,只在 `require.main===module` 时跑仿真 → 供其他测试复用沙箱
 │   ├── window_check.py      ★ 四窗口复核器:并行跑 D30/D60/D90/D180,打印「诚实÷跑分」表(改中转站数值前后各跑一次)
+│   ├── p2_scan.py           ★ P2 随机机制扫描器:变体 × 窗口 × **≥3 种子取均值±sd**(单种子对照结论无效,见备料 §7.4)
 │   ├── verify_gouge.js      层5「虚标成交折价」断言 20 项(秒级,不跑仿真)
 │   ├── verify_users.js      base/cap 两条人数约束断言 35 项(秒级)
 │   ├── verify_price_legs.js  P1 单价腿断言 50 项:C2 极价负增长 / C4 信誉愿付溢价(秒级;含变异自检)── ★ 改这两条腿必跑
@@ -45,7 +46,8 @@ DSHgame/
 ★ = 当前有效流水线 = 根目录这些脚本是活的:
 `build.py`、`sync_models.py`、`server.js`、`server.py`、`check_syntax.js`、`check_all.py`、`make_sfx.py`、
 `recompress_assets.py`、`cut_chair.py`、`process_assets.py`,
-以及 `sim/` 下 12 个仿真脚本(1 个诊断 + 3 个断言 + 7 个调参 + 1 个布局检查)、1 个四窗口复核器 `window_check.py`。
+以及 `sim/` 下 12 个仿真脚本(1 个诊断 + 3 个断言 + 7 个调参 + 1 个布局检查)
++ 2 个复核/扫描器(`window_check.py` 四窗口、`p2_scan.py` P2 多种子)。
 其余 ~30 个一次性补丁脚本(`add_*` / `fix_*` / `rewrite_*` / `make_*` / 旧的 `process_*` 等)
 已于 2026-09-10 清理,只在 git 历史里。**改游戏只改 `index_template.html`,然后跑 `python build.py`。**
 ⚠️ `.gitignore` 有 `_*.js` 规则 —— **不要用 `_` 开头命名活脚本**(曾因此删掉过 `check_syntax.js`,见坑36)。
@@ -67,6 +69,7 @@ python sync_models.py --write  # 同上,并把文档表写进 index_template.htm
 python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
 python sim/window_check.py # ★ 四窗口复核:D30/D60/D90/D180 并行,打印「诚实÷跑分」比值表(改数值前后各跑一次)
 python sim/window_check.py 90 --both   # 只跑 D90,且 sim/price 双策略
+python sim/p2_scan.py --days 30,90     # ★ P2 机制扫描:变体×3种子,输出均值±sd 与 σ 判读
 node server.js             # http://localhost:8765(根目录自动补 index.html,可直接预览 /dist/)
 ```
 
@@ -665,6 +668,18 @@ D30 那列与 2026-10-12 上午落库的 3.03 / 2.64 / 1.15 **逐位复现**(口
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
 
+### 2026-10-14 P2 拍板落实现 + 池系数剂量曲线(D30/D90 × 3 种子)
+
+- **两处定稿已落**:`P2_EVENT_RECLAMP` 默认 1(翻车=**按概率发**,CAP 成为真上限);
+  热档改**期望对称**(默认 ±60/±20,均值 0;设计稿 +80…−60 均值 +4% 已弃用)。
+- **新增开关** `P2_EVENT_POOL_MUL`(发现 1 的补救:事件期 `doPublish` 池抽量打折,默认 1 = 不折)。
+- **池系数剂量曲线(D30 均值;基线跑分 2.76、sd 0.64)**:1.0 → +0.2σ(打不到,证实发现 1)、0.85 → −0.1σ、
+  **0.70 → −1.6σ 且跑分保留 63%**、0.50 → −3.5σ(打死,违反验收第 3 条)。
+  **D90 复算支持 0.70**:−3.3σ、保留 79%、诚实线 **Δ=+0.00**(完全正交),比值 sd 还从 0.144 降到 0.071(更稳)。
+- **发现 5(要记牢)**:**基线自己强烈依赖种子** —— BASE 比值 D30 = 1.617/1.253/1.039、D90 = 1.220/0.960/0.980。
+  §20.14 记的 1.617 / 1.220 是**首种子值**,多种子均值只有 1.303 / 1.053 ⇒ 诚实线领先幅度比文档看起来薄,
+  D90 均值已接近 1.0 临界。**以后调平衡别拿首种子当准绳**;`sim/p2_scan.py` 默认输出 sd 与 σ 判读。
+- **自测**:全关 BASE 首种子 D30 = 1.617、D90 = 1.220 **逐位 = §20.14** ⇒ 注入未污染基线 ✓。
 ### 2026-10-14 P2 开关骨架 + 冒烟四发现(零游戏代码改动)
 
 - **骨架**:P2 四机制(翻车事件 / 公关三选一 / 热点档位 / 过拟合隐蔽度)已在 `sim/startup_loop.js`
