@@ -248,12 +248,12 @@ function applyP2Patches(src) {
     src = src.replace(anchor, next);
     hits.push(tag);
   };
-  if (P2.evK || P2.stK) {
+  if (false && (P2.evK || P2.stK)) {   // ⚠️ 2026-10-14:P2-1/P2-4 已落进模板(RELAY_BIZ.RISK_*),注入会双重生效 ⇒ 规则停用
     rep('    R.reputation = Math.max(0, R.reputation - drop);\n  }\n}',
       '    R.reputation = Math.max(0, R.reputation - drop);\n  }\n  p2Settle(sim, listed);\n}',
       'P2-1/2/4 挂 relayRepSettle');
   }
-  if (P2.heatOn || P2.evK || P2.stK) {
+  if (P2.heatOn) {   // ⚠️ 只有 P2-3 热点仍走实验注入(未落模板);事件期折损已随模板落地
     rep('  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200);',
       '  p2Ensure(); p2HeatTick();\n  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200) * p2FlowMul();',
       'P2-3 时钟 + 事件期留存折损');
@@ -290,6 +290,10 @@ const CODE = [
   exF('relayUsageMul'), exF('relayGrowWeight'), exF('relayTrustMul'), exF('relaySellPayMul'),
   exF('fairPriceOf'), exF('relayGougePayMul'),   // 2026-10-12:虚标折价的锚与层5,漏抽会 ReferenceError
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
+  exF('p2Smoothstep'), exF('p2StealthMul'), exF('p2Ensure'), exF('p2FlowMul'), exF('p2PoolMul'),
+  exF('p2CrashNews'), exF('p2RiskSettle'),   // §20.15:P2-1/P2-4 已落模板,沙箱须能解析 settle 钩子
+  exC('NEWS_LIFE_H'), exC('NEWS_MAX_ACTIVE'), // p2CrashNews 的日报条目用到
+  exC('P2_RECLAMP'),                          // 拍板开关:按概率发(=1);verify 断言钉住它
   exF('relayBottleneckInfo'),   // 2026-10-12 §20.12:瓶颈提示要能断言「说的哪条腿」,故一并抽取
   exF('findModelByName'), exF('relayListedModel'),
   exF('boardOrder'), exF('effectiveCap'), exF('boardRankOf'), exF('repCoef'),

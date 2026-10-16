@@ -1428,6 +1428,26 @@ const RELAY_BIZ = {
   //   删除:成交折价(relayPricePayMul,与用量压制双重折算,单位收益惩罚由用量独自承担)
   RENEW_FALLOFF: 0.5,         // 续约衰减区间宽:1.1×→1.6× 线性衰减,1.3×→70%、1.5×→40%
   RENEW_FLOOR: 0.25,          // 续约概率保底:贵到顶格也留 25% 续约机会(防用户被清空)
+  // ===== P2-1/P2-4 风险玩法(2026-10-14 拍板:按概率发;扫描依据《P2风险玩法备料.md》§七)=====
+  // 设计《中转站设计.md》§5.3/§9;扫描协议 = ≥3 种子取均值(sim/p2_scan.py,单种子不可比)。
+  // 落码要点:①「事件期发布池打折」必须有 —— 冒烟证明只罚自然客流是装饰(跑分线的钱来自 surge);
+  //          ② reputação 罚对投机线(信誉恒 0)无效,真正的刀是池打折与客流折损的复合。
+  // P2-2 公关三选一【缓做,未落地】;P2-3 热点【另一批,仍走 sim 实验注入】。
+  RISK_EV_K: 2.0,             // 事件系数:P = clamp((−gap−0.35)×K, 0, CAP)
+  RISK_EV_CAP: 0.35,          // 概率上限(拍板定稿 0.35;0.5 已实测打死投机线、0.85 无感)
+  RISK_EV_GRACE: 2,           // 前 2 次结算只警告(参考 Papers Please,防开局小误差就翻车)
+  RISK_EV_REP_LO: 8,          // 声誉损失下限(按严重度插值到 _HI)
+  RISK_EV_REP_HI: 20,
+  RISK_EV_FLOW_MUL: 0.6,      // 事件期自然客流乘数(留存与新增都乘)
+  RISK_EV_FLOW_DAYS: [3, 7],  // 折损持续(游戏天,随机区间)
+  RISK_EV_POOL_MUL: 0.7,      // 事件期发布池抽量打折(D90 实测 −3.3σ、跑分保留 79%、诚实 Δ=0)
+  RISK_STEALTH_K: 0.7,        // 过拟合隐蔽度:拟合=HI 时检测概率 ×(1−K)
+  RISK_STEALTH_LO: 70,        // smoothstep 区间(设计 §9:拟合>70 才有隐蔽度)
+  RISK_STEALTH_HI: 100,
+  RISK_DETECT_BASE_K: 0.5,    // 被识破基础概率 = clamp((标榜cap−我cap)/标榜cap,0,1)×此值
+  RISK_DETECT_MODAL: 3.0,     // 模态档位不符 ×3
+  RISK_DETECT_KNOW: 2.5,      // 知识截止落后>3月 ×2.5
+  RISK_DETECT_INST_DIV: 500,  // 指令遵循项:(1 − 指令/此值)
 };
 
 // 数字显示:四舍五入,最多两位小数(速度属性 / tokens-s 等)
@@ -1455,6 +1475,7 @@ const PUBLISH_CFG = {
   RUN_REP_LOSS: [1, 3],     // 跑分信誉随机降低区间
   RUN_REP_PREM_MUL: 1.5,    // 溢价放大跑分扣信誉:(溢价比-1)×此值 加进损失倍率
   SIM_GATE: 80,             // 达标线:有效相似度≥此才可对标
+
 };
 
 // ========== 调教养成(设计 §16;连续流 AP + 消耗型道具 + 阈值触发阶梯测评) ==========
@@ -2077,7 +2098,7 @@ function relayHourlyRefresh() {
   }
   const keep = [];
   // 续约概率:信誉越高越留得住,但封顶 HOURLY_KEEP_MAX(0.95)——见该常量的说明(修 P0-2)
-  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200);
+  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200) * p2FlowMul();   // P2 事件期留存折损
   // 自研模式(P1-9):未标榜时没有「官价」可比,只要求价格在上限内
   const selfMode = !listed && R.price > 0 && R.price <= RELAY_BIZ.SELF_PRICE_MAX;
   // 并发上限(P1-6):工具调用决定自然增长的封顶。存量用户**不强制清退**(靠 leftH 自然到期回落),
@@ -2112,7 +2133,7 @@ function relayHourlyRefresh() {
       pct = RELAY_BIZ.GROW_PCT[0];
     } else {
       const cheapness = Math.max(0, Math.min(1, (official * RELAY_BIZ.CHEAP_LINE - R.price) / (official * RELAY_BIZ.CHEAP_LINE)));
-      base = relayBaseUsers();
+      base = relayBaseUsers() * p2FlowMul();   // P2 事件期新增折损
       pct = (RELAY_BIZ.GROW_PCT[0] + (RELAY_BIZ.GROW_PCT[1] - RELAY_BIZ.GROW_PCT[0]) * cheapness) * relayGrowWeight(R.price, official);
     }
     // P0-6(2026-10-03):原来是「概率 p 触发 → add = max(1, round(base × pct))」两层结构,
@@ -2214,7 +2235,98 @@ function relayRepSettle() {
     }
     R.reputation = Math.max(0, R.reputation - drop);
   }
+  p2RiskSettle(sim, listed);   // P2-1 翻车事件 + P2-4 被识破(§20.15)
 }
+
+// ========== P2 风险玩法(§20.15;设计 §5.3/§9;扫描《P2风险玩法备料.md》§七) ==========
+// 事件管线:relayRepSettle(每 10 游戏时)判定 → 事件进 R.p2.events → relayHourlyRefresh 消费
+// (留存×flowMul、新增×flowMul)→ doPublish 的池抽量 ×poolMul(罚到 surge,不罚就是装饰)。
+// 被识破(P2-4)复用同一后果管线。声誉罚对信誉恒 0 的投机线无效是已知特性(罚的是客源与池)。
+function p2Ensure() {
+  const R = state.relay;
+  if (!R.p2) R.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+  return R.p2;
+}
+function p2Smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+// 过拟合隐蔽度(§9):拟合 > LO 才提供,HI 时检测概率 ×(1−K)
+function p2StealthMul(fit) {
+  return 1 - RELAY_BIZ.RISK_STEALTH_K * p2Smoothstep(RELAY_BIZ.RISK_STEALTH_LO, RELAY_BIZ.RISK_STEALTH_HI, fit);
+}
+function p2FlowMul() {                       // 事件期自然客流乘数(留存+新增);无事件 = 1
+  const P = p2Ensure(), H = state.relay.news.totalH;
+  for (const e of P.events) if (e.untilH > H) return e.flowMul;
+  return 1;
+}
+function p2PoolMul() {                       // 事件期发布池抽量乘数;无事件 = 1
+  const P = p2Ensure(), H = state.relay.news.totalH;
+  for (const e of P.events) if (e.untilH > H) return RELAY_BIZ.RISK_EV_POOL_MUL;
+  return 1;
+}
+// 「翻车报道」:不进 NEWS_POOL 权重池,直接推一条社区日报(结构照 spawnNews 的 item)
+function p2CrashNews(R, P) {
+  const H = R.news.totalH;
+  const item = {
+    key: 'crash_exposed#' + Math.floor(H),
+    id: 'crash_exposed',
+    type: 'crash',
+    title: '「翻车报道」:标榜翻车,玩家社区炸了',
+    body: '有效相似度远低于标榜口径,被用户实锤。【跑分一时爽,信誉火葬场。】',
+    fx: null, fx2: null, fxText: '',
+    vendor: null,
+    bornH: H,
+    expireH: H + NEWS_LIFE_H * 2,
+    likes: Math.floor(200 + Math.random() * 800),
+    shares: Math.floor(60 + Math.random() * 160),
+    favs: Math.floor(30 + Math.random() * 90),
+    viewed: false,
+  };
+  R.news.active.push(item);
+  P.crashNews++;
+}
+// 结算钩子:每 10 游戏时(relayRepSettle 尾部调用)
+function p2RiskSettle(sim, listed) {
+  const R = state.relay, P = p2Ensure();
+  const H = R.news.totalH;
+  P.events = P.events.filter(e => e.untilH > H);
+  const ma = modelToAttrs(listed);
+  const knowBad = cutoffMonths(R.ability.knowledge) < monthsFromStr(listed.k) - 3;
+  const modalBad = R.ability.multimodal < ma.multimodal;
+  // ── P2-4 被识破(§9):标榜对象比自己强多少 × 暴露系数 × 隐蔽度 ──
+  const myCap = modelCapability(R.ability), hisCap = Math.max(1, modelCapability(ma));
+  const baseDetect = Math.max(0, Math.min(1, (hisCap - myCap) / hisCap)) * RELAY_BIZ.RISK_DETECT_BASE_K;
+  let dm = 1;
+  if (knowBad) dm *= RELAY_BIZ.RISK_DETECT_KNOW;
+  if (modalBad) dm *= RELAY_BIZ.RISK_DETECT_MODAL;
+  dm *= p2StealthMul(R.ability.fit);
+  dm *= (1 - Math.min(1, R.ability.instruct / RELAY_BIZ.RISK_DETECT_INST_DIV));
+  if (Math.random() < baseDetect * dm) {
+    P.detects++;
+    const sev = 0.7;
+    const loss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
+    R.reputation = Math.max(0, R.reputation - loss);
+    if (P.events.length < 1) P.events.push({ untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0])) * 24, flowMul: RELAY_BIZ.RISK_EV_FLOW_MUL, sev });
+    p2CrashNews(R, P);
+  }
+  // ── P2-1 翻车事件(§5.3):gap = sim/100 − 1,货不对板才可能触发(诚实线 sim≥80 恒不触发)──
+  const gap = sim / 100 - 1;
+  if (gap >= -0.05) { P.warnDays = 0; return; }
+  let p = Math.max(0, Math.min(RELAY_BIZ.RISK_EV_CAP, (-gap - 0.35) * RELAY_BIZ.RISK_EV_K));
+  if (knowBad) p *= RELAY_BIZ.RISK_DETECT_KNOW;    // 知识不足 ×2.5(与识破共用严厉度)
+  if (modalBad) p *= RELAY_BIZ.RISK_DETECT_MODAL;  // 模态不符 ×3
+  p *= p2StealthMul(R.ability.fit);                // 过拟合降低被识破概率(§9)
+  if (P2_RECLAMP) p = Math.min(RELAY_BIZ.RISK_EV_CAP, p);   // 拍板:按概率发(CAP 是真上限)
+  if (P.warnDays < RELAY_BIZ.RISK_EV_GRACE) { P.warnDays++; return; }
+  if (Math.random() < p) {
+    P.triggers++;
+    const sev = Math.min(1, -gap);
+    const loss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
+    R.reputation = Math.max(0, R.reputation - loss);
+    if (P.events.length < 1) P.events.push({ untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0])) * 24, flowMul: RELAY_BIZ.RISK_EV_FLOW_MUL, sev });
+    p2CrashNews(R, P);
+  }
+}
+// 拍板定稿的编译期开关:1 = 倍率之后再钳一次(CAP 是真上限);0 = 设计稿原式(必发,留作对照)
+const P2_RECLAMP = 1;
 
 // ========== 发布逻辑(§19;对标=诚实线 / 跑分=投机线 / 实话=中性) ==========
 // 对标锁定(P1-10,2026-10-03):本函数原本定义了却没有任何调用点 —— §19.2 承诺的
@@ -2289,7 +2401,7 @@ function doPublish(strategy, targetName) {
         + '× → 增长已减弱/停止(想涨人请回到 ' + RELAY_BIZ.CHEAP_LINE + '× 以内)';
     return reclamp + '定价在新官价 ' + ratio.toFixed(2) + '× · 增长线内,影响不大';
   })();
-  const users = publishPoolDraw(targetName, R.price, strategy);     // 跑分 ×1.5(P1-10)
+  const users = Math.round(publishPoolDraw(targetName, R.price, strategy) * p2PoolMul());     // 跑分 ×1.5(P1-10);事件期池打折(§20.15)
   // 叠加:不覆盖正常运营已有的用户,只额外注入这波对标池流量
   // surge:true(P1-6)= 外部流量,不受「工具调用并发上限」约束(上限只管自然增长)
   for (let i = 0; i < users; i++) R.userSlots.push({ leftH: 2 + Math.random() * (4 + R.reputation / 50), surge: true });

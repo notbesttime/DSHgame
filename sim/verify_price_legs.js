@@ -24,6 +24,10 @@ function ok(name, cond, detail) {
 const near = (a, b, eps) => Math.abs(a - b) <= (eps || 1e-9);
 
 const sb = makeSim(20261012);
+// ⚠️ §20.15 起,模板自带 P2-1/P2-4 风险机制(relayRepSettle 尾钩)。既有断言的沙箱一律关闭它,
+//    保证「单价腿」的量测不混入事件噪声;P2 自身的断言在 [10] 段,用自己的沙箱开机制。
+sb.RB.RISK_EV_K = 0;
+sb.RB.RISK_DETECT_BASE_K = 0;
 const RB = sb.RB;
 const src = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
 
@@ -338,6 +342,125 @@ console.log('\n[9] 回归:合法价区间(ratio ≤ 1.0)与改动前完全一致
   ok('ratio ∈ (1.0, 1.4) 新旧也一致(都为 0)', near(sb.relayGrowWeight(O * 1.2, O), legacy(1.2)),
     String(sb.relayGrowWeight(O * 1.2, O)));
 }
+
+
+// ── [10] P2 风险玩法落码断言(§20.15;翻车事件 + 被识破 + 池打折) ─────────────
+console.log('\n[10] P2 风险玩法:触发边界 / 池打折 / 识破 / 诚实线免疫 / 翻车报道');
+{
+  const sb2 = makeSim(20261012);          // 独立沙箱:开机制
+  sb2.RB.RISK_EV_GRACE = 0;               // 去掉警告缓冲,触发行为确定化
+  let sr = 0.5; sb2.Math.random = () => sr; // 接管随机:0.5 ⇒ p>0.5 必触发、p<0.5 必不触发
+  const st = sb2.state, R = st.relay, R2 = sb2.RB;
+  const m = sb2.TM[0];
+  const setup = (priceMul) => {
+    st.tokens = 1e12;
+    R.ability.speed = 10; R.activeCoef = 1;
+    R.userSlots = []; for (let i = 0; i < 4; i++) R.userSlots.push({ leftH: 99 });
+    R.users = 4; R.dollars = 0; R.hourAccum = 0; R.repAccum = 0;
+    R.listedModel = m.n; R.reputation = 50;
+    R.price = sb2.officialPriceOf(m) * priceMul;
+    sb2.state.relay.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+  };
+  // ① 触发边界:sim 直接驱动(用 ability 低于门槛的状态)。这里用「识破」通道测确定性后果。
+  //    翻车通道的 p 由 gap 决定,sim 沙箱里 TM[0] 对初始 ability 的相似度不可控 ⇒ 用识破通道断言。
+  // ── 识破:把「我方能力」压到远低于标榜 ⇒ baseDetect 高;fit=LO(70) 之上才有隐蔽度
+  setup(RB.PRICE_MAX);
+  R.ability.reasoning = 5; R.ability.instruct = 0; R.ability.fit = 100;   // 无隐蔽、无指令减免
+  const rep0 = R.reputation;
+  sb2.p2RiskSettle(100, m);        // sim=100 ⇒ gap=0 ⇒ 翻车通道不触发;识破通道按 baseDetect 走
+  const afterDetect = R.reputation;
+  ok('识破触发:声誉被扣(事件+报道)', afterDetect < rep0, rep0 + ' → ' + afterDetect);
+  ok('识破计入计数器', sb2.state.relay.p2.detects === 1, String(sb2.state.relay.p2.detects));
+  ok('事件已入列(客流折损生效中)', sb2.state.relay.p2.events.length === 1);
+  ok('事件期自然客流乘数 = RISK_EV_FLOW_MUL', sb2.p2FlowMul() === R2.RISK_EV_FLOW_MUL, String(sb2.p2FlowMul()));
+  ok('客流折损是真实的(<1;=1 即装饰化,变异自检抓过)', R2.RISK_EV_FLOW_MUL < 1 && sb2.p2FlowMul() < 1,
+    'FLOW_MUL=' + R2.RISK_EV_FLOW_MUL + ' p2FlowMul()=' + sb2.p2FlowMul());
+  ok('池打折同理(<1)', R2.RISK_EV_POOL_MUL < 1 && sb2.p2PoolMul() < 1,
+    'POOL_MUL=' + R2.RISK_EV_POOL_MUL + ' p2PoolMul()=' + sb2.p2PoolMul());
+  ok('事件期发布池乘数 = RISK_EV_POOL_MUL', sb2.p2PoolMul() === R2.RISK_EV_POOL_MUL, String(sb2.p2PoolMul()));
+  ok('翻车报道已入日报', st.relay.news.active.some(a => a.id === 'crash_exposed'));
+
+  // ── 事件期结束:把事件过期 ⇒ 乘数回 1
+  sb2.state.relay.p2.events[0].untilH = 0;
+  ok('事件过期后客流乘数回 1', sb2.p2FlowMul() === 1 && sb2.p2PoolMul() === 1);
+
+  // ── 隐蔽度:fit=HI(100) 时识破概率 ×(1−K);fit=LO(70) 时 ×1
+  const pDet = (fit) => {
+    R.ability.fit = fit;
+    R.ability.reasoning = 5; R.ability.instruct = 0;
+    R.ability.multimodal = 0; R.ability.knowledge = 0;
+    R.reputation = 50;
+    sb2.state.relay.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+    // 直接量「检测乘数」而非掷骰:stealthMul × 各暴露项
+    return sb2.p2StealthMul(fit);
+  };
+  ok('隐蔽度:fit=70(LO)⇒ 乘数 1(无隐蔽)', Math.abs(pDet(70) - 1) < 1e-9, String(pDet(70)));
+  ok('隐蔽度:fit=100(HI)⇒ 乘数 0.3(K=0.7 的确定值;K 被清零则此断言红)', Math.abs(pDet(100) - 0.3) < 1e-9, String(pDet(100)));
+  ok('隐蔽度:fit=85(中点)⇒ 0.65(平滑无折点)', Math.abs(pDet(85) - 0.65) < 1e-9, String(pDet(85)));
+
+  // ── 池打折咬合 doPublish:发布池抽量在事件期 ×POOL_MUL
+  setup(RB.PRICE_MAX);
+  sb2.state.relay.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+  const off = sb2.officialPriceOf(m);
+  R.price = off;                       // 合法价,防额外分支
+  R.publish = { active: false, strategy: null, model: null, remainH: 0, totalH: 0, lastCap: null };
+  const before = sb2.publishPoolDraw(m.n, R.price, 'run');
+  // 造一个活跃事件
+  sb2.state.relay.p2.events.push({ untilH: 1e9, flowMul: R2.RISK_EV_FLOW_MUL, sev: 1 });
+  const during = Math.round(sb2.publishPoolDraw(m.n, R.price, 'run') * sb2.p2PoolMul());
+  ok('事件期发布池抽量打折生效(×' + R2.RISK_EV_POOL_MUL + ')', during === Math.round(before * R2.RISK_EV_POOL_MUL), before + ' → ' + during);
+  ok('打折后仍 > 0(池未清零)', during > 0, String(during));
+
+  // ── 诚实线免疫:sim=100(gap=0)且无识破(fit=LO、无能力差)⇒ 两次 settle 零变化
+  const sb3 = makeSim(20261012);
+  sb3.RB.RISK_EV_GRACE = 0;
+  const s3 = sb3.state, R3 = s3.relay;
+  s3.tokens = 1e12;
+  R3.listedModel = sb3.TM[0].n;
+  R3.price = sb3.officialPriceOf(sb3.TM[0]) * RB.CHEAP_LINE;
+  R3.reputation = 50;
+  R3.ability.fit = R2.RISK_STEALTH_LO;         // 无隐蔽
+  R3.ability.instruct = 0;
+  // 高配低标:把能力抬到远超标榜 ⇒ sim>100、baseDetect=0
+  R3.ability.reasoning = 100; R3.ability.toolCall = 100; R3.ability.speed = 100;
+  R3.ability.longCtx = 100; R3.ability.knowledge = 100; R3.ability.multimodal = 100;
+  sb3.state.relay.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+  const rep3 = R3.reputation;
+  for (let i = 0; i < 5; i++) sb3.p2RiskSettle(100, sb3.TM[0]);
+  ok('诚实线免疫:高配低标 5 次结算,声誉零损失、零触发、零识破',
+    R3.reputation >= rep3 && sb3.state.relay.p2.triggers === 0 && sb3.state.relay.p2.detects === 0,
+    'rep ' + rep3 + ' → ' + R3.reputation + ' trig=' + sb3.state.relay.p2.triggers);
+
+  // ── 变异锚:常量被误改时立刻红
+  ok('RISK_EV_CAP = 0.35(拍板定稿)', Math.abs(R2.RISK_EV_CAP - 0.35) < 1e-9, String(R2.RISK_EV_CAP));
+  ok('RISK_EV_POOL_MUL = 0.7(实测剂量曲线选定)', Math.abs(R2.RISK_EV_POOL_MUL - 0.7) < 1e-9, String(R2.RISK_EV_POOL_MUL));
+  ok('RISK_EV_FLOW_DAYS = [3,7]', R2.RISK_EV_FLOW_DAYS[0] === 3 && R2.RISK_EV_FLOW_DAYS[1] === 7);
+
+  // ── 源码形态锚 + 行为级 reclamp 断言(变异自检 2/5 的漏网补丁)──
+  const src2 = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  const hr = src2.slice(src2.indexOf('function relayHourlyRefresh'), src2.indexOf('function relayRepSettle'));
+  ok('留存折损在位:keepP 乘 p2FlowMul', /keepP = [^;]+\* p2FlowMul\(\)/.test(hr), (hr.match(/const keepP[^\n]*/) || ['(缺)'])[0]);
+  ok('新增折损在位:base 乘 p2FlowMul', /base = relayBaseUsers\(\) \* p2FlowMul\(\)/.test(hr), '(relayHourlyRefresh 增长块)');
+  ok('RECLAMP 恒为 1(拍板:按概率发;改 0 即回退「必发」原式)', /const P2_RECLAMP = 1;/.test(src2), (src2.match(/const P2_RECLAMP = \d;/) || ['(缺)'])[0]);
+  {
+    const sb4 = makeSim(20261012);
+    sb4.RB.RISK_EV_GRACE = 0;
+    sb4.Math.random = () => 0.99;   // 只有 p>0.99 才触发
+    const s4 = sb4.state, R4 = s4.relay;
+    const m4 = sb4.TM[0];
+    R4.listedModel = m4.n;
+    R4.price = sb4.officialPriceOf(m4) * RB.PRICE_MAX;
+    R4.reputation = 50;
+    R4.ability.fit = 100; R4.ability.instruct = 0;
+    R4.ability.multimodal = 0; R4.ability.knowledge = 0;
+    s4.relay.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+    sb4.p2RiskSettle(20, m4);   // sim=20 ⇒ gap=-0.8;原式 p=0.9×12>1(必发),修后 p≤0.35
+    ok('按概率发(RECLAMP):深 gap + 双倍率下,随机 0.99 不触发(p 被 CAP 钳住)',
+      s4.relay.p2.triggers === 0, 'triggers=' + s4.relay.p2.triggers);
+  }
+}
+
+console.log('\n' + '─'.repeat(60));
 
 console.log('\n' + '─'.repeat(60));
 console.log('结果:' + pass + ' 通过 / ' + fail + ' 失败');
