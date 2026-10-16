@@ -63,6 +63,12 @@ AUDIO_FILES = {
     "sfx_pop": "assets/audio/sfx_pop.wav",
 }
 
+# 兜底字体(§20.17):子集化 Noto Sans SC(OFL 可再分发;make_font_subset.py 生成)。
+# 栈里放最后一位:有雅黑/PingFang 的设备零变化。与音频同理只外链、绝不内联。
+FONT_FILES = {
+    "dshgamecn": "assets/fonts/dshgamecn.woff2",
+}
+
 DIST_MODE = "--dist" in sys.argv
 DIST_DIR = "dist"
 
@@ -141,6 +147,11 @@ def build_single():
     audio_js += "};"
     html = html.replace("__AUDIO__", audio_js)
 
+    # 兜底字体(§20.17):同音频逻辑相对外链(本体目录须连 assets/fonts 一起拷)
+    for key, path in FONT_FILES.items():
+        print(f"  font {key}: {os.path.getsize(path) // 1024} KB (外链)")
+    html = html.replace("__FONT__", next(iter(FONT_FILES.values())))
+
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html)
     print("\n单文件 index.html:", os.path.getsize("index.html") // 1024, "KB")
@@ -173,6 +184,14 @@ def build_dist():
         print(f"  assets/{out_name} ({os.path.getsize(path) // 1024} KB)")
     audio_js += "};"
 
+    # 1c) 兜底字体:哈希外置(与素材同待遇;font-display:swap ⇒ 加载中用系统字体不闪白)
+    for key, path in FONT_FILES.items():
+        ext = os.path.splitext(path)[1]
+        out_name = f"{key}.{short_hash(path)}{ext}"
+        shutil.copyfile(path, os.path.join(DIST_DIR, "assets", out_name))
+        print(f"  assets/{out_name} ({os.path.getsize(path) // 1024} KB)")
+        html_font = f"{ASSET_BASE}assets/{out_name}"
+
     # 2) PixiJS 独立成带哈希的文件(445KB,一年缓存)
     pixi_name = f"pixi.{hashlib.sha256(PIXI_JS.encode('utf-8')).hexdigest()[:8]}.js"
     with open(os.path.join(DIST_DIR, pixi_name), "w", encoding="utf-8") as f:
@@ -185,6 +204,7 @@ def build_dist():
     )
     html = html.replace("__ASSETS__", assets_js)
     html = html.replace("__AUDIO__", audio_js)
+    html = html.replace("__FONT__", html_font)
     with open(os.path.join(DIST_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 

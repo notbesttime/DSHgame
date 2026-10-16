@@ -5,11 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>DSH · 地下机房</title>
 <style>
+  /* P2-5 兜底字体(§20.17):子集化 Noto Sans SC(OFL,可再分发)—— 栈里放最后一位,
+     有雅黑/PingFang 的设备零变化,缺字体的安卓/Linux 才吃到,防布局错位 */
+  @font-face {
+    font-family: "DSHGameCN";
+    src: url(__FONT__) format("woff2");
+    font-display: swap;
+    font-weight: 100 900;   /* 可变字体:wght 轴全保留 */
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     width: 100%; height: 100%; overflow: hidden;
     background: #1a1410;
-    font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+    font-family: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "DSHGameCN", sans-serif;
     -webkit-tap-highlight-color: transparent;
     user-select: none;
   }
@@ -79,7 +87,7 @@ function rand(min, max) { return Math.random() * (max - min) + min; }
 
 function makeText(text, opts) {
   const style = new PIXI.TextStyle({
-    fontFamily: '"PingFang SC", "Microsoft YaHei", sans-serif',
+    fontFamily: '"PingFang SC", "Microsoft YaHei", "DSHGameCN", sans-serif',
     fontSize: opts.size || 16,
     fill: opts.color || '#fff5e6',
     fontWeight: opts.weight || 'normal',
@@ -4225,7 +4233,7 @@ function ensureLbDom() {
     inp.placeholder = '搜索模型 / 厂商…';
     inp.style.cssText = 'position:fixed;display:none;z-index:20;padding:3px 10px;border-radius:8px;'
       + 'border:1px solid #c4b8a8;background:#fffaf2;color:#3a2f22;font-size:16px;outline:none;'
-      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+      + 'font-family:"PingFang SC","Microsoft YaHei","DSHGameCN",sans-serif;';
     document.body.appendChild(inp);
     inp.addEventListener('input', () => handleLbSearch(inp.value));
     inp.addEventListener('keydown', (e) => {
@@ -4244,7 +4252,7 @@ function ensureLbDom() {
     drop.id = 'lbSearchDrop';
     drop.style.cssText = 'position:fixed;display:none;z-index:20;background:#fffaf2;border:1px solid #c4b8a8;'
       + 'border-radius:8px;max-height:240px;overflow-y:auto;box-shadow:0 4px 14px rgba(0,0,0,0.25);'
-      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+      + 'font-family:"PingFang SC","Microsoft YaHei","DSHGameCN",sans-serif;';
     document.body.appendChild(drop);
   }
   return { inp, drop };
@@ -5225,7 +5233,7 @@ function backendPriceDom() {
     inp.placeholder = '0';
     inp.style.cssText = 'position:fixed;display:none;z-index:20;width:88px;padding:3px 8px;border-radius:8px;'
       + 'border:1px solid #c4b8a8;background:#fffaf2;color:#3a2f22;font-size:14px;outline:none;'
-      + 'font-family:"PingFang SC","Microsoft YaHei",sans-serif;';
+      + 'font-family:"PingFang SC","Microsoft YaHei","DSHGameCN",sans-serif;';
     document.body.appendChild(inp);
     inp.addEventListener('focus', () => { backendEditingPrice = true; });
     inp.addEventListener('blur', () => { backendEditingPrice = false; });
@@ -7474,7 +7482,7 @@ const ctxLostPrompt = document.createElement('div');
 ctxLostPrompt.id = 'ctxLostPrompt';
 ctxLostPrompt.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;display:none;'
   + 'align-items:center;justify-content:center;background:rgba(13,11,8,.94);z-index:9999;'
-  + 'color:#ffd98a;font:bold 1rem "Microsoft YaHei","PingFang SC",sans-serif;letter-spacing:2px;text-align:center;padding:0 24px;';
+  + 'color:#ffd98a;font:bold 1rem "Microsoft YaHei","PingFang SC","DSHGameCN",sans-serif;letter-spacing:2px;text-align:center;padding:0 24px;';
 document.body.appendChild(ctxLostPrompt);
 let ctxLostTimer = null;
 app.view.addEventListener('webglcontextlost', (e) => {

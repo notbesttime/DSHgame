@@ -34,7 +34,8 @@ DSHgame/
 │   ├── startup_loop.js      起步期 30 天经济诊断(日表 + 汇总 + ⚖平账校验);
 │   │                        `module.exports = { makeSim, CODE, INIT }`,只在 `require.main===module` 时跑仿真 → 供其他测试复用沙箱
 │   ├── window_check.py      ★ 四窗口复核器:并行跑 D30/D60/D90/D180,打印「诚实÷跑分」表(改中转站数值前后各跑一次)
-│   ├── p2_scan.py           ★ P2 随机机制扫描器:变体 × 窗口 × **≥3 种子取均值±sd**(单种子对照结论无效,见备料 §7.4)
+│   ├── p2_scan.py           ★ P2 随机机制扫描器:变体 × 窗口 × **≥3 种子取均值±sd**(单种
+│   ├── make_font_subset.py    ★ 兜底字体子集生成:从 Noto Sans SC 按模板用字出 woff2(改文案后重跑)子对照结论无效,见备料 §7.4)
 │   ├── verify_gouge.js      层5「虚标成交折价」断言 20 项(秒级,不跑仿真)
 │   ├── verify_users.js      base/cap 两条人数约束断言 35 项(秒级)
 │   ├── verify_price_legs.js  P1 单价腿断言 50 项:C2 极价负增长 / C4 信誉愿付溢价(秒级;含变异自检)── ★ 改这两条腿必跑
@@ -70,6 +71,7 @@ python recompress_assets.py # 素材重压缩(仅换图后需要,依赖 Pillow)
 python sim/window_check.py # ★ 四窗口复核:D30/D60/D90/D180 并行,打印「诚实÷跑分」比值表(改数值前后各跑一次)
 python sim/window_check.py 90 --both   # 只跑 D90,且 sim/price 双策略
 python sim/p2_scan.py --days 30,90     # ★ P2 机制扫描:变体×3种子,输出均值±sd 与 σ 判读
+python make_font_subset.py             # ★ 兜底字体子集:改文案后必须重跑(新字在兜底设备缺字)
 node server.js             # http://localhost:8765(根目录自动补 index.html,可直接预览 /dist/)
 ```
 
