@@ -1448,6 +1448,12 @@ const RELAY_BIZ = {
   RISK_DETECT_MODAL: 3.0,     // 模态档位不符 ×3
   RISK_DETECT_KNOW: 2.5,      // 知识截止落后>3月 ×2.5
   RISK_DETECT_INST_DIV: 500,  // 指令遵循项:(1 − 指令/此值)
+
+  // ===== P2-3 热点档位(2026-10-15 落码;拍板:期望对称;设计 §7)=====
+  HEAT_SPAN_DAYS: [4, 9],     // 报道生成间隔(游戏天)
+  HEAT_MULS: [0.6, 0.2, 0, -0.2, -0.6],  // 档位:大热/热/平/冷/冰(对称,均值 0)
+  HEAT_MAX: 2,                // 同时叠加上限
+  HEAT_DAYS: [3, 10],         // 单条持续(游戏天)
 };
 
 // 数字显示:四舍五入,最多两位小数(速度属性 / tokens-s 等)
@@ -2098,6 +2104,7 @@ function relayHourlyRefresh() {
   }
   const keep = [];
   // 续约概率:信誉越高越留得住,但封顶 HOURLY_KEEP_MAX(0.95)——见该常量的说明(修 P0-2)
+  p2HeatTick();   // P2-3 热点时钟
   const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200) * p2FlowMul();   // P2 事件期留存折损
   // 自研模式(P1-9):未标榜时没有「官价」可比,只要求价格在上限内
   const selfMode = !listed && R.price > 0 && R.price <= RELAY_BIZ.SELF_PRICE_MAX;
@@ -2133,7 +2140,7 @@ function relayHourlyRefresh() {
       pct = RELAY_BIZ.GROW_PCT[0];
     } else {
       const cheapness = Math.max(0, Math.min(1, (official * RELAY_BIZ.CHEAP_LINE - R.price) / (official * RELAY_BIZ.CHEAP_LINE)));
-      base = relayBaseUsers() * p2FlowMul();   // P2 事件期新增折损
+      base = relayBaseUsers() * p2FlowMul() * p2HeatMul();   // P2 事件期新增折损 × 热点乘数
       pct = (RELAY_BIZ.GROW_PCT[0] + (RELAY_BIZ.GROW_PCT[1] - RELAY_BIZ.GROW_PCT[0]) * cheapness) * relayGrowWeight(R.price, official);
     }
     // P0-6(2026-10-03):原来是「概率 p 触发 → add = max(1, round(base × pct))」两层结构,
@@ -2327,6 +2334,52 @@ function p2RiskSettle(sim, listed) {
 }
 // 拍板定稿的编译期开关:1 = 倍率之后再钳一次(CAP 是真上限);0 = 设计稿原式(必发,留作对照)
 const P2_RECLAMP = 1;
+
+// ── P2-3 热点档位(§7;对称档 ±60/±20;类别 = 派生属性最突出的一维,可替换的简化)──
+const HEAT_CATS = ['推理型', '多模态型', '长上下文型', 'Agent型', '廉价快模型型'];
+function p2CategoryOf(m) {
+  const a = modelToAttrs(m);
+  const sc = { '多模态型': a.multimodal * 1.2, '长上下文型': a.longCtx / 8, 'Agent型': a.toolCall,
+               '推理型': a.reasoning, '廉价快模型型': a.speed / 12 };
+  let best = '推理型', bv = -1;
+  for (const k in sc) { if (sc[k] > bv) { bv = sc[k]; best = k; } }
+  return best;
+}
+function p2HeatTick() {                     // 每 游戏时 调;调度/过期/见报
+  const R = state.relay, P = p2Ensure();
+  const H = R.news.totalH;
+  P.heat = (P.heat || []).filter(h => h.untilH > H);
+  // ⚠️ 逐段推进:heatNextH 从「上次调度点」起 += 间隔(而非从当前 H 起跳 —— 那会让 while
+  //    只跑一轮,离线回归/时钟大跳时热点整段缺席,变异自检当场抓出);MAX 天然限流不刷屏。
+  while (H >= (P.heatNextH || 0)) {
+    P.heatNextH = (P.heatNextH || 0) + (RELAY_BIZ.HEAT_SPAN_DAYS[0] + Math.random() * (RELAY_BIZ.HEAT_SPAN_DAYS[1] - RELAY_BIZ.HEAT_SPAN_DAYS[0])) * 24;
+    if (P.heat.length < RELAY_BIZ.HEAT_MAX) {
+      const cat = HEAT_CATS[Math.floor(Math.random() * HEAT_CATS.length)];
+      const mul = RELAY_BIZ.HEAT_MULS[Math.floor(Math.random() * RELAY_BIZ.HEAT_MULS.length)];
+      P.heat.push({ cat, mul, untilH: H + (RELAY_BIZ.HEAT_DAYS[0] + Math.random() * (RELAY_BIZ.HEAT_DAYS[1] - RELAY_BIZ.HEAT_DAYS[0])) * 24 });
+      R.news.active.push({
+        key: 'heat_' + cat + '#' + Math.floor(H), id: 'heat_report', type: 'heat',
+        title: '热点[' + cat + ']:' + (mul > 0 ? (mul >= 0.5 ? '大热' : '升温') : (mul <= -0.5 ? '冰点' : '降温')),
+        body: mul > 0 ? '「' + cat + '」被顶上风口,相关需求 +' + Math.round(mul * 100) + '%。'
+                      : '「' + cat + '」退潮,需求 ' + Math.round(mul * 100) + '%。',
+        fx: null, fx2: null, fxText: '', vendor: null,
+        bornH: H, expireH: H + NEWS_LIFE_H * 2,
+        likes: Math.floor(40 + Math.random() * 300), shares: Math.floor(10 + Math.random() * 60),
+        favs: Math.floor(5 + Math.random() * 40), viewed: false,
+      });
+    }
+  }
+}
+function p2HeatMul() {                      // 当前标榜类别命中的热度乘数;无命中/自研 = 1
+  const P = p2Ensure(), lm = relayListedModel();
+  if (!lm) return 1;
+  const H = state.relay.news.totalH;
+  P.heat = (P.heat || []).filter(h => h.untilH > H);
+  const cat = p2CategoryOf(lm);
+  let mul = 1;
+  for (const h of P.heat) if (h.cat === cat) mul += h.mul;
+  return Math.max(0.2, mul);
+}
 
 // ========== 发布逻辑(§19;对标=诚实线 / 跑分=投机线 / 实话=中性) ==========
 // 对标锁定(P1-10,2026-10-03):本函数原本定义了却没有任何调用点 —— §19.2 承诺的
