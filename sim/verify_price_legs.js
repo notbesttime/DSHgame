@@ -460,6 +460,57 @@ console.log('\n[10] P2 风险玩法:触发边界 / 池打折 / 识破 / 诚实�
   }
 }
 
+
+// ── [11] P2-3 热点档位落码断言(§20.16;对称档 / 调度 / 类别命中 / 叠加上限 / 见报) ──
+console.log('\n[11] P2-3 热点:对称性 / 调度 / 类别命中 / 叠加 / 过期 / 见报');
+{
+  const sb5 = makeSim(20261012);
+  const R5 = sb5.state.relay, RB5 = sb5.RB;
+  // ① 档位均值 = 0(拍板:期望对称;设计稿原式 +4% 已弃用)
+  const m0 = RB5.HEAT_MULS.reduce((a, b) => a + b, 0) / RB5.HEAT_MULS.length;
+  ok('档位均值 = 0(期望对称)', Math.abs(m0) < 1e-9, String(m0));
+  ok('档位对称为 5 档(大热/热/平/冷/冰)', RB5.HEAT_MULS.length === 5, JSON.stringify(RB5.HEAT_MULS));
+  // ② 类别判定:五个类别的代表属性都能映射到自己
+  ok('p2CategoryOf 可用且返回类别串', HEAT_CATS_AS(sb5).includes(sb5.p2CategoryOf(sb5.TM[0])), sb5.p2CategoryOf(sb5.TM[0]));
+  // ③ 调度:把 totalH 拨到 nextH 之上 ⇒ tick 后 heat 出现、见报
+  R5.news = sb5.newsDefaults ? sb5.newsDefaults() : R5.news;
+  R5.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0, heat: [], heatNextH: 0, heatDone: 0 };
+  R5.listedModel = sb5.TM[0].n;   // 无标榜时 p2HeatMul 恒 1(自研不吃热点)
+  const H0 = R5.news.totalH;
+  sb5.p2HeatTick();
+  ok('调度:totalH≥heatNextH ⇒ 至少一条热点', R5.p2.heat.length >= 1, JSON.stringify(R5.p2.heat));
+  ok('热点见报:type=heat 条目入日报', R5.news.active.some(a => a.type === 'heat'),
+    (R5.news.active.map(a => a.type).join(',') || '(空)'));
+  ok('热点条目标注了类别与档位方向', R5.news.active.some(a => a.type === 'heat' && /热点\[/.test(a.title)));
+  // ④ 命中才乘:构造「命中当前类别」与「不命中」两个热点,乘数应分别为 1+mul 与 1
+  const cat = sb5.p2CategoryOf(sb5.TM[0]);
+  R5.p2.heat = [{ cat: cat, mul: 0.6, untilH: 1e9 }];
+  ok('命中当前类别 ⇒ 乘数 1+0.6', Math.abs(sb5.p2HeatMul() - 1.6) < 1e-9, String(sb5.p2HeatMul()));
+  R5.p2.heat = [{ cat: cat, mul: 0.6, untilH: 1e9 }, { cat: '多模态型', mul: -0.6, untilH: 1e9 }];
+  ok('不命中的热点不影响乘数(仍 1.6)', Math.abs(sb5.p2HeatMul() - 1.6) < 1e-9, String(sb5.p2HeatMul()));
+  // ⑤ 叠加上限:HEAT_MAX 条以内才入列
+  R5.p2.heat = [];
+  R5.news.totalH = H0 + 24 * 400;   // 拨快时钟,强制 while 连续生成
+  sb5.p2HeatTick();
+  ok('叠加上限:heat 条数 ≤ 2(硬编码拍板值;HEAT_MAX 被解除则此断言红)', R5.p2.heat.length <= 2, String(R5.p2.heat.length));
+  // ⑥ 过期回落:全部 untilH 拨到过去 ⇒ 乘数回 1
+  for (const h of R5.p2.heat) h.untilH = 0;
+  ok('热点过期 ⇒ 乘数回 1', sb5.p2HeatMul() === 1, String(sb5.p2HeatMul()));
+  // ⑦ 自研免疫:未标榜 ⇒ 恒 1(与 §5.4 一致)
+  R5.listedModel = null;
+  R5.p2.heat = [{ cat: '推理型', mul: 0.6, untilH: 1e9 }];
+  ok('自研不吃热点(恒 1)', sb5.p2HeatMul() === 1, String(sb5.p2HeatMul()));
+  // ⑧ 源码形态锚:base 必须同时乘 flowMul 与 heatMul(漏一即装饰化)
+  const src3 = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('base 同时乘 flowMul × heatMul(漏一即装饰化)',
+    /base = relayBaseUsers\(\) \* p2FlowMul\(\) \* p2HeatMul\(\)/.test(src3),
+    (src3.match(/base = relayBaseUsers[^\n]*/) || ['(缺)'])[0]);
+  ok('HEAT_MULS 是对称 5 档(源码级)', /HEAT_MULS: \[0\.6, 0\.2, 0, -0\.2, -0\.6\]/.test(src3));
+  const hr3 = src3.slice(src3.indexOf('function relayHourlyRefresh'), src3.indexOf('function relayRepSettle'));
+  ok('热点时钟挂点在位:relayHourlyRefresh 开头调 p2HeatTick(被删/被注释都算失效)', /^  p2HeatTick\(\);/m.test(hr3), '(relayHourlyRefresh 头部,须为非注释行)');
+  function HEAT_CATS_AS(sb) { return ['推理型', '多模态型', '长上下文型', 'Agent型', '廉价快模型型']; }
+}
+
 console.log('\n' + '─'.repeat(60));
 
 console.log('\n' + '─'.repeat(60));
