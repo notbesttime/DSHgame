@@ -253,7 +253,7 @@ function applyP2Patches(src) {
       '    R.reputation = Math.max(0, R.reputation - drop);\n  }\n  p2Settle(sim, listed);\n}',
       'P2-1/2/4 挂 relayRepSettle');
   }
-  if (P2.heatOn) {   // ⚠️ 只有 P2-3 热点仍走实验注入(未落模板);事件期折损已随模板落地
+  if (false && P2.heatOn) {   // ⚠️ 2026-10-15:P2-3 热点已落进模板(RELAY_BIZ.HEAT_*),注入会双重生效 ⇒ 停用
     rep('  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200);',
       '  p2Ensure(); p2HeatTick();\n  const keepP = Math.min(RELAY_BIZ.HOURLY_KEEP_MAX, 0.5 + R.reputation / 200) * p2FlowMul();',
       'P2-3 时钟 + 事件期留存折损');
@@ -292,7 +292,9 @@ const CODE = [
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
   exF('p2Smoothstep'), exF('p2StealthMul'), exF('p2Ensure'), exF('p2FlowMul'), exF('p2PoolMul'),
   exF('p2CrashNews'), exF('p2RiskSettle'),   // §20.15:P2-1/P2-4 已落模板,沙箱须能解析 settle 钩子
+  exF('p2CategoryOf'), exF('p2HeatTick'), exF('p2HeatMul'),   // §20.16:P2-3 热点已落模板
   exC('NEWS_LIFE_H'), exC('NEWS_MAX_ACTIVE'), // p2CrashNews 的日报条目用到
+  exC('HEAT_CATS'),                           // P2-3 热点类别表(p2HeatTick 用)
   exC('P2_RECLAMP'),                          // 拍板开关:按概率发(=1);verify 断言钉住它
   exF('relayBottleneckInfo'),   // 2026-10-12 §20.12:瓶颈提示要能断言「说的哪条腿」,故一并抽取
   exF('findModelByName'), exF('relayListedModel'),

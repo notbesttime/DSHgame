@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 一条龙自检:构建(单文件)→ 语法/素材 → 人数/瓶颈断言(42)→ 虚标断言(20)→ 单价腿/保价断言(56)
+# 一条龙自检:构建(单文件)→ 语法/素材 → 人数/瓶颈断言(42)→ 虚标断言(20)→ 单价腿/保价/P2 断言(92)
 #          → 30 天经济仿真 → 构建(dist)。
 # 顺序固定、失败即停(后面步骤拿前面产物,跑反了会验到旧文件)。退出码非 0 = 有失败。
 #
@@ -26,7 +26,7 @@ STEPS = [
     ("语法 + 素材自检", ["node", "check_syntax.js"], {}),
     ("断言:人数/瓶颈 42 项", ["node", "sim/verify_users.js"], {}),
     ("断言:虚标 20 项", ["node", "sim/verify_gouge.js"], {}),
-    ("断言:单价腿/保价 56 项", ["node", "sim/verify_price_legs.js"], {}),
+    ("断言:单价腿/保价/P2 92 项", ["node", "sim/verify_price_legs.js"], {}),
     ("经济仿真(诚实/跑分/平账)", ["node", "sim/startup_loop.js"],
      {"LIST_POLICY": "sim", "DAYS": DAYS, "SUMMARY_ONLY": "1"}),
     ("构建(dist)", [sys.executable, "build.py", "--dist"], {}),
@@ -54,4 +54,4 @@ print("\n==== 总结 ====")
 if failed:
     print("失败:" + "、".join(failed) + " —— 修完重跑 python check_all.py")
     sys.exit(1)
-print("全链通过:构建 / 语法 / 118 项断言(42+20+56)/ 30 天仿真 / dist")
+print("全链通过:构建 / 语法 / 154 项断言(42+20+92)/ 30 天仿真 / dist")
