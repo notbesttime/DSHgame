@@ -3012,17 +3012,113 @@ const EXAM_HINT_CFG = {
   ATTR_CAP_PER_EXAM: 6.0,     // 每场考试属性总上限(防刷):6 点 ≈ 一次大道具的量级
   MAX_ALIVE: 4,               // 同屏最多几条
 };
-// 提示类型:既是文案,也决定加成哪一维(玩家能从「点什么提示」理解「练哪一维」)
+// ===== §17.8 文案池(由 sync_exam_text.py 从《考试文案池.md》生成,勿手改)=====
+// 用户改文档 → 跑 python sync_exam_text.py → 自动替换下面两个标记块之间的内容。
+/* EXAM_HINTS_BEGIN */
 const EXAM_HINTS = [
-  { key: 'reasoning',  label: '推理:', tips: ['先证伪再下结论', '把问题拆成子问题', '检查边界样例'] },
-  { key: 'knowledge',  label: '知识:', tips: ['召回相似训练样本', '核对事实来源', '时间线别搞混'] },
-  { key: 'instruct',   label: '对齐:', tips: ['按用户要的格式答', '少一点发挥', '别自作主张扩写'] },
-  { key: 'longCtx',    label: '长文:', tips: ['先看结尾再看开头', '记住中间那个变量', '别丢上下文'] },
-  { key: 'toolCall',   label: '工具:', tips: ['先查再用', '参数别想当然', '失败要重试'] },
-  { key: 'multimodal', label: '多模态:', tips: ['图里那只猫是重点', '音频有噪声', '看清坐标轴'] },
-  { key: 'speed',      label: '速度:', tips: ['别过度思考', '简单题快答', '先出草稿'] },
+  { key: 'reasoning', label: '灵感:', text: '先证伪再下结论' },
+  { key: 'reasoning', label: '灵感:', text: '把问题拆成子问题' },
+  { key: 'knowledge', label: '素材:', text: '召回相似训练样本' },
+  { key: 'knowledge', label: '素材:', text: '核对事实来源,别信直觉' },
+  { key: 'instruct', label: '金句:', text: '少一点发挥,按格式答' },
+  { key: 'instruct', label: '金句:', text: '别自作主张扩写' },
+  { key: 'longCtx', label: '考点:', text: '先看结尾再看开头' },
+  { key: 'longCtx', label: '考点:', text: '中间那个变量别忘了' },
+  { key: 'toolCall', label: '考点:', text: '先查再用,参数别想当然' },
+  { key: 'multimodal', label: '考点:', text: '图里那只猫是重点' },
+  { key: 'multimodal', label: '考点:', text: '音频有噪声,听清再说' },
+  { key: 'speed', label: '灵感:', text: '简单题快答,别过度思考' },
 ];
-const EXAM_HINT_TEXT = ['灵感', '素材', '金句', '考点'];   // 卡片前缀(作文比赛式的措辞)
+/* EXAM_HINTS_END */
+/* EXAM_THINK_BEGIN */
+const EXAM_THINK = {
+  _general: [
+    '这模型也就图一乐,建议加大训练强度。',
+    '先收藏了,等更新。',
+    '*参数翻倍,能力翻倍,电费翻四倍*',
+    '炼丹失败,炉子炸了,单子还在跑。',
+    '量化到 4bit 之后,我的智商也是 4bit。',
+    'MoE 有 8 个专家,今天上班的只有 1 个,还是负责倒水的。',
+    '吃白饭的大肥鱼说这题他也不会。',
+    '爱华tv 的 a/ 系列表示:这题我们测过,不过如此。',
+    'token 不够,但我意志力够。',
+    '幻觉不是 bug,是想象力过于旺盛。',
+  ],
+  instruct_bad: [
+    '用户说「简洁」,我写了 800 字,还加了总结。人性难移。',
+    '让我先声明一下我的局限性…(用户:我要的是答案)——啊,又跑偏了。',
+    '对齐税交了,但税表填错了。',
+    '*安全策略过度触发,把普通问题拒答了*',
+  ],
+  instruct_ok: [
+    '用户要 3 句话,我给了 3 句。很难,但我做到了。',
+    '没加「当然可以!」前缀。这次忍住了。',
+    '格式对齐:JSON、小写、无尾随逗号。完美。',
+  ],
+  knowledge_bad: [
+    '记忆里有个非常确信但完全错误的答案。它比正确答案还清晰。',
+    '我的知识截止在 2024 年。这道题是 2025 年的。我编了一个。',
+    '检索到了高度相关但其实是另一个东西的文档。经典 RAG 幻觉。',
+    '*自信地回答了错误答案,这是我最擅长的技能*',
+  ],
+  knowledge_ok: [
+    '召回成功。这条在 RAG 索引第 3 层,距我 0.12 的余弦距离。',
+    '知识截止日期救了我一次。这次。',
+    '事实核对完成,时间线没错。今天状态不错。',
+  ],
+  longCtx_bad: [
+    '读到第 20K token 时,我把前面的全忘了。这是注意力衰减的代价。',
+    '中间迷失。字面意义上的 lost in the middle。',
+    '上下文窗口够大,但我的脑子不够大。',
+  ],
+  longCtx_ok: [
+    '32K 上下文,我在第 3 段找到了关键变量。它一直住在那里。',
+    '先看结尾再看开头,中间那部分是废话。这招好用。',
+  ],
+  multimodal_bad: [
+    '*注意力机制疯狂运转* 这道题涉及多模态对齐,而我的视觉编码器今天在摸鱼。',
+    '图里有 7 个物体,我数出了 9 个。多出来的两个我不好意思说。',
+    '音频有噪声。我听成了「我要投诉」,其实是「我要投诉」。……等等。',
+  ],
+  multimodal_ok: [
+    '图里那只猫确实是猫。我确认了三次,因为上次我说它是狗。',
+    '坐标轴看清了,是 log 尺度。差点栽在这。',
+  ],
+  reasoning_bad: [
+    '用户要的是简洁答案,但我今天心情复杂,先展开讲讲背景。……啊,超时了。',
+    '我以为答案是 A。提交那一刻,我意识到是 B。可惜 token 已经花出去了。',
+    '推理链走到第 47 步,突然忘了自己在证明什么。',
+    '这道题的正确答案取决于你信哪个版本的常识。我信了错的那个。',
+    '*显存不足,降级到直觉模式*',
+  ],
+  reasoning_ok: [
+    '先证伪再下结论……等下,这题没有反例?那就是它了。',
+    '拆成三个子问题:一是、二是、三……嗯,答案自然浮出来了。',
+    '链式思考启动。第 1 步……第 2 步……第 47 步……算了直接说答案。',
+    '我怀疑这是个陷阱题。但它伪装得太差了。',
+    '这个逻辑链我在训练集里见过,第 8 个 epoch,一模一样。',
+    '边界样例检查通过。可以交付。',
+  ],
+  speed_bad: [
+    '太快了,答案是错的。但至少很快。',
+    '过度思考了两秒,然后答错。还不如不思考。',
+  ],
+  speed_ok: [
+    '不思考,直接答。答对了。这就是直觉的力量。',
+    '0.3 秒。用户还没加载完,我已经交了。',
+  ],
+  toolCall_bad: [
+    '参数名写错了。API 返回 400,我假装没看见,继续编了个结果。',
+    '工具调用失败,我优雅地退回了胡说八道模式。',
+    '*调了个不存在的函数,系统没报错,更可怕了*',
+  ],
+  toolCall_ok: [
+    '先查再用,参数校验通过。这次没瞎猜。',
+    '调用成功。失败重试的代码没用上,但留着安慰自己。',
+  ],
+};
+/* EXAM_THINK_END */
+const EXAM_HINT_TEXT = ['灵感', '素材', '金句', '考点'];   // 卡片前缀(作文场景的五味措辞)
 
 function examHintLerp(pair, importance) {
   const k = Math.max(0, Math.min(1, importance || 0));
@@ -3041,14 +3137,15 @@ function spawnExamHint(s, ex, totalH, gameHours) {
   if ((s.hints.length >= cfg.MAX_ALIVE) || !(totalH >= (s.nextHintH || 0))) return;
   const rnd = examHintRand(state.relay.train);
   s.nextHintH = totalH + examHintLerp(cfg.INTERVAL_H, imp) * (0.7 + rnd * 0.6);
+  // §17.8:EXAM_HINTS 是「一条卡一个条目」的扁平表(由文本池生成),text 已含前缀语义,
+  //         故不再从 tips 里二次取;prefix 仍按轮转给画面变化。
   const kind = EXAM_HINTS[Math.floor(rnd * EXAM_HINTS.length) % EXAM_HINTS.length];
-  const tip = kind.tips[Math.floor(rnd * kind.tips.length) % kind.tips.length];
   s.hintSeq = (s.hintSeq || 0) + 1;
   s.hints.push({
     id: s.hintSeq,
     attrKey: kind.key,
-    // 文案:「考点:先证伪再下结论」这类;前缀按类型轮转,让画面有变化
-    text: kind.label + tip,
+    // 文案:直接用池里那条(如「先证伪再下结论」);label 作为前缀来源之一
+    text: kind.text,
     prefix: EXAM_HINT_TEXT[s.hintSeq % EXAM_HINT_TEXT.length],
     untilH: totalH + examHintLerp(cfg.TTL_H, imp),
     score: Math.round(examHintLerp(cfg.SCORE, imp)),
@@ -3144,7 +3241,32 @@ function settleExam() {
     spawnFloatText(ex.name + (passed ? ' 通过(' : ' 落榜(') + gradeTxt + ') · ' + Math.round(score) + ' 分'
       + ' +' + formatNum(tokens) + ' tok' + (passed ? '' : ' —— 评委说还差些火候'),
       app.screen.width / 2, app.screen.height * 0.3);
+    // §17.8 模型内心戏:按「本次考试最弱的那一维 × 对错」从文本池抽一条(池来自《考试文案池.md》)
+    const line = examThinkLine(R, passed);
+    if (line) {
+      // 不延迟:vm 沙箱里没有 setTimeout(实测 ReferenceError)。两条浮字上下错开即可。
+      spawnFloatText('「' + line + '」', app.screen.width / 2, app.screen.height * 0.38);
+    }
   }
+}
+
+// §17.8:挑一条内心戏。优先按「本次最弱维度 × 对错」;没有再回落到通用池。
+// 文本池由 sync_exam_text.py 从《考试文案池.md》生成(EXAM_THINK),这里只做挑选。
+function examThinkLine(R, passed) {
+  const A = R.ability || {};
+  // 找最弱的一维(用同一条 0~100 口径;缺省视为中等)
+  let weak = 'reasoning', weakV = 1e9;
+  const dims = ['reasoning', 'knowledge', 'instruct', 'longCtx', 'toolCall', 'multimodal', 'speed'];
+  for (const k of dims) {
+    const v = (typeof A[k] === 'number') ? A[k] : 50;
+    if (v < weakV) { weakV = v; weak = k; }
+  }
+  const key = weak + (passed ? '_ok' : '_bad');
+  const pool = (EXAM_THINK && EXAM_THINK[key]) || [];
+  const gen = (EXAM_THINK && EXAM_THINK._general) || [];
+  const src = pool.length ? pool : gen;
+  if (!src.length) return '';
+  return src[Math.floor(Math.random() * src.length) % src.length];
 }
 
 // 旧名字保留(其它调用点/外部脚本可能引用):立刻按「满时长考完」结算一次

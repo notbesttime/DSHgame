@@ -664,6 +664,31 @@ console.log('\n[13] 公关三选一:概率公式 / 诡辩罚客流 / 道歉 / �
   ok('UI 只在事件/预警时出现(平时不占版面)', /if \(!activeEv\.length && !warned\) return;/.test(src5));
 }
 
+// ── [14] §17.8 文案池(从《考试文案池.md》生成,用户可直接改文档)──────────────
+console.log('\n[14] 文案池:内心戏按最弱维度×对错抽取 / 提示卡来自池 P');
+{
+  const sb9 = makeSim(20261012);
+  const src9 = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  // ① 标记块存在(扫描器的写入位置)
+  ok('模板含 EXAM_THINK / EXAM_HINTS 生成标记块',
+    src9.includes('/* EXAM_THINK_BEGIN */') && src9.includes('/* EXAM_HINTS_END */'));
+  // ② 提示卡是扁平表(每条一个 text,不再是 tips 数组)
+  ok('EXAM_HINTS 为扁平结构(每条自带 text)', /\{ key: '\w+', label: '[^']+', text: '[^']+' \}/.test(src9));
+  // ③ 内心戏按「最弱维度 × 对错」抽取
+  const R9 = sb9.state.relay;
+  R9.ability = { reasoning: 5, knowledge: 95, instruct: 95, longCtx: 95, toolCall: 95, multimodal: 95, speed: 95 };
+  const okLine = sb9.examThinkLine(R9, true);
+  const badLine = sb9.examThinkLine(R9, false);
+  ok('内心戏可抽取(答对分支非空)', !!okLine, okLine.slice(0, 24));
+  ok('内心戏可抽取(答错分支非空)', !!badLine, badLine.slice(0, 24));
+  ok('弱维度不同 ⇒ 抽到的池不同(推理弱时不会是知识池)', okLine !== badLine);
+  // ④ 抽到的文案必须真的来自模板里的池(防止函数返回硬编码)
+  ok('抽到的文案存在于模板文本池中', src9.includes(okLine.replace(/'/g, "\\'")) || src9.includes(okLine));
+  // ⑤ 扫描器脚本在位(用户改文档后要能重跑)
+  ok('sync_exam_text.py 在位', fs.existsSync(require('path').join(__dirname, '..', 'sync_exam_text.py')));
+  ok('《考试文案池.md》在位', fs.existsSync(require('path').join(__dirname, '..', '考试文案池.md')));
+}
+
 console.log('\n' + '─'.repeat(60));
 
 console.log('\n' + '─'.repeat(60));
