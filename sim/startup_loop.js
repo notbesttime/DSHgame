@@ -309,6 +309,9 @@ const CODE = [
   exF('trainItemPrice'), exF('trainItemMaxed'), exF('trainPriceText'),
   exF('trainPressureMaxed'), exF('trainCanUse'), exF('useTrainItem'), exF('finishSession'),
   exF('trainElapsedDays'), exF('fireExam'), exF('updateTrain'),
+  // §17.6(2026-10-16):考试改为会话式三段函数 —— updateTrain 会调 startExam/examTick,
+  // examTick 到点调 settleExam;漏抽会直接 ReferenceError(实测)。
+  exF('startExam'), exF('examTick'), exF('settleExam'),
   // —— stubs ——
   'var MODEL_ATTR_OVERRIDE = {};',
   'function officialPriceOf(m){ return blendPriceNum(m); }',
@@ -358,6 +361,17 @@ const INIT = `
   state.relay.train.ap = 10;
   var __examTok = 0, __examDays = [], __origFireExam = fireExam;
   fireExam = function(exam){ var b = state.tokens; __origFireExam(exam); var d = state.tokens - b; __examTok += d; __examDays.push({ name: exam.name, tok: d }); };
+  // §17.6(2026-10-16):考试改成「会话式」⇒ 真正的发放点在 settleExam(不再经过 fireExam)。
+  // 不包这层 ⇒ __examTok 恒 0 ⇒ 供给/平账口径失真(实测:考试 0.00M 却仍平账差 220500)。
+  var __origSettleExam = settleExam;
+  settleExam = function(){
+    var b = state.tokens;
+    var s = state.relay.train.examSession;
+    var nm = (s && TRAIN_CFG.EXAMS[s.idx]) ? TRAIN_CFG.EXAMS[s.idx].name : '(考试)';
+    __origSettleExam();
+    var d = state.tokens - b;
+    if (d > 0) { __examTok += d; __examDays.push({ name: nm, tok: d }); }
+  };
   var __excTok = 0, __boxTok = 0;
 `;
 

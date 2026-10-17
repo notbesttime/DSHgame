@@ -46,7 +46,9 @@ console.log('\n[1] base 信誉项（除数 8，与能力项同分母；门槛与
 {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
   const fn = src.slice(src.indexOf('function relayBaseUsers()'), src.indexOf('function relayBaseUsers()') + 400);
-  const m = fn.match(/return 2 \+ Math\.floor\(rep \/ (\d+)\) \+ Math\.floor\(Math\.max\(0, mcap - (\d+)\) \/ (\d+)\)/);
+  // §17.6(2026-10-16):公式外面包了 userBoost 加成,本体改成 `const base = 2 + ...; return base`。
+  // 断言守护的是**公式本体**(除数 8 / 门槛 20 / 分母 8),故兼容两种写法 —— 别为了过测试去改公式。
+  const m = fn.match(/(?:return|const base =) 2 \+ Math\.floor\(rep \/ (\d+)\) \+ Math\.floor\(Math\.max\(0, mcap - (\d+)\) \/ (\d+)\)/);
   ok('relayBaseUsers 源码形如 2 + floor(rep/repDiv) + floor(max(0,mcap-门槛)/mcapDiv)',
     !!m, fn.split('\n')[0]);
   if (!m) { console.log('\n公式对不上，后续断言无意义，直接中止。'); process.exit(1); }

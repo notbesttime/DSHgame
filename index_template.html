@@ -1507,16 +1507,28 @@ const TRAIN_CFG = {
   PRICE_ESC: 0.25,              // 线性 +25%/次
   PRICE_DECAY_H: 240,           // 每 240 游戏时(=10 游戏天)做一次衰减
   PRICE_DECAY: 0.8,             // 涨价计数 ×0.8(只算游戏时;暂停/离线不衰减)
-  EXAMS: [                      // 训练开始后累计游戏天数到阈值触发(1 游戏天=24 游戏时=24 现实分);奖励 tokens 以 M 计
-    // refCap = 考试自身的难度基准(2026-10-03 修 P1-11):按「正常训练进度到该天的能力」标定 ——
-    // 第1天≈8 / 第3天≈21 / 第7天≈39 / 第14天≈63(满配 100,能力公式钳顶 100),
-    // 正常练 grade ≈ 1.0,休闲 ~0.5,肝帝小测可冲 1.5 封顶(毕业大考 ref65,满配 100/65≈1.54 → 钳 1.5)。
-    // ⚠️ 原来档位读「标榜模型的 cap」——标榜越弱分越高,与考试意图相反,已废。
-    { name: '随堂小测', atDay: 1,  tokenM: 0.5, refCap: 8 },
-    { name: '月考',     atDay: 3,  tokenM: 2,   refCap: 20 },
-    { name: '模拟考',   atDay: 7,  tokenM: 6,   refCap: 40 },
-    { name: '毕业大考', atDay: 14, tokenM: 20,  refCap: 65 },
+  // ===== 考试阶梯(§17.6,2026-10-16 拍板:主线 60 游戏天)=====
+  // refCap  = 该节点的能力标定基准(按「正常练到该天」的能力,满配 100 钳顶);
+  // passGrade = **隐藏阈值**(§17.6:不告诉玩家)。0.95~1.05 逐场收紧 ⇒ 上一场刚好过的人下一场要继续练。
+  // tokenM  = 通过奖励的 token 基数(M);
+  // rep     = 通过奖励的信誉增量;usersPct = 用户量(base)临时上调比例;usersDays = 持续游戏天;
+  // importance = 0~1,决定「作文比赛式提示」的密度/窗口/单次收益(§17.6 第二步用);
+  // durationH = 考试持续游戏时(过程化:期间分数缓慢累积,到点结算)。
+  // ⚠️ 考试 token 是 sim 供给大头 ⇒ 阶梯一改,四窗口基线必须重跑(§17.6)。
+  EXAMS: [
+    // passGrade = 隐藏阈值(得分/100 ≥ 此值即通过)。首考宽松(新手能起步),逐场收紧。
+    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.45, rep: 1.0,  usersPct: 0.05, usersDays: 2,  importance: 0.10, durationH: 4 },
+    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.45, rep: 1.5,  usersPct: 0.08, usersDays: 2,  importance: 0.20, durationH: 6 },
+    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.50, rep: 2.0,  usersPct: 0.10, usersDays: 3,  importance: 0.30, durationH: 8 },
+    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.55, rep: 2.5,  usersPct: 0.12, usersDays: 3,  importance: 0.40, durationH: 12 },
+    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 1.00, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 16 },
+    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 1.02, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 24 },
+    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 1.04, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 32 },
+    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 1.05, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 48, graduate: true },
   ],
+  // 重考(§17.6 拍板):7 游戏天后重考;通过奖励 ×0.7^(k-1) 递减(不归零)
+  RETAKE_DELAY_DAYS: 7,
+  RETAKE_REWARD_DECAY: 0.7,
 };
 // 消耗型道具:买一次用一次。instant=立即结算;session=扣费后人物落座 duraMin 游戏分再结算大 Δ。
 // attr 目标键(同 state.relay.ability);rate=比例增益(结算时按 (100-当前值)*rate*gainMul 计算,分数越高越难提升);need=前置门槛。
@@ -1535,7 +1547,15 @@ const TRAIN_ITEMS = [
 ];
 function trainDefaults() {
   return { ap: 0, apAccum: 0, pressure: 0, examStage: 0, examStartH: null, session: null,
-           bought: {}, priceCount: {}, priceDecayAnchorH: null };
+           bought: {}, priceCount: {}, priceDecayAnchorH: null,
+           // ===== §17.6 考试状态机(2026-10-16 落码)=====
+           examSession: null,   // { idx, startH, score, clicks, examRef } 考试进行中
+           examRetakes: {},     // { idx: 已重考次数 }  —— 通过奖励 ×0.7^(k-1)
+           examScores: {},      // { idx: 最近一次得分 0~100 } —— HUD/对比用,不进经济
+           examLastGrade: {},   // { idx: 最近一次 grade } —— 「比上次好/差」文案用
+           graduate: false,     // 毕业大考通过(= 阶段2 解锁,内容不做)
+           userBoost: null      // { untilH, pct } 通过后的用户量临时上调(§17.6 奖励)
+         };
 }
 
 function blendPriceNum(m) { return Number(((m.pi + m.po * 3) / 4).toFixed(2)); }
@@ -1996,7 +2016,15 @@ function relayListedModel() { return findModelByName(state.relay.listedModel); }
 function relayBaseUsers() {
   const rep = state.relay.reputation || 0;
   const mcap = modelCapability(state.relay.ability);
-  return 2 + Math.floor(rep / 8) + Math.floor(Math.max(0, mcap - 20) / 8);
+  const base = 2 + Math.floor(rep / 8) + Math.floor(Math.max(0, mcap - 20) / 8);
+  // §17.6 考试过关奖励:用户量临时上调(体现「更多人知道」)。
+  // ⚠️ 无 boost(或已过期)时**必须逐位返回原值** —— verify_users 的 42 项断言依赖它。
+  const T = state.relay.train;
+  const b = T && T.userBoost;
+  if (!b) return base;
+  const H = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  if (!(b.untilH > H) || !(b.pct > 0)) return base;
+  return base + Math.floor(base * b.pct);
 }
 // 并发用户上限(P1-6,2026-10-03):工具调用决定「能同时服务多少用户」——
 // ATTR_DESC.toolCall 早就写着这句承诺,但代码里从来没有上限,工具调用在经营层零出口。
@@ -2747,30 +2775,111 @@ function updateTrain(gameHours) {
     }
   }
   const elapsed = trainElapsedDays();
-  while (T.examStage < TRAIN_CFG.EXAMS.length && elapsed >= TRAIN_CFG.EXAMS[T.examStage].atDay) {
-    fireExam(TRAIN_CFG.EXAMS[T.examStage]);
-    T.examStage += 1;
+  // ===== §17.6 考试状态机:到点开考 → 考期内累积分数 → 到点结算 =====
+  // 时钟一律用 totalH(绝对游戏时,只算游戏时/暂停与离线不推进),与 trainElapsedDays 同源。
+  const totalH = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  if (T.examSession) {
+    examTick(totalH, gameHours);          // 过程化:累积分数,到点结算
+  } else if (T.examStage < TRAIN_CFG.EXAMS.length) {
+    const ex = TRAIN_CFG.EXAMS[T.examStage];
+    const retakes = T.examRetakes[T.examStage] || 0;
+    const dueDay = ex.atDay + retakes * TRAIN_CFG.RETAKE_DELAY_DAYS;   // 落榜后 7 天再战
+    if (elapsed >= dueDay) startExam(T.examStage);
   }
 }
 
-// 测评 = 能力(§2.1)对照「考试自身档位」 × 像不像(§14.11 属性层) → 发 M 级 tokens(1e6 恰为 §14.3 定价分母)
-function fireExam(exam) {
-  const R = state.relay;
-  const ability = modelCapability(R.ability);
-  const listed = relayListedModel();
-  // P1-11(2026-10-03):档位基准原读「标榜模型的 cap」——标榜越弱 grade 越高(能力/弱cap 直接送满),
-  // 还能考前临时换弱标榜、考完换回,与「考试测你练没练」的意图相反。现改用考试自身的 refCap(见 EXAMS 注释)。
-  const refCap = Math.max(exam.refCap, 1);
-  const grade = Math.max(0, Math.min(1.5, ability / refCap));                    // 能力 / 考试档位
-  // 相似系数改用 raw(纯属性像不像,不含能力倍率):能力已在 grade 里算过一遍,
-  // 原来再乘 similarityTo(内含 capMul)等于把能力算两次,是第二条「标榜越弱越赚」的通道。
-  const simFactor = listed ? (0.6 + rawSimilarityTo(R.ability, listed) / 100 * 0.6) : 0.7;
-  const tokens = exam.tokenM * 1e6 * (0.5 + grade) * simFactor;
-  state.tokens += tokens;
-  updateTokenDisplay();
+// ========== §17.6 考试 = 「会话式」过程化考试(2026-10-16)==========
+// 与旧 fireExam 的区别:①不是瞬间结算,开考后持续 durationH 游戏时,期间分数累积;
+// ②有隐藏阈值 passGrade(不告诉玩家)⇒ 只给等级/点评;③落榜可重考(7 游戏天),奖励 ×0.7^(k-1);
+// ④通过奖励 = token + 信誉 + 用户量临时上调(按 importance 递增);⑤毕业大考通过 ⇒ graduate 标记。
+// 第二步才会加「作文比赛式限时提示点选」(分数 +N / 属性 +δ),本步先留 examTick 的 gain 钩子。
+
+function startExam(idx) {
+  const R = state.relay, T = R.train;
+  const ex = TRAIN_CFG.EXAMS[idx];
+  if (!ex) return;
+  const totalH = (R.news && typeof R.news.totalH === 'number') ? R.news.totalH : 0;
+  T.examSession = { idx, startH: totalH, endH: totalH + (ex.durationH || 6), score: 0, clicks: 0, attrGain: 0 };
   if (typeof spawnFloatText === 'function') {
-    spawnFloatText(exam.name + ' 通过! +' + formatNum(tokens) + ' tok', app.screen.width / 2, app.screen.height * 0.3);
+    spawnFloatText(ex.name + ' 开考(持续 ' + (ex.durationH || 6) + ' 游戏时)', app.screen.width / 2, app.screen.height * 0.32);
   }
+}
+
+// 考试进行中:每游戏时累积基础分(由能力决定),到点结算
+function examTick(totalH, gameHours) {
+  const R = state.relay, T = R.train;
+  const s = T.examSession;
+  if (!s) return;
+  const ex = TRAIN_CFG.EXAMS[s.idx];
+  if (!ex) { T.examSession = null; return; }
+  // 基础得分速率:能力/refCap(钳 0~1.5)⇒ 满分 100 的考试期间线性累积
+  const ability = modelCapability(R.ability);
+  const ratio = Math.max(0, Math.min(1.5, ability / Math.max(ex.refCap, 1)));
+  const span = Math.max(1, s.endH - s.startH);
+  const perHour = (ratio / span) * 100 * Math.min(1, gameHours);   // 每游戏时得分(上限 100)
+  s.score = Math.min(100, s.score + perHour);
+  if (totalH >= s.endH) settleExam();
+}
+
+function settleExam() {
+  const R = state.relay, T = R.train;
+  const s = T.examSession;
+  if (!s) return;
+  T.examSession = null;
+  const idx = s.idx, ex = TRAIN_CFG.EXAMS[idx];
+  if (!ex) return;
+  const score = Math.max(0, Math.min(100, s.score));
+  const passLine = Math.max(1, Math.min(99, ex.passGrade * 100));   // 隐藏阈值(不给玩家看)
+  const passed = score >= passLine;
+  const retakes = T.examRetakes[idx] || 0;
+  T.examScores[idx] = Math.round(score);
+  T.examLastGrade[idx] = score;
+  // 等级映射(模糊信号第 1 层):按「得分 / 隐藏阈值」的比值分档,不公开分界
+  const rr = score / passLine;
+  const gradeTxt = rr >= 1.15 ? 'S' : rr >= 1.0 ? 'A' : rr >= 0.92 ? 'B' : rr >= 0.8 ? 'C' : 'D';
+  const decay = Math.pow(TRAIN_CFG.RETAKE_REWARD_DECAY, retakes);
+  const listed = relayListedModel();
+  const simFactor = listed ? (0.6 + rawSimilarityTo(R.ability, listed) / 100 * 0.6) : 0.7;
+  // ⚠️ 2026-10-16 关键设计修正(token 照发,不过关才不给「额外奖励」):
+  //    本作经济里**考试 token 是供给主源**(D30 占 65%),而能力提升又依赖 token 玩强化训练。
+  //    若「不通过 = 没有 token」⇒ 能力永远不涨 ⇒ 死锁(实测:连 D30 局数都掉到 1、供给 0.73M)。
+  //    故:得分换算 token 始终发放(与 §16.5 旧口径一致,保证经济链不断),
+  //        「通过」才额外给 信誉 + 用户量加成 + 推进到下一场;落榜只是原地 7 天后重考。
+  const gradeNum = Math.min(1.5, score / 100);
+  // ⚠️ 重考不发 token(2026-10-16 修):首考无论过没过都发(否则经济链死锁),
+  //    但**重考只重新评估**,再发就变成「落榜刷钱」——实测 D30 考试供给会从 28M 涨到 74M。
+  // 首考全额;重考 3 折(不发 ⇒ 能力练不上去会死锁;全额 ⇒ 落榜刷钱)。实测两者都错过一次。
+  const tokenMul = retakes === 0 ? 1 : 0.3;
+  const tokens = ex.tokenM * 1e6 * (0.5 + gradeNum) * simFactor * tokenMul;
+  if (tokens > 0) {
+    state.tokens += tokens;
+    updateTokenDisplay();
+  }
+  if (passed) {
+    if (ex.rep) R.reputation = Math.min(100, R.reputation + ex.rep * decay);
+    if (ex.usersPct) {
+      const totalH = (R.news && typeof R.news.totalH === 'number') ? R.news.totalH : 0;
+      T.userBoost = { untilH: totalH + (ex.usersDays || 3) * 24, pct: ex.usersPct * decay };
+    }
+    if (ex.graduate) T.graduate = true;
+    T.examStage = idx + 1;                       // 进入下一场
+  } else {
+    T.examRetakes[idx] = retakes + 1;            // 落榜:7 天后再战
+  }
+  if (typeof spawnFloatText === 'function') {
+    spawnFloatText(ex.name + (passed ? ' 通过(' : ' 落榜(') + gradeTxt + ') · ' + Math.round(score) + ' 分'
+      + ' +' + formatNum(tokens) + ' tok' + (passed ? '' : ' —— 评委说还差些火候'),
+      app.screen.width / 2, app.screen.height * 0.3);
+  }
+}
+
+// 旧名字保留(其它调用点/外部脚本可能引用):立刻按「满时长考完」结算一次
+function fireExam(exam) {
+  const idx = TRAIN_CFG.EXAMS.indexOf(exam);
+  if (idx < 0) return;
+  startExam(idx);
+  state.relay.train.examSession.endH = state.relay.news.totalH;
+  settleExam();
 }
 
 // ========== 调教「强化训练」= 点按成组消除(设计 §16.10;在调教场景内,与电脑面板区分;主流缓慢增长) ==========
@@ -7184,6 +7293,13 @@ function loadGame() {
     if (typeof state.relay.train.pressure !== 'number') state.relay.train.pressure = 0;
     if (state.relay.train.examStartH == null) state.relay.train.examStartH = null;
     if (typeof state.relay.train.examStage !== 'number') state.relay.train.examStage = 0;
+    // ===== §17.6 考试状态机字段(老存档兜底;不补会让 examRetakes[idx] 直接抛错)=====
+    if (!state.relay.train.examRetakes || typeof state.relay.train.examRetakes !== 'object') state.relay.train.examRetakes = {};
+    if (!state.relay.train.examScores || typeof state.relay.train.examScores !== 'object') state.relay.train.examScores = {};
+    if (!state.relay.train.examLastGrade || typeof state.relay.train.examLastGrade !== 'object') state.relay.train.examLastGrade = {};
+    if (typeof state.relay.train.graduate !== 'boolean') state.relay.train.graduate = false;
+    if (state.relay.train.examSession === undefined) state.relay.train.examSession = null;
+    if (state.relay.train.userBoost === undefined) state.relay.train.userBoost = null;
     // 道具涨价/上限账本(2026-10-05):老存档缺 bought/priceCount → 补空表(老玩家视为「一次都没买过」)
     if (!state.relay.train.bought || typeof state.relay.train.bought !== 'object') state.relay.train.bought = {};
     if (!state.relay.train.priceCount || typeof state.relay.train.priceCount !== 'object') state.relay.train.priceCount = {};
