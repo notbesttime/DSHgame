@@ -292,6 +292,7 @@ const CODE = [
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
   exF('p2Smoothstep'), exF('p2StealthMul'), exF('p2Ensure'), exF('p2FlowMul'), exF('p2PoolMul'),
   exF('p2CrashNews'), exF('p2RiskSettle'),   // §20.15:P2-1/P2-4 已落模板,沙箱须能解析 settle 钩子
+  exF('prChance'), exF('prSubsidyCost'), exF('prResolve'), exF('prWarnTick'),   // §8 P2-2 公关
   exF('p2CategoryOf'), exF('p2HeatTick'), exF('p2HeatMul'),   // §20.16:P2-3 热点已落模板
   exC('NEWS_LIFE_H'), exC('NEWS_MAX_ACTIVE'), // p2CrashNews 的日报条目用到
   exC('HEAT_CATS'),                           // P2-3 热点类别表(p2HeatTick 用)
@@ -336,6 +337,9 @@ const CODE = [
   'var SKEYS = SIM_KEYS;',
   // 标定用开关:TRACE_EXAM=1 时逐场打印考试得分/能力/是否通过(必须在沙箱内可见,故用 var)
   'var __TRACE_EXAM = ' + (process.env.TRACE_EXAM ? 'true' : 'false') + ';',
+  // §8 P2-2 公关策略注入:sim 无法模拟「玩家决策」,用环境变量模拟几种极端策略做剂量曲线。
+  // PR_POLICY = deflect | apologize | subsidize | ''(不公关)
+  'var __PR_POLICY = ' + JSON.stringify(process.env.PR_POLICY || '') + ';',
 ].join('\n');
 
 // P2 实验补丁:默认全关(不设 env)时 src === CODE,基线与 §20.14 四窗口逐位一致。
@@ -388,6 +392,9 @@ const INIT = `
     }
   };
   var __excTok = 0, __boxTok = 0;
+  // §8 P2-2:sim 用环境变量模拟「玩家选择的公关策略」(空 = 不公关)。
+  // 必须在 p2Ensure 建出对象之后再写,且每帧前保持 —— 这里一次性写入即可(对象是持久的)。
+  if (__PR_POLICY) { var _p2s = p2Ensure(); _p2s.prPolicy = __PR_POLICY; }
 `;
 
 function makeSim(seed) {

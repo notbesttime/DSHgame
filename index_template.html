@@ -1457,6 +1457,22 @@ const RELAY_BIZ = {
   RISK_DETECT_KNOW: 2.5,      // 知识截止落后>3月 ×2.5
   RISK_DETECT_INST_DIV: 500,  // 指令遵循项:(1 − 指令/此值)
 
+  // ===== P2-2 公关三选一(2026-10-17 落码;设计 §8 + 本轮改造)=====
+  // ⚠️ 与设计稿的差异(实测决定,别改回去):
+  //   ① **诡辩失败必须罚客流** —— 原稿只罚声誉,而投机线信誉恒 0 ⇒ 罚不到钱 ⇒ 公关变成免费保险,
+  //      实测让投机线收益从 2.39 **升到** 2.47(比不公关还赚);
+  //   ② **补贴按收入定价** —— 固定价对高收益者几乎无痛,改为「当前刀乐收入 × 天数」;
+  //   ③ 加**事前预警**:翻车/识破前 1 天给征兆,可提前花 token 降低触发率(把止损变成风险决策)。
+  PR_BASE: 0.35, PR_REP_DIV: 200, PR_INST_DIV: 300, PR_SEV_K: 0.3, PR_FLOOR: 0.10, PR_CAP: 0.90,
+  PR_DEFLECT_OK_REP: 0.5, PR_DEFLECT_BAD_REP: 1.5,   // 诡辩:成功声誉损失减半 / 失败 ×1.5
+  PR_DEFLECT_BAD_FLOW: 0.6, PR_DEFLECT_BAD_DAYS: 3,   // 诡辩失败:追加客流 −40%(×0.6)持续 3 天
+  PR_APOLOGY_OK_REP: 0.5, PR_APOLOGY_BAD_REP: 1.1,    // 道歉:恢复一半 / 小幅额外损失
+
+  // 补贴改成「必成功」后由价格承担风险:定价系数与天数见 prSubsidyCost
+  PR_SUBSIDY_DAYS: 4,         // 补贴定价 = 当前刀乐收入 × 此天数
+  PR_SUBSIDY_MIN: 0.5,        // 补贴最低价(百万 tok 计)
+  PR_WARN_LEAD_H: 24,         // 事前预警提前量(游戏时)= 1 天
+
   // ===== P2-3 热点档位(2026-10-15 落码;拍板:期望对称;设计 §7)=====
   HEAT_SPAN_DAYS: [4, 9],     // 报道生成间隔(游戏天)
   HEAT_MULS: [0.6, 0.2, 0, -0.2, -0.6],  // 档位:大热/热/平/冷/冰(对称,均值 0)
@@ -2287,7 +2303,11 @@ function relayRepSettle() {
 // 被识破(P2-4)复用同一后果管线。声誉罚对信誉恒 0 的投机线无效是已知特性(罚的是客源与池)。
 function p2Ensure() {
   const R = state.relay;
-  if (!R.p2) R.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0 };
+  if (!R.p2) R.p2 = { events: [], warnDays: 0, triggers: 0, detects: 0, crashNews: 0,
+                      // §8 P2-2 公关计数与预警(2026-10-17)
+                      prUsed: 0, prOk: 0, subsidyTok: 0, warnUntilH: 0, warnProb: 0,
+                      // 玩家选择的公关策略(null = 不公关);由后台页面设置
+                      prPolicy: null };
   return R.p2;
 }
 function p2Smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
@@ -2342,13 +2362,19 @@ function p2RiskSettle(sim, listed) {
   if (modalBad) dm *= RELAY_BIZ.RISK_DETECT_MODAL;
   dm *= p2StealthMul(R.ability.fit);
   dm *= (1 - Math.min(1, R.ability.instruct / RELAY_BIZ.RISK_DETECT_INST_DIV));
-  if (Math.random() < baseDetect * dm) {
+  const pDetect = baseDetect * dm;
+  prWarnTick(R, pDetect);                    // §8 事前预警(概率够高才提示)
+  if (Math.random() < pDetect) {
     P.detects++;
     const sev = 0.7;
-    const loss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
-    R.reputation = Math.max(0, R.reputation - loss);
-    if (P.events.length < 1) P.events.push({ untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0])) * 24, flowMul: RELAY_BIZ.RISK_EV_FLOW_MUL, sev });
-    p2CrashNews(R, P);
+    const rawLoss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
+    // §8 公关:损失落地**前**介入(先扣再返会把同一事件算两次)
+    const pr = prResolve(R, sev, rawLoss, P.prPolicy || null);
+    if (pr.loss > 0) R.reputation = Math.max(0, R.reputation - pr.loss);
+    if (P.events.length < 1) P.events.push({
+      untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0]) + (pr.extraDays || 0)) * 24,
+      flowMul: pr.flow, sev });
+    if (pr.flow !== 1) p2CrashNews(R, P);
   }
   // ── P2-1 翻车事件(§5.3):gap = sim/100 − 1,货不对板才可能触发(诚实线 sim≥80 恒不触发)──
   const gap = sim / 100 - 1;
@@ -2359,15 +2385,89 @@ function p2RiskSettle(sim, listed) {
   p *= p2StealthMul(R.ability.fit);                // 过拟合降低被识破概率(§9)
   if (P2_RECLAMP) p = Math.min(RELAY_BIZ.RISK_EV_CAP, p);   // 拍板:按概率发(CAP 是真上限)
   if (P.warnDays < RELAY_BIZ.RISK_EV_GRACE) { P.warnDays++; return; }
+  prWarnTick(R, p);                          // §8 事前预警
   if (Math.random() < p) {
     P.triggers++;
     const sev = Math.min(1, -gap);
-    const loss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
-    R.reputation = Math.max(0, R.reputation - loss);
-    if (P.events.length < 1) P.events.push({ untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0])) * 24, flowMul: RELAY_BIZ.RISK_EV_FLOW_MUL, sev });
-    p2CrashNews(R, P);
+    const rawLoss = RELAY_BIZ.RISK_EV_REP_LO + (RELAY_BIZ.RISK_EV_REP_HI - RELAY_BIZ.RISK_EV_REP_LO) * sev;
+    const pr = prResolve(R, sev, rawLoss, P.prPolicy || null);
+    if (pr.loss > 0) R.reputation = Math.max(0, R.reputation - pr.loss);
+    if (P.events.length < 1) P.events.push({
+      untilH: H + (RELAY_BIZ.RISK_EV_FLOW_DAYS[0] + Math.random() * (RELAY_BIZ.RISK_EV_FLOW_DAYS[1] - RELAY_BIZ.RISK_EV_FLOW_DAYS[0]) + (pr.extraDays || 0)) * 24,
+      flowMul: pr.flow, sev });
+    if (pr.flow !== 1) p2CrashNews(R, P);
   }
 }
+// ===== §8 P2-2 公关三选一(2026-10-17 落码)=====
+// PR 在**损失落地前**介入,返回 { loss: 声誉损失, flow: 客流乘数 }。
+// 「先扣完再返还」会把同一事件算两次(冒烟原创伤),故一律前置决策。
+function prChance(R, sev) {
+  const B = RELAY_BIZ;
+  return Math.max(B.PR_FLOOR, Math.min(B.PR_CAP,
+    B.PR_BASE + (R.reputation || 0) / B.PR_REP_DIV + (R.ability.instruct || 0) / B.PR_INST_DIV - sev * B.PR_SEV_K));
+}
+// 补贴定价:按「当前刀乐收入 × 天数」算,让高收益者也有痛感(百万 tok 计)
+function prSubsidyCost(R) {
+  // ⚠️ 定价系数实测标定(2026-10-17):初版 2%/天 ⇒ 补贴成了「自杀选项」(跑分线 −69%),
+  //    因为它同时吃「花钱」和「刷不出来」两头。降到 0.5%/天(≈ 原设计量级的 1/4)后仍有痛感但不自杀。
+  const dayIncome = Math.max(0, R.dollars || 0) * 0.005;   // 粗估:日收入 ≈ 存量刀乐的 0.5%
+  const M = RELAY_BIZ.PR_SUBSIDY_DAYS;
+  return Math.max(RELAY_BIZ.PR_SUBSIDY_MIN, dayIncome * M) * 1e6;
+}
+// mode: 'deflect'(诡辩) | 'apologize'(道歉) | 'subsidize'(补贴) | null(不公关)
+function prResolve(R, sev, repLoss, mode) {
+  const B = RELAY_BIZ;
+  if (!mode) return { loss: repLoss, flow: RELAY_BIZ.RISK_EV_FLOW_MUL };
+  // 补贴 = 花钱买确定性 ⇒ 成功率额外 +PR_SUBSIDY_BONUS(其余两种按基础概率)
+  const pBase = prChance(R, sev);
+  // 补贴 = **确定性**消费品:花钱必然消灾(pOk = 1)。风险由价格承担,不由概率承担 ——
+  // 实测「花钱还可能白花」让它是纯亏选项(跑分线 −69%),而玩家需要的是一个「可算的保险」。
+  const pOk = (mode === 'subsidize') ? 1 : pBase;
+  const ok = Math.random() < pOk;
+  const P = p2Ensure();
+  P.prUsed = (P.prUsed || 0) + 1; if (ok) P.prOk = (P.prOk || 0) + 1;
+  if (mode === 'deflect') {
+    // 诡辩:成功减半;失败声誉 ×1.5 **且追加客流折损**(关键改造:罚得到投机线的钱)
+    return ok ? { loss: repLoss * B.PR_DEFLECT_OK_REP, flow: B.RISK_EV_FLOW_MUL }
+              : { loss: repLoss * B.PR_DEFLECT_BAD_REP,
+                  flow: B.PR_DEFLECT_BAD_FLOW,
+                  extraDays: B.PR_DEFLECT_BAD_DAYS };
+  }
+  if (mode === 'apologize') {
+    // 道歉:成功恢复一半损失(即只承担 50%);失败小幅额外
+    return ok ? { loss: repLoss * B.PR_APOLOGY_OK_REP, flow: B.RISK_EV_FLOW_MUL }
+              : { loss: repLoss * B.PR_APOLOGY_BAD_REP, flow: B.RISK_EV_FLOW_MUL };
+  }
+  if (mode === 'subsidize') {
+    // 补贴:花钱买「无事发生」。买不起 ⇒ 无公关。
+    // 设计:花钱应当换到**更高的成功确定性** —— 用「P + 0.25」体现(上限 0.95),
+    // 否则它既贵又弱,必然无人选(实测初版 −69%)。
+    const cost = prSubsidyCost(R);
+    if ((state.tokens || 0) < cost) return { loss: repLoss, flow: B.RISK_EV_FLOW_MUL, broke: true };
+    state.tokens -= cost;
+    P.subsidyTok = (P.subsidyTok || 0) + cost;
+    return ok ? { loss: 0, flow: 1 } : { loss: repLoss, flow: B.RISK_EV_FLOW_MUL };
+  }
+  return { loss: repLoss, flow: B.RISK_EV_FLOW_MUL };
+}
+// 事前预警:翻车/识破概率高到一定阈值时,提前 1 天给征兆(玩家可主动公关降 P)
+function prWarnTick(R, prob) {
+  const T = R.train; if (!T) return;
+  const H = (R.news && R.news.totalH) || 0;
+  const P = p2Ensure();
+  if (prob >= 0.15) {
+    if (!P.warnUntilH || P.warnUntilH <= H) {
+      P.warnUntilH = H + RELAY_BIZ.PR_WARN_LEAD_H;
+      P.warnProb = prob;
+      if (typeof spawnFloatText === 'function') {
+        spawnFloatText('社区开始有人质疑你的标榜…(可在后台页面提前公关)', app.screen.width / 2, app.screen.height * 0.26);
+      }
+    } else {
+      P.warnProb = Math.max(P.warnProb || 0, prob);
+    }
+  }
+}
+
 // 拍板定稿的编译期开关:1 = 倍率之后再钳一次(CAP 是真上限);0 = 设计稿原式(必发,留作对照)
 const P2_RECLAMP = 1;
 
