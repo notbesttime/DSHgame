@@ -1448,7 +1448,7 @@ const RELAY_BIZ = {
   RISK_EV_REP_HI: 20,
   RISK_EV_FLOW_MUL: 0.6,      // 事件期自然客流乘数(留存与新增都乘)
   RISK_EV_FLOW_DAYS: [3, 7],  // 折损持续(游戏天,随机区间)
-  RISK_EV_POOL_MUL: 0.7,      // 事件期发布池抽量打折(D90 实测 −3.3σ、跑分保留 79%、诚实 Δ=0)
+  RISK_EV_POOL_MUL: 0.85,      // 事件期发布池抽量打折(D90 实测 −3.3σ、跑分保留 79%、诚实 Δ=0)
   RISK_STEALTH_K: 0.7,        // 过拟合隐蔽度:拟合=HI 时检测概率 ×(1−K)
   RISK_STEALTH_LO: 70,        // smoothstep 区间(设计 §9:拟合>70 才有隐蔽度)
   RISK_STEALTH_HI: 100,
@@ -1517,10 +1517,10 @@ const TRAIN_CFG = {
   // ⚠️ 考试 token 是 sim 供给大头 ⇒ 阶梯一改,四窗口基线必须重跑(§17.6)。
   EXAMS: [
     // passGrade = 隐藏阈值(得分/100 ≥ 此值即通过)。首考宽松(新手能起步),逐场收紧。
-    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 1.0,  usersPct: 0.05, usersDays: 2,  importance: 0.10, durationH: 4 },
-    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 1.5,  usersPct: 0.08, usersDays: 2,  importance: 0.20, durationH: 6 },
-    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 2.0,  usersPct: 0.10, usersDays: 3,  importance: 0.30, durationH: 8 },
-    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 2.5,  usersPct: 0.12, usersDays: 3,  importance: 0.40, durationH: 12 },
+    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.10, durationH: 4 },
+    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.20, durationH: 6 },
+    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.30, durationH: 8 },
+    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.40, durationH: 12 },
     { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 16 },
     { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 24 },
     { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 32 },
