@@ -513,6 +513,100 @@ console.log('\n[11] P2-3 热点:对称性 / 调度 / 类别命中 / 叠加 / 过
   ok('热点时钟挂点在位:relayHourlyRefresh 开头调 p2HeatTick(被删/被注释都算失效)', /^  p2HeatTick\(\);/m.test(hr3), '(relayHourlyRefresh 头部,须为非注释行)');
   function HEAT_CATS_AS(sb) { return ['推理型', '多模态型', '长上下文型', 'Agent型', '廉价快模型型']; }
 }
+// ── [12] §17.6 考试体系(阶梯/状态机/隐藏阈值/重考/提示点选) ──────────────
+console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重考 / 提示点选(分数与数值分离)');
+{
+  const sb6 = makeSim(20261012);
+  const R6 = sb6.state.relay, T6 = R6.train, TCFG6 = sb6.TCFG;
+  // ① 阶梯:8 档、60 天主线、atDay 严格递增
+  ok('阶梯 8 档', TCFG6.EXAMS.length === 8, String(TCFG6.EXAMS.length));
+  ok('主线 60 游戏天(毕业大考 atDay=60)', TCFG6.EXAMS[7].atDay === 60 && TCFG6.EXAMS[7].graduate === true);
+  let mono = true;
+  for (let i = 1; i < TCFG6.EXAMS.length; i++) if (!(TCFG6.EXAMS[i].atDay > TCFG6.EXAMS[i-1].atDay)) mono = false;
+  ok('atDay 严格递增', mono);
+  // ② 隐藏阈值:先降后升(初版逐场收紧会月考死锁) —— 用「首场 > 第二场」锚定形状
+  ok('隐藏阈值先降后升(首场 > 第二场,防月考死锁)',
+    TCFG6.EXAMS[0].passGrade > TCFG6.EXAMS[1].passGrade,
+    TCFG6.EXAMS[0].passGrade + ' > ' + TCFG6.EXAMS[1].passGrade);
+  ok('阈值全部 < 1(满分 100 分制下可达)', TCFG6.EXAMS.every(e => e.passGrade < 1));
+  // ③ 方案B:小考只给 token,市级以上才给信誉/用户
+  ok('前 4 场不给信誉与用户奖励(方案B)',
+    TCFG6.EXAMS.slice(0,4).every(e => !e.rep && !e.usersPct));
+  ok('市级及以上给信誉与用户奖励',
+    TCFG6.EXAMS.slice(4).every(e => e.rep > 0 && e.usersPct > 0));
+  ok('重考间隔 = 7 游戏天', TCFG6.RETAKE_DELAY_DAYS === 7, String(TCFG6.RETAKE_DELAY_DAYS));
+  // ④ 会话式:开考建立 session、期间分数单调上涨、到点结算清空
+  sb6.startExam(0);
+  const s6 = T6.examSession;
+  ok('开考建立会话且 endH > startH', !!s6 && s6.endH > s6.startH, s6 ? (s6.startH + '→' + s6.endH) : 'null');
+  const sc0 = s6.score;
+  for (let i = 0; i < 60; i++) { R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60); if (!T6.examSession) break; }
+  ok('考试期间分数随时间上涨(过程化,不是瞬间出结果)',
+    !T6.examSession ? true : T6.examSession.score > sc0, String(sc0.toFixed(2)));
+  // ⑤ 提示:考试中能生成限时提示
+  const s7 = T6.examSession;
+  ok('考试中生成限时提示', !!s7 && (s7.hints || []).length > 0, s7 ? String((s7.hints||[]).length) : 'settled');
+  if (s7 && s7.hints && s7.hints.length) {
+    const h = s7.hints[0];
+    const area = { x: 0, y: 0, w: 1000, h: 600 };
+    const beforeScore = s7.score, beforeGain = s7.attrGain || 0;
+    const attrKey = h.attrKey, attrBefore = R6.ability[attrKey] || 0;
+    // ⑥ 点中:分数 +N(只进本次考试) + 属性 +δ(唯一带出局外的收益)
+    const hit = sb6.examHintClick(area.x + h.ux * area.w, area.y + h.uy * area.h, area);
+    ok('点中提示判定命中', hit === true);
+    ok('点中后本次分数上涨(分数只进本次考试)', s7.score > beforeScore, beforeScore.toFixed(1) + ' → ' + s7.score.toFixed(1));
+    ok('点中后属性小幅上涨(唯一带出局外的收益)',
+      (s7.attrGain || 0) > beforeGain && (R6.ability[attrKey] || 0) > attrBefore,
+      attrKey + ' ' + beforeGain.toFixed(2) + ' → ' + (s7.attrGain||0).toFixed(2));
+    ok('单条属性收益很小(不是一次练满)', h.attr <= 0.2, String(h.attr.toFixed(3)));
+    // ⑦ 空白处点不中
+    ok('空白处点击不命中', sb6.examHintClick(-99, -99, area) === false);
+    // ⑧ 每场属性上限:连续点满后不再加属性(行为验证 —— 常量在沙箱里是块作用域,外部读不到)
+    let gainedSum = 0, clicks = 0;
+    for (let round = 0; round < 80 && T6.examSession; round++) {
+      // 强制补一条提示再点(模拟肝帝狂点)
+      if (!s7.hints || !s7.hints.length) {
+        s7.nextHintH = 0;
+        sb6.spawnExamHint(s7, TCFG6.EXAMS[s7.idx], R6.news.totalH, 1);
+      }
+      if (!s7.hints || !s7.hints.length) break;
+      const hh = s7.hints[0];
+      const g0 = s7.attrGain || 0;
+      sb6.examHintClick(area.x + hh.ux * area.w, area.y + hh.uy * area.h, area);
+      gainedSum += (s7.attrGain || 0) - g0;
+      clicks++;
+    }
+    // ⚠️ 判据:把 attrGain 手动顶到接近上限,再点一条 ⇒ **属性不再增长**(上限真的生效)。
+    //    这样不依赖「能刷到上限」,构造确定、变异必红(移除上限后这一步会继续加)。
+    let capOk = false, capDetail = '';
+    if (T6.examSession) {
+      s7.attrGain = 5.98;                    // 逼近上限(6.0)
+      const atk = 'reasoning';
+      const a0 = R6.ability[atk] || 0;
+      s7.nextHintH = 0;
+      sb6.spawnExamHint(s7, TCFG6.EXAMS[s7.idx], R6.news.totalH, 1);
+      if (s7.hints && s7.hints.length) {
+        const hx = s7.hints[0];
+        sb6.examHintClick(area.x + hx.ux * area.w, area.y + hx.uy * area.h, area);
+        const a1 = R6.ability[atk] || 0;
+        capOk = (a1 - a0) < 0.02;            // 已到上限 ⇒ 几乎不再加
+        capDetail = atk + ' ' + a0.toFixed(2) + '→' + a1.toFixed(2) + ' (attrGain 5.98 起)';
+      }
+    }
+    ok('每场属性总增长有上限(顶到 5.98 后再点不再增长)', capOk, capDetail);
+  }
+  // ⑨ 结算后会话清空、examStage 推进或重考计数(二者必居其一)
+  const st0 = T6.examStage, rt0 = T6.examRetakes[0] || 0;
+  while (T6.examSession) { R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60); }
+  ok('结算后会话清空且「推进 or 重考」二者必居其一',
+    T6.examSession === null && (T6.examStage > st0 || (T6.examRetakes[0] || 0) > rt0));
+  // ⑩ 源码形态锚:分数与属性是两个独立写入点(不能合成一个)
+  const src4 = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('提示点击里分数与属性分开结算(分数只进本次考试)',
+    /s\.score = Math\.min\(100, s\.score \+ h\.score\)/.test(src4) && /A\[h\.attrKey\] = Math\.min\(100, cur \+ add\)/.test(src4));
+  ok('隐藏阈值不显示在 HUD(考试中只显示得分与剩余)',
+    !/passGrade.*hud/i.test(src4) && /得分 ' \+ Math\.round\(s\.score\)/.test(src4));
+}
 
 console.log('\n' + '─'.repeat(60));
 
