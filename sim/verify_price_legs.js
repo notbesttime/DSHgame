@@ -607,6 +607,55 @@ console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重�
   ok('隐藏阈值不显示在 HUD(考试中只显示得分与剩余)',
     !/passGrade.*hud/i.test(src4) && /得分 ' \+ Math\.round\(s\.score\)/.test(src4));
 }
+// ── [13] §8 P2-2 公关三选一(概率/三策略语义/失败罚客流/补贴确定性/预警) ──────
+console.log('\n[13] 公关三选一:概率公式 / 诡辩罚客流 / 道歉 / 补贴必成功 / 事前预警');
+{
+  const sb8 = makeSim(20261012);
+  const R8 = sb8.state.relay, B8 = sb8.RB;
+  // ① 成功率公式:声誉越高越容易(正循环),且被严重度压低
+  R8.reputation = 100; R8.ability.instruct = 0;
+  const pHigh = sb8.prChance(R8, 0.5);
+  R8.reputation = 0;
+  const pLow = sb8.prChance(R8, 0.5);
+  ok('声誉越高公关越容易(正循环)', pHigh > pLow, pLow.toFixed(3) + ' → ' + pHigh.toFixed(3));
+  const pSev0 = sb8.prChance(R8, 0), pSev1 = sb8.prChance(R8, 1);
+  ok('事件越严重越难公关', pSev0 > pSev1, pSev0.toFixed(3) + ' > ' + pSev1.toFixed(3));
+  ok('成功率被钳在 [0.10, 0.90]', pSev1 >= B8.PR_FLOOR - 1e-9 && pHigh <= B8.PR_CAP + 1e-9);
+  // ② 三策略语义(用沙箱 Math 强制成功/失败)
+  R8.reputation = 50; R8.ability.instruct = 20; sb8.state.tokens = 1e12;
+  const force = (v, fn) => { const o = sb8.Math.random; sb8.Math.random = () => v; const x = fn(); sb8.Math.random = o; return x; };
+  const baseLoss = 10;
+  const dOk = force(0.01, () => sb8.prResolve(R8, 0.5, baseLoss, 'deflect'));
+  const dBad = force(0.99, () => sb8.prResolve(R8, 0.5, baseLoss, 'deflect'));
+  ok('诡辩成功:声誉损失减半', Math.abs(dOk.loss - baseLoss * 0.5) < 1e-9, dOk.loss.toFixed(1));
+  ok('诡辩失败:声誉 ×1.5', Math.abs(dBad.loss - baseLoss * 1.5) < 1e-9, dBad.loss.toFixed(1));
+  ok('诡辩失败:**追加客流折损**(罚得到投机线的钱,关键改造)',
+    dBad.flow < B8.RISK_EV_FLOW_MUL && dBad.extraDays > 0, 'flow=' + dBad.flow + ' +' + dBad.extraDays + '天');
+  const aOk = force(0.01, () => sb8.prResolve(R8, 0.5, baseLoss, 'apologize'));
+  const aBad = force(0.99, () => sb8.prResolve(R8, 0.5, baseLoss, 'apologize'));
+  ok('道歉成功:只承担一半', Math.abs(aOk.loss - baseLoss * 0.5) < 1e-9, aOk.loss.toFixed(1));
+  ok('道歉失败:小幅额外损失(低于诡辩失败)', aBad.loss < dBad.loss && aBad.loss > baseLoss, aBad.loss.toFixed(1));
+  // ③ 补贴:花钱**必成功**(确定性),失败路径不存在
+  const sOk = force(0.99, () => sb8.prResolve(R8, 0.5, baseLoss, 'subsidize'));
+  ok('补贴必成功(确定性消费:花钱就不受灾)', sOk.loss === 0 && sOk.flow === 1,
+    'loss=' + sOk.loss + ' flow=' + sOk.flow);
+  const broke = (() => { const t0 = sb8.state.tokens; sb8.state.tokens = 1; const x = sb8.prResolve(R8, 0.5, baseLoss, 'subsidize'); sb8.state.tokens = t0; return x; })();
+  ok('买不起补贴 ⇒ 不公关(退回全额损失)', broke.loss === baseLoss && broke.broke === true, broke.loss);
+  // ④ 不公关 = 全额损失 + 基础客流折损
+  const none = sb8.prResolve(R8, 0.5, baseLoss, null);
+  ok('不公关:全额声誉损失 + 基础客流折损', none.loss === baseLoss && none.flow === B8.RISK_EV_FLOW_MUL);
+  // ⑤ 源码形态锚:公关必须在**损失落地前**介入(先扣再返会把同一事件算两次)
+  const src5 = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('公关在扣声誉之前调用(不是事后返还)', 
+    /const pr = prResolve\(R, sev, rawLoss/.test(src5) && /if \(pr\.loss > 0\) R\.reputation/.test(src5));
+  // 反证:全文不得出现「先按 rawLoss 扣、再按 pr.loss 返/补」的双计数写法
+  ok('不存在「先扣 rawLoss 再返还」的双计数路径',
+    !/R\.reputation = Math\.max\(0, R\.reputation - rawLoss\)/.test(src5));
+  // ⚠️ 锚必须排除注释行(^ + /m),否则「注释掉」也算在位 —— 变异自检抓过一次同类漏网。
+  ok('事前预警已接进两条触发链(识破 + 翻车)', (src5.match(/^  prWarnTick\(R,/gm) || []).length >= 2,
+    String((src5.match(/^  prWarnTick\(R,/gm) || []).length) + ' 处');
+  ok('预警提前量 = 24 游戏时(1 天)', B8.PR_WARN_LEAD_H === 24, String(B8.PR_WARN_LEAD_H));
+}
 
 console.log('\n' + '─'.repeat(60));
 

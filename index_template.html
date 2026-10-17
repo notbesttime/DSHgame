@@ -1465,7 +1465,9 @@ const RELAY_BIZ = {
   //   ③ 加**事前预警**:翻车/识破前 1 天给征兆,可提前花 token 降低触发率(把止损变成风险决策)。
   PR_BASE: 0.35, PR_REP_DIV: 200, PR_INST_DIV: 300, PR_SEV_K: 0.3, PR_FLOOR: 0.10, PR_CAP: 0.90,
   PR_DEFLECT_OK_REP: 0.5, PR_DEFLECT_BAD_REP: 1.5,   // 诡辩:成功声誉损失减半 / 失败 ×1.5
-  PR_DEFLECT_BAD_FLOW: 0.6, PR_DEFLECT_BAD_DAYS: 3,   // 诡辩失败:追加客流 −40%(×0.6)持续 3 天
+  // 诡辩失败:在基础折损(0.6)之上**再**打 0.6 折 ⇒ 0.36;持续天数也拉长。
+  // ⚠️ 初版写成 0.6 与 RISK_EV_FLOW_MUL 相等 ⇒ 「追加折损」名不副实(变异自检抓出)。
+  PR_DEFLECT_BAD_FLOW: 0.36, PR_DEFLECT_BAD_DAYS: 3,
   PR_APOLOGY_OK_REP: 0.5, PR_APOLOGY_BAD_REP: 1.1,    // 道歉:恢复一半 / 小幅额外损失
 
   // 补贴改成「必成功」后由价格承担风险:定价系数与天数见 prSubsidyCost

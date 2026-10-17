@@ -26,7 +26,7 @@ STEPS = [
     ("语法 + 素材自检", ["node", "check_syntax.js"], {}),
     ("断言:人数/瓶颈 42 项", ["node", "sim/verify_users.js"], {}),
     ("断言:虚标 20 项", ["node", "sim/verify_gouge.js"], {}),
-    ("断言:单价腿/保价/P2/考试 112 项", ["node", "sim/verify_price_legs.js"], {}),
+    ("断言:单价腿/保价/P2/考试/公关 126 项", ["node", "sim/verify_price_legs.js"], {}),
     ("经济仿真(诚实/跑分/平账)", ["node", "sim/startup_loop.js"],
      {"LIST_POLICY": "sim", "DAYS": DAYS, "SUMMARY_ONLY": "1"}),
     ("构建(dist)", [sys.executable, "build.py", "--dist"], {}),
@@ -54,4 +54,4 @@ print("\n==== 总结 ====")
 if failed:
     print("失败:" + "、".join(failed) + " —— 修完重跑 python check_all.py")
     sys.exit(1)
-print("全链通过:构建 / 语法 / 174 项断言(42+20+112)/ 30 天仿真 / dist")
+print("全链通过:构建 / 语法 / 188 项断言(42+20+126)/ 30 天仿真 / dist")
