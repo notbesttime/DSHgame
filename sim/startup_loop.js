@@ -331,6 +331,8 @@ const CODE = [
   //    任何要在沙箱外读的常量(REAL_MODELS / SIM_KEYS / RELAY_BIZ …)都必须在这里起别名,
   //    否则外面拿到的是 undefined —— require 本文件做单元验证的脚本尤其容易踩。
   'var SKEYS = SIM_KEYS;',
+  // 标定用开关:TRACE_EXAM=1 时逐场打印考试得分/能力/是否通过(必须在沙箱内可见,故用 var)
+  'var __TRACE_EXAM = ' + (process.env.TRACE_EXAM ? 'true' : 'false') + ';',
 ].join('\n');
 
 // P2 实验补丁:默认全关(不设 env)时 src === CODE,基线与 §20.14 四窗口逐位一致。
@@ -368,9 +370,19 @@ const INIT = `
     var b = state.tokens;
     var s = state.relay.train.examSession;
     var nm = (s && TRAIN_CFG.EXAMS[s.idx]) ? TRAIN_CFG.EXAMS[s.idx].name : '(考试)';
+    var st0 = state.relay.train.examStage;
+    var sc0 = s ? s.score : 0;
+    var cap0 = modelCapability(state.relay.ability);
     __origSettleExam();
     var d = state.tokens - b;
     if (d > 0) { __examTok += d; __examDays.push({ name: nm, tok: d }); }
+    // TRACE_EXAM=1:打印每场考试的得分/能力/是否通过 —— 标定 passGrade 用(默认不打印)
+    if (__TRACE_EXAM) {
+      console.log('EXAM|' + nm + '|day' + Math.floor((state.relay.news.totalH || 0) / 24)
+        + '|score' + Math.round(sc0) + '|cap' + cap0.toFixed(1)
+        + '|' + (state.relay.train.examStage > st0 ? 'PASS' : 'FAIL')
+        + '|tok' + Math.round(d));
+    }
   };
   var __excTok = 0, __boxTok = 0;
 `;
@@ -636,9 +648,11 @@ function report(label, r) {
       + '|断供时' + st.downH.toFixed(0) + '/' + (DAYS * 24)
       + '|标榜=' + (R.listedModel || '无') + '|价$' + R.price.toFixed(3)
       + '|自研=' + ((!sb.relayListedModel() && R.price > 0 && R.price <= sb.RB.SELF_PRICE_MAX) ? '是' : '否')
-      // P2 机制计数器(仅实验开启时有值):不打印就只能看到净效果,分不清「机制没跑」还是「跑了但没影响」
-      + (R.p2 ? '|P2翻车' + R.p2.triggers + '|P2识破' + R.p2.detects + '|P2公关' + R.p2.prOk + '/' + R.p2.prUsed
-              + '|P2热点' + R.p2.heatDone + '|P2补贴M' + (R.p2.subsidyTok / 1e6).toFixed(2) : ''));
+      // P2 机制计数器。⚠️ 用 `|| 0` 兜底:p2Ensure 只建当前落码用到的字段,
+      //    直接取未定义字段会打印 undefined/NaN(2026-10-16 实测,污染 SUMMARY 解析)。
+      + (R.p2 ? '|P2翻车' + (R.p2.triggers || 0) + '|P2识破' + (R.p2.detects || 0)
+              + '|P2公关' + (R.p2.prOk || 0) + '/' + (R.p2.prUsed || 0)
+              + '|P2热点' + (R.p2.heatDone || 0) + '|P2补贴M' + ((R.p2.subsidyTok || 0) / 1e6).toFixed(2) : ''));
   }
   console.log('\n-- 汇总 --');
   console.log('   token 供给 = 产能 ' + (st.prodTok / 1e6).toFixed(2) + 'M + 考试 ' + (issued / 1e6).toFixed(2) + 'M = ' + (supply / 1e6).toFixed(2) + 'M');

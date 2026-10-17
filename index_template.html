@@ -1517,14 +1517,14 @@ const TRAIN_CFG = {
   // ⚠️ 考试 token 是 sim 供给大头 ⇒ 阶梯一改,四窗口基线必须重跑(§17.6)。
   EXAMS: [
     // passGrade = 隐藏阈值(得分/100 ≥ 此值即通过)。首考宽松(新手能起步),逐场收紧。
-    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.45, rep: 1.0,  usersPct: 0.05, usersDays: 2,  importance: 0.10, durationH: 4 },
-    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.45, rep: 1.5,  usersPct: 0.08, usersDays: 2,  importance: 0.20, durationH: 6 },
-    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.50, rep: 2.0,  usersPct: 0.10, usersDays: 3,  importance: 0.30, durationH: 8 },
-    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.55, rep: 2.5,  usersPct: 0.12, usersDays: 3,  importance: 0.40, durationH: 12 },
-    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 1.00, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 16 },
-    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 1.02, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 24 },
-    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 1.04, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 32 },
-    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 1.05, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 48, graduate: true },
+    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 1.0,  usersPct: 0.05, usersDays: 2,  importance: 0.10, durationH: 4 },
+    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 1.5,  usersPct: 0.08, usersDays: 2,  importance: 0.20, durationH: 6 },
+    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 2.0,  usersPct: 0.10, usersDays: 3,  importance: 0.30, durationH: 8 },
+    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 2.5,  usersPct: 0.12, usersDays: 3,  importance: 0.40, durationH: 12 },
+    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 16 },
+    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 24 },
+    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 32 },
+    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 0.35, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 48, graduate: true },
   ],
   // 重考(§17.6 拍板):7 游戏天后重考;通过奖励 ×0.7^(k-1) 递减(不归零)
   RETAKE_DELAY_DAYS: 7,
@@ -3858,7 +3858,19 @@ function drawTrainPage(x, y, w, h) {
   panelContentArea.addChild(hud);
   const ex = T.examStage < TRAIN_CFG.EXAMS.length ? TRAIN_CFG.EXAMS[T.examStage] : null;
   const elapsed = trainElapsedDays();
-  const hud2 = makeText(ex ? ('训练第 ' + elapsed + ' 天 · 下一测评：' + ex.name + '（' + (ex.atDay - elapsed) + ' 天后）') : ('训练第 ' + elapsed + ' 天 · 测评已全部完成'),
+  // §17.6 考试进行中:显示当前得分与剩余时长(过程化可见性);不显示及格线。
+  const hud2Text = (() => {
+    if (T.examSession) {
+      const s = T.examSession;
+      const cur = (s.idx < TRAIN_CFG.EXAMS.length) ? TRAIN_CFG.EXAMS[s.idx] : null;
+      const leftH = Math.max(0, s.endH - ((state.relay.news && state.relay.news.totalH) || 0));
+      return '考试中：' + (cur ? cur.name : '') + ' · 得分 ' + Math.round(s.score) + ' · 剩余 ' + leftH.toFixed(1) + ' 游戏时';
+    }
+    if (T.graduate) return '已毕业 · 被发掘(阶段2 待开发) · 训练第 ' + elapsed + ' 天';
+    return ex ? ('训练第 ' + elapsed + ' 天 · 下一测评：' + ex.name + '（' + Math.max(0, ex.atDay - elapsed) + ' 天后）')
+              : ('训练第 ' + elapsed + ' 天 · 测评已全部完成');
+  })();
+  const hud2 = makeText(hud2Text,
     { size: 15, color: '#8a7a68' });
   hud2.x = x + 20; hud2.y = y + 38;
   panelContentArea.addChild(hud2);
