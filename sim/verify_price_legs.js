@@ -655,6 +655,13 @@ console.log('\n[13] 公关三选一:概率公式 / 诡辩罚客流 / 道歉 / �
   ok('事前预警已接进两条触发链(识破 + 翻车)', (src5.match(/^  prWarnTick\(R,/gm) || []).length >= 2,
     String((src5.match(/^  prWarnTick\(R,/gm) || []).length) + ' 处');
   ok('预警提前量 = 24 游戏时(1 天)', B8.PR_WARN_LEAD_H === 24, String(B8.PR_WARN_LEAD_H));
+  // ⑥ UI:玩家可点的三选一(2026-10-17)
+  ok('公关三选一 UI 存在且挂在后台页', /function drawPrPanel\(/.test(src5) && /drawPrPanel\(x, y, w, h, priceY\)/.test(src5));
+  ok('UI 提供四个选项(诡辩/道歉/补贴/不公关)',
+    /key: 'deflect'/.test(src5) && /key: 'apologize'/.test(src5)
+    && /key: 'subsidize'/.test(src5) && /name: '不公关'/.test(src5));
+  ok('UI 选择写回 prPolicy(点了才生效)', /P\.prPolicy = o\.key;/.test(src5));
+  ok('UI 只在事件/预警时出现(平时不占版面)', /if \(!activeEv\.length && !warned\) return;/.test(src5));
 }
 
 console.log('\n' + '─'.repeat(60));

@@ -2931,6 +2931,73 @@ function examTick(totalH, gameHours) {
   if (totalH >= s.endH) settleExam();
 }
 
+// ===== §8.1 公关三选一 UI(2026-10-17)=====
+// 只在「有活跃事件」或「收到预警」时出现 —— 平时不占版面。
+// 选择结果写进 R.p2.prPolicy,由 prResolve 在下次事件时执行;玩家可随时改。
+function drawPrPanel(x, y, w, h, baseY) {
+  const R = state.relay, P = p2Ensure();
+  const totalH = (R.news && R.news.totalH) || 0;
+  const activeEv = (P.events || []).filter(e => e.untilH > totalH);
+  const warned = (P.warnUntilH || 0) > totalH;
+  if (!activeEv.length && !warned) return;      // 无事件无预警 ⇒ 不显示
+
+  const padX = w * 0.04;
+  const pw = w - padX * 2;
+  // 画在**页面底部**(价格输入框与提示行上方),避免压住 priceY 区(实测 baseY-118 会盖住定价行)
+  const top = y + h - 132;
+  const card = new PIXI.Graphics();
+  card.beginFill(0xfff0e0, 0.92);
+  card.lineStyle(1.5, 0xd8843a, 0.9);
+  card.drawRoundedRect(x + padX, top, pw, 110, 8);
+  card.endFill();
+  panelContentArea.addChild(card);
+
+  const head = makeText(activeEv.length ? '⚠ 事件处理中 —— 选一个应对' : '⚠ 有人开始质疑 —— 要不要提前公关?',
+    { size: 13, color: '#8a3a10', weight: 'bold' });
+  head.x = x + padX + 10; head.y = top + 8;
+  panelContentArea.addChild(head);
+
+  const sub = makeText('成功率 ' + Math.round(prChance(R, activeEv.length ? (activeEv[0].sev || 0.5) : (P.warnProb || 0.3)) * 100)
+    + '%(随信誉/指令提升)· 选定后下次事件生效', { size: 10, color: '#9a7a5a' });
+  sub.x = x + padX + 10; sub.y = top + 26;
+  panelContentArea.addChild(sub);
+
+  const opts = [
+    { key: 'deflect',   name: '诡辩', desc: '成功减半 / 失败声名更糟且客流再降' },
+    { key: 'apologize', name: '道歉', desc: '成功只担一半 / 失败小亏(最稳)' },
+    { key: 'subsidize', name: '补贴', desc: '花 token 必定消灾 · 约 ' + (prSubsidyCost(R) / 1e6).toFixed(1) + 'M' },
+    { key: null,        name: '不公关', desc: '全额承担' },
+  ];
+  const btnW = (pw - 30) / 4;
+  opts.forEach((o, i) => {
+    const bx = x + padX + 8 + i * (btnW + 4);
+    const by = top + 44;
+    const sel = (P.prPolicy || null) === o.key;
+    const bg = new PIXI.Graphics();
+    bg.beginFill(sel ? 0xd8843a : 0xffffff, sel ? 0.95 : 0.85);
+    bg.lineStyle(1.2, sel ? 0xb85a10 : 0xc9b090, 0.95);
+    bg.drawRoundedRect(bx, by, btnW, 34, 6);
+    bg.endFill();
+    bg.eventMode = 'static'; bg.cursor = 'pointer';
+    bg.on('pointerdown', (e) => {
+      e.stopPropagation();
+      P.prPolicy = o.key;
+      refreshRelayPanel();
+      if (typeof spawnFloatText === 'function') {
+        spawnFloatText('公关策略:' + o.name, x + w / 2, top - 8);
+      }
+    });
+    panelContentArea.addChild(bg);
+    const nm = makeText(o.name, { size: 12, color: sel ? '#ffffff' : '#6a4a1a', weight: 'bold' });
+    nm.x = bx + 8; nm.y = by + 4;
+    panelContentArea.addChild(nm);
+    const ds = makeText(o.desc, { size: 8, color: sel ? '#ffe8cc' : '#9a8a78' });
+    ds.x = bx + 6; ds.y = by + 20;
+    if (ds.width > btnW - 10) ds.scale.set((btnW - 10) / ds.width);
+    panelContentArea.addChild(ds);
+  });
+}
+
 // ===== §17.6 第二步:作文比赛式限时提示(点选加分)=====
 // 设计要点(用户拍板):
 //  · 屏幕上浮现**限时提示**,点中 ⇒ 本次考试**分数 +N**(100 分制,只在本次结算内有效)
@@ -5487,6 +5554,9 @@ function drawBackendPage(x, y, w, h) {
   const ht = makeText(hint, { size: 11, color: '#b0a294' });
   ht.x = x + padX; ht.y = y + h - 12;
   panelContentArea.addChild(ht);
+
+  // ===== §8.1 P2-2 公关三选一(2026-10-17):事件中/预警时出现在后台页 =====
+  drawPrPanel(x, y, w, h, priceY);
 
   // 价格输入框定位到 priceY
   const pd = backendPriceDom();
