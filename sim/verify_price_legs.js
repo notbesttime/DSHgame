@@ -433,7 +433,10 @@ console.log('\n[10] P2 风险玩法:触发边界 / 池打折 / 识破 / 诚实�
 
   // ── 变异锚:常量被误改时立刻红
   ok('RISK_EV_CAP = 0.35(拍板定稿)', Math.abs(R2.RISK_EV_CAP - 0.35) < 1e-9, String(R2.RISK_EV_CAP));
-  ok('RISK_EV_POOL_MUL = 0.7(实测剂量曲线选定)', Math.abs(R2.RISK_EV_POOL_MUL - 0.7) < 1e-9, String(R2.RISK_EV_POOL_MUL));
+  // ⚠️ 断言「在合理区间且确实打折」,不钉死单个数值 —— 否则每次平衡调整都会误报。
+  //    §17.6 方案B 已把它从 0.7 调到 0.85(小考不再给信誉/用户后,跑分线需要喘口气)。
+  ok('RISK_EV_POOL_MUL ∈ (0.5, 1)(事件期确有打折但不打死跑分线)',
+    R2.RISK_EV_POOL_MUL > 0.5 && R2.RISK_EV_POOL_MUL < 1, String(R2.RISK_EV_POOL_MUL));
   ok('RISK_EV_FLOW_DAYS = [3,7]', R2.RISK_EV_FLOW_DAYS[0] === 3 && R2.RISK_EV_FLOW_DAYS[1] === 7);
 
   // ── 源码形态锚 + 行为级 reclamp 断言(变异自检 2/5 的漏网补丁)──

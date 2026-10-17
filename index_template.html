@@ -2799,7 +2799,10 @@ function startExam(idx) {
   const ex = TRAIN_CFG.EXAMS[idx];
   if (!ex) return;
   const totalH = (R.news && typeof R.news.totalH === 'number') ? R.news.totalH : 0;
-  T.examSession = { idx, startH: totalH, endH: totalH + (ex.durationH || 6), score: 0, clicks: 0, attrGain: 0 };
+  // §17.6 第二步(作文比赛式):hints = 浮现的限时提示;点击给「本次分数 +N」与「属性 +δ」。
+  // 分数只进本次考试(不进存档/不影响局外);属性是唯一带出局外的收益,且每场有总量上限防刷。
+  T.examSession = { idx, startH: totalH, endH: totalH + (ex.durationH || 6), score: 0,
+                    clicks: 0, attrGain: 0, hints: [], hintSeq: 0, nextHintH: totalH + 0.3 };
   if (typeof spawnFloatText === 'function') {
     spawnFloatText(ex.name + ' 开考(持续 ' + (ex.durationH || 6) + ' 游戏时)', app.screen.width / 2, app.screen.height * 0.32);
   }
@@ -2818,7 +2821,109 @@ function examTick(totalH, gameHours) {
   const span = Math.max(1, s.endH - s.startH);
   const perHour = (ratio / span) * 100 * Math.min(1, gameHours);   // 每游戏时得分(上限 100)
   s.score = Math.min(100, s.score + perHour);
+  // ── 作文比赛式限时提示(§17.6 第二步)──
+  // 生成节奏:每 ~0.3~0.9 游戏时一条(importance 越高越密);存活 TTL 随 importance 缩短(越重要越紧张)。
+  spawnExamHint(s, ex, totalH, gameHours);
+  // 清理过期
+  if (s.hints && s.hints.length) s.hints = s.hints.filter(h => h.untilH > totalH);
   if (totalH >= s.endH) settleExam();
+}
+
+// ===== §17.6 第二步:作文比赛式限时提示(点选加分)=====
+// 设计要点(用户拍板):
+//  · 屏幕上浮现**限时提示**,点中 ⇒ 本次考试**分数 +N**(100 分制,只在本次结算内有效)
+//    + 对应属性**少量** +δ(**唯一能带出局外的收益**,单次很小、每场有硬上限防肝帝刷满);
+//  · 不操作也能拿基础分(属性决定),挂机不会落榜 —— 但高分与额外属性要靠点选;
+//  · 档位越高:提示越密、存活越短、单条收益越高(importance 驱动)。
+const EXAM_HINT_CFG = {
+  INTERVAL_H: [0.45, 0.25],   // 生成间隔(游戏时):importance=0 → 0.45,=1 → 0.25
+  TTL_H: [1.1, 0.45],         // 存活时长(游戏时):importance 越高越短(越紧张)
+  SCORE: [2, 6],              // 单条分数收益:按 importance 插值
+  ATTR: [0.04, 0.18],         // 单条属性收益(点)
+  ATTR_CAP_PER_EXAM: 6.0,     // 每场考试属性总上限(防刷):6 点 ≈ 一次大道具的量级
+  MAX_ALIVE: 4,               // 同屏最多几条
+};
+// 提示类型:既是文案,也决定加成哪一维(玩家能从「点什么提示」理解「练哪一维」)
+const EXAM_HINTS = [
+  { key: 'reasoning',  label: '推理:', tips: ['先证伪再下结论', '把问题拆成子问题', '检查边界样例'] },
+  { key: 'knowledge',  label: '知识:', tips: ['召回相似训练样本', '核对事实来源', '时间线别搞混'] },
+  { key: 'instruct',   label: '对齐:', tips: ['按用户要的格式答', '少一点发挥', '别自作主张扩写'] },
+  { key: 'longCtx',    label: '长文:', tips: ['先看结尾再看开头', '记住中间那个变量', '别丢上下文'] },
+  { key: 'toolCall',   label: '工具:', tips: ['先查再用', '参数别想当然', '失败要重试'] },
+  { key: 'multimodal', label: '多模态:', tips: ['图里那只猫是重点', '音频有噪声', '看清坐标轴'] },
+  { key: 'speed',      label: '速度:', tips: ['别过度思考', '简单题快答', '先出草稿'] },
+];
+const EXAM_HINT_TEXT = ['灵感', '素材', '金句', '考点'];   // 卡片前缀(作文比赛式的措辞)
+
+function examHintLerp(pair, importance) {
+  const k = Math.max(0, Math.min(1, importance || 0));
+  return pair[0] + (pair[1] - pair[0]) * k;
+}
+// 用游戏内私有随机(不消耗游戏 Math.random 流,免得污染经济仿真的可比性)
+function examHintRand(T) {
+  T._hr = (T._hr || 12345) * 1103515245 + 12345;
+  return ((T._hr >>> 8) & 0xffffff) / 0x1000000;
+}
+
+function spawnExamHint(s, ex, totalH, gameHours) {
+  const cfg = EXAM_HINT_CFG;
+  const imp = ex.importance || 0.2;
+  if (!s.hints) s.hints = [];
+  if ((s.hints.length >= cfg.MAX_ALIVE) || !(totalH >= (s.nextHintH || 0))) return;
+  const rnd = examHintRand(state.relay.train);
+  s.nextHintH = totalH + examHintLerp(cfg.INTERVAL_H, imp) * (0.7 + rnd * 0.6);
+  const kind = EXAM_HINTS[Math.floor(rnd * EXAM_HINTS.length) % EXAM_HINTS.length];
+  const tip = kind.tips[Math.floor(rnd * kind.tips.length) % kind.tips.length];
+  s.hintSeq = (s.hintSeq || 0) + 1;
+  s.hints.push({
+    id: s.hintSeq,
+    attrKey: kind.key,
+    // 文案:「考点:先证伪再下结论」这类;前缀按类型轮转,让画面有变化
+    text: kind.label + tip,
+    prefix: EXAM_HINT_TEXT[s.hintSeq % EXAM_HINT_TEXT.length],
+    untilH: totalH + examHintLerp(cfg.TTL_H, imp),
+    score: Math.round(examHintLerp(cfg.SCORE, imp)),
+    attr: examHintLerp(cfg.ATTR, imp),
+    // 屏幕位置(0~1 归一化,渲染时乘面板尺寸):避免与文字重叠,分四个区
+    ux: 0.12 + rnd * 0.76,
+    uy: 0.18 + ((s.hintSeq * 0.37) % 1) * 0.5,
+  });
+}
+
+// 点中提示:返回 true = 命中(调用方负责重绘)
+function examHintClick(px, py, area) {
+  const T = state.relay.train;
+  const s = T && T.examSession;
+  if (!s || !s.hints || !s.hints.length || !area) return false;
+  // 从后往前判(后画的在上层)
+  for (let i = s.hints.length - 1; i >= 0; i--) {
+    const h = s.hints[i];
+    const cx = area.x + h.ux * area.w;
+    const cy = area.y + h.uy * area.h;
+    const hw = Math.max(52, Math.min(120, area.w * 0.22)) / 2;
+    const hh = 16;
+    if (Math.abs(px - cx) <= hw && Math.abs(py - cy) <= hh) {
+      // ① 本次考试分数(只在本次结算内有效)
+      s.score = Math.min(100, s.score + h.score);
+      s.clicks = (s.clicks || 0) + 1;
+      // ② 属性(唯一带出局外的收益;每场有硬上限防刷)
+      const room = Math.max(0, EXAM_HINT_CFG.ATTR_CAP_PER_EXAM - (s.attrGain || 0));
+      const add = Math.min(room, h.attr);
+      if (add > 0) {
+        const A = state.relay.ability;
+        const cur = A[h.attrKey] || 0;
+        A[h.attrKey] = Math.min(100, cur + add);
+        s.attrGain = (s.attrGain || 0) + add;
+      }
+      s.hints.splice(i, 1);
+      if (typeof spawnFloatText === 'function') {
+        spawnFloatText(h.prefix + ' +' + h.score + ' 分' + (add > 0 ? ' · ' + h.attrKey + ' +' + add.toFixed(2) : ''),
+          px, py - 14);
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 function settleExam() {
@@ -3950,6 +4055,47 @@ function drawTrainPage(x, y, w, h) {
     const riskT = makeText(riskStr, { size: 11, color: maxed ? '#8a8278' : '#a05a2a' });
     riskT.x = tx; riskT.y = cy + cardH * 0.66;
     panelContentArea.addChild(riskT);
+  }
+
+  // ===== §17.6 第二步:考试中的「限时提示」渲染(点选加分)=====
+  // 只画卡片本身;命中判定在 examHintClick(用同一套 area/x/y,坐标口径一致)。
+  const es = T.examSession;
+  if (es && es.hints && es.hints.length) {
+    const totalH = (state.relay.news && state.relay.news.totalH) || 0;
+    const area = { x: x, y: y, w: w, h: h };
+    for (const hd of es.hints) {
+      const cx = area.x + hd.ux * area.w;
+      const cy = area.y + hd.uy * area.h;
+      const cardW = Math.max(52, Math.min(120, area.w * 0.22));
+      // 剩余时间:越紧迫越红/越闪(纯视觉,不影响数值)
+      const left = Math.max(0, hd.untilH - totalH);
+      const ttl0 = Math.max(0.001, examHintLerp(EXAM_HINT_CFG.TTL_H, (TRAIN_CFG.EXAMS[es.idx] || {}).importance || 0.2));
+      const urgency = 1 - Math.min(1, left / ttl0);
+      const bg = new PIXI.Graphics();
+      bg.beginFill(0xfff4d6, 0.94 - urgency * 0.1);
+      bg.lineStyle(1.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95);
+      bg.drawRoundedRect(cx - cardW / 2, cy - 13, cardW, 26, 7);
+      bg.endFill();
+      bg.eventMode = 'static';
+      bg.cursor = 'pointer';
+      bg.on('pointerdown', (e) => {
+        e.stopPropagation();
+        const p = e.global || { x: cx, y: cy };
+        if (examHintClick(p.x, p.y, area)) { refreshRelayPanel(); }   // 重绘面板 ⇒ 卡片消失/分数刷新
+      });
+      panelContentArea.addChild(bg);
+      const tx = makeText(hd.prefix + ' ' + hd.text, { size: 11, color: '#6a4a1a', weight: 'bold' });
+      tx.x = cx - cardW / 2 + 6; tx.y = cy - 8;
+      // 文本别超出卡片(粗裁:超长就缩一点)
+      if (tx.width > cardW - 12) tx.scale.set((cardW - 12) / tx.width);
+      panelContentArea.addChild(tx);
+      // 剩余时间细条
+      const bar = new PIXI.Graphics();
+      bar.beginFill(0xd0442a, 0.8);
+      bar.drawRect(cx - cardW / 2 + 3, cy + 9, Math.max(0, (cardW - 6) * (left / ttl0)), 2);
+      bar.endFill();
+      panelContentArea.addChild(bar);
+    }
   }
 }
 

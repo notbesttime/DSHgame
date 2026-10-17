@@ -312,6 +312,9 @@ const CODE = [
   // §17.6(2026-10-16):考试改为会话式三段函数 —— updateTrain 会调 startExam/examTick,
   // examTick 到点调 settleExam;漏抽会直接 ReferenceError(实测)。
   exF('startExam'), exF('examTick'), exF('settleExam'),
+  // §17.6 第二步(作文比赛式提示):抽 spawnExamHint/examHintClick + 依赖的常量与工具函数
+  exF('examHintLerp'), exF('examHintRand'), exF('spawnExamHint'), exF('examHintClick'),
+  exC('EXAM_HINT_CFG'), exC('EXAM_HINTS'), exC('EXAM_HINT_TEXT'),
   // —— stubs ——
   'var MODEL_ATTR_OVERRIDE = {};',
   'function officialPriceOf(m){ return blendPriceNum(m); }',
