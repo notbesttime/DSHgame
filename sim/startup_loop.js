@@ -51,6 +51,16 @@ function exC(n) {
 let SIM_OVER_K_SRC = exC('SIM_OVER_K');
 if (process.env.SIM_OVER_K) SIM_OVER_K_SRC = SIM_OVER_K_SRC.replace(/=\s*[\d.]+/, '= ' + Number(process.env.SIM_OVER_K));
 
+// P2_PR_SUBSIDY_RATE(2026-10-18 加):覆盖补贴定价的日收入估算率,做 D180 剂量曲线。
+// 不设 env ⇒ RB_SRC 逐字 = exC('RELAY_BIZ') ⇒ 基线不污染(复核靠 D30 逐位复现 1.89/1.13)。
+let RB_SRC = exC('RELAY_BIZ');
+if (process.env.P2_PR_SUBSIDY_RATE) {
+  const v = Number(process.env.P2_PR_SUBSIDY_RATE);
+  const n = RB_SRC.split('PR_SUBSIDY_RATE:').length - 1;
+  if (n !== 1 || !Number.isFinite(v)) throw new Error('P2_PR_SUBSIDY_RATE 覆盖锚异常:命中 ' + n + ' 次 / 值 ' + process.env.P2_PR_SUBSIDY_RATE);
+  RB_SRC = RB_SRC.replace(/PR_SUBSIDY_RATE: [\d.]+/, 'PR_SUBSIDY_RATE: ' + v);
+}
+
 // ⚠️ 2026-10-13:C2 极价负增长 / C4 信誉愿付溢价已按《P1单价腿决策报告》落进 index_template.html
 //   (RELAY_BIZ.GROW_NEG_* / TRUST_PRICE_K),本文件不再需要实验补丁(留着会双重生效)。
 
@@ -280,7 +290,8 @@ const CODE = [
   SIM_OVER_K_SRC,   // 2026-10-11 加:rawSimilarityTo/closestModel 的方向折扣系数(env 可覆盖,见上)
   exC('CAP_MUL_EXP'), exC('CAP_MUL_MIN'), exC('CAP_MUL_MAX'),
   exC('REAL_MODELS'),
-  exC('RELAY_BIZ'), exC('PUBLISH_CFG'), exC('TRAIN_CFG'), exC('TRAIN_ITEMS'),
+  RB_SRC,   // exC('RELAY_BIZ'),P2_PR_SUBSIDY_RATE 可覆盖补贴估算率(2026-10-18) —— 换行须保 exC 计数注释同步
+  exC('PUBLISH_CFG'), exC('TRAIN_CFG'), exC('TRAIN_ITEMS'),
   exC('GAME_CFG'), exC('TRAIN_MODES'),
   exF('ctxK'), exF('cutoffMonths'), exF('ctxAttr'), exF('monthsFromStr'),
   exF('modelCapability'), exF('deriveModelAttrs'), exF('modelToAttrs'), exF('modelCapabilityOf'),

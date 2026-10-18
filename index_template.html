@@ -1473,6 +1473,7 @@ const RELAY_BIZ = {
   // 补贴改成「必成功」后由价格承担风险:定价系数与天数见 prSubsidyCost
   PR_SUBSIDY_DAYS: 4,         // 补贴定价 = 当前刀乐收入 × 此天数
   PR_SUBSIDY_MIN: 0.5,        // 补贴最低价(百万 tok 计)
+  PR_SUBSIDY_RATE: 0.005,     // 日收入估算率:「日收入 ≈ 存量刀乐 × 此率」(2026-10-17 拍 0.5%;D180 重标中,勿手改前先看 sim/subsidy_scan.py)
   PR_WARN_LEAD_H: 24,         // 事前预警提前量(游戏时)= 1 天
 
   // ===== P2-3 热点档位(2026-10-15 落码;拍板:期望对称;设计 §7)=====
@@ -2412,7 +2413,7 @@ function prChance(R, sev) {
 function prSubsidyCost(R) {
   // ⚠️ 定价系数实测标定(2026-10-17):初版 2%/天 ⇒ 补贴成了「自杀选项」(跑分线 −69%),
   //    因为它同时吃「花钱」和「刷不出来」两头。降到 0.5%/天(≈ 原设计量级的 1/4)后仍有痛感但不自杀。
-  const dayIncome = Math.max(0, R.dollars || 0) * 0.005;   // 粗估:日收入 ≈ 存量刀乐的 0.5%
+  const dayIncome = Math.max(0, R.dollars || 0) * RELAY_BIZ.PR_SUBSIDY_RATE;   // 粗估:日收入 ≈ 存量刀乐 × 估算率(值见 RELAY_BIZ,可被 sim 的 P2_PR_SUBSIDY_RATE 覆盖做剂量曲线)
   const M = RELAY_BIZ.PR_SUBSIDY_DAYS;
   return Math.max(RELAY_BIZ.PR_SUBSIDY_MIN, dayIncome * M) * 1e6;
 }
@@ -3266,7 +3267,12 @@ function examThinkLine(R, passed) {
   const gen = (EXAM_THINK && EXAM_THINK._general) || [];
   const src = pool.length ? pool : gen;
   if (!src.length) return '';
-  return src[Math.floor(Math.random() * src.length) % src.length];
+  // ⚠️ 展示抽取**绝不消耗主随机流**(2026-10-18,§17.9):初版用 Math.random ⇒ 每场考试结算多掷一次
+  //    ⇒ sim 轨迹与 §17.7 基线分叉(1.89/1.13 → 1.93/0.93,二分定位到 a5b4a1b;同 §20.14 发现 3)。
+  //    改自增游标:零随机、跨考试轮播;游标挂 R 上(exF 只抽函数体,模块级变量进不了沙箱)。
+  const tick = ((R.examThinkTick || 0) + 1);
+  R.examThinkTick = tick;
+  return src[tick % src.length];
 }
 
 // 旧名字保留(其它调用点/外部脚本可能引用):立刻按「满时长考完」结算一次

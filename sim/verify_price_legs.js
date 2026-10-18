@@ -662,6 +662,21 @@ console.log('\n[13] 公关三选一:概率公式 / 诡辩罚客流 / 道歉 / �
     && /key: 'subsidize'/.test(src5) && /name: '不公关'/.test(src5));
   ok('UI 选择写回 prPolicy(点了才生效)', /P\.prPolicy = o\.key;/.test(src5));
   ok('UI 只在事件/预警时出现(平时不占版面)', /if \(!activeEv\.length && !warned\) return;/.test(src5));
+  // ⑦ 补贴估算率(2026-10-18 重标:D180 剂量曲线要求「可扫参 + 可断言」,故从函数体提进 RELAY_BIZ)
+  ok('补贴估算率常量 PR_SUBSIDY_RATE = 0.005(现行基线值)', B8.PR_SUBSIDY_RATE === 0.005, String(B8.PR_SUBSIDY_RATE));
+  R8.dollars = 100;
+  const cHi = sb8.prSubsidyCost(R8);
+  ok('定价行为 = dollars × RATE × DAYS × 1e6(高收入段不吃 MIN)',
+    Math.abs(cHi - 100 * B8.PR_SUBSIDY_RATE * B8.PR_SUBSIDY_DAYS * 1e6) < 1e-6, (cHi / 1e6).toFixed(2) + 'M');
+  R8.dollars = 0;
+  const cLo = sb8.prSubsidyCost(R8);
+  ok('零收入吃 PR_SUBSIDY_MIN 兜底(0.5M)', Math.abs(cLo - B8.PR_SUBSIDY_MIN * 1e6) < 1e-9, (cLo / 1e6).toFixed(2) + 'M');
+  const fnSlice = src5.slice(src5.indexOf('function prSubsidyCost'), src5.indexOf('function prSubsidyCost') + 700);
+  ok('prSubsidyCost 读常量、函数体不残留硬编码 0.005',
+    /\* RELAY_BIZ\.PR_SUBSIDY_RATE/.test(fnSlice) && !/0\.005/.test(fnSlice));
+  const simSrc = fs.readFileSync(require('path').join(__dirname, 'startup_loop.js'), 'utf8');
+  ok('sim 侧 P2_PR_SUBSIDY_RATE 覆盖在位(剂量曲线的前提)',
+    simSrc.includes('process.env.P2_PR_SUBSIDY_RATE') && /PR_SUBSIDY_RATE: \[\\d\.\]\+/.test(simSrc));
 }
 
 // ── [14] §17.8 文案池(从《考试文案池.md》生成,用户可直接改文档)──────────────
@@ -687,6 +702,18 @@ console.log('\n[14] 文案池:内心戏按最弱维度×对错抽取 / 提示卡
   // ⑤ 扫描器脚本在位(用户改文档后要能重跑)
   ok('sync_exam_text.py 在位', fs.existsSync(require('path').join(__dirname, '..', 'sync_exam_text.py')));
   ok('《考试文案池.md》在位', fs.existsSync(require('path').join(__dirname, '..', '考试文案池.md')));
+  // ⑥ §17.9 卫生锚:展示抽取绝不消耗主随机流(初版 Math.random 把 D30 基线 1.89/1.13 挪到 1.93/0.93)
+  const tfn = src9.slice(src9.indexOf('function examThinkLine'), src9.indexOf('function fireExam'))
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');  // ⚠️ 去注释再锚(修复注释里写着「初版用 Math.random」,带注释锚=自伤,§20.16 同类坑)
+  ok('examThinkLine 不碰 Math.random(源码锚,去注释后)', !!tfn && tfn.indexOf('Math.random') < 0 && tfn.indexOf('examThinkTick') >= 0);
+  {
+    const R9b = sb9.state.relay; R9b.examThinkTick = 0;
+    sb9.examThinkLine(R9b, true); sb9.examThinkLine(R9b, true);
+    ok('游标确定轮播(两次调用 tick 恰 +2)', R9b.examThinkTick === 2, String(R9b.examThinkTick));
+    R9b.examThinkTick = 0;
+    const l1 = sb9.examThinkLine(R9b, true), l2 = sb9.examThinkLine(R9b, true);
+    ok('连续调用返回不同条目(轮播生效)', l1 !== l2, l1.slice(0, 10) + ' vs ' + l2.slice(0, 10));
+  }
 }
 
 console.log('\n' + '─'.repeat(60));
