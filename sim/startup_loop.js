@@ -301,6 +301,7 @@ const CODE = [
   exF('relayUsageMul'), exF('relayGrowWeight'), exF('relayTrustMul'), exF('relaySellPayMul'),
   exF('fairPriceOf'), exF('relayGougePayMul'),   // 2026-10-12:虚标折价的锚与层5,漏抽会 ReferenceError
   exF('relayRenewMul'), exF('relayUserCap'), exF('relayBaseUsers'),
+  exF('relayExpectMul'),   // §18.2 期待值→增长倍率(2026-10-18;不抽则 relayHourlyRefresh ReferenceError)
   exF('p2Smoothstep'), exF('p2StealthMul'), exF('p2Ensure'), exF('p2FlowMul'), exF('p2PoolMul'),
   exF('p2CrashNews'), exF('p2RiskSettle'),   // §20.15:P2-1/P2-4 已落模板,沙箱须能解析 settle 钩子
   exF('prChance'), exF('prSubsidyCost'), exF('prResolve'), exF('prWarnTick'),   // §8 P2-2 公关

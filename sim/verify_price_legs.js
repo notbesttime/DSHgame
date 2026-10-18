@@ -716,6 +716,64 @@ console.log('\n[14] 文案池:内心戏按最弱维度×对错抽取 / 提示卡
   }
 }
 
+// ── [15] §18.2 客户期待值→增长倍率(纯缩放/封顶1/只乘正增长/信誉侧不碰/自研豁免) ──
+console.log('\n[15] §18.2 期待值倍率:常量护栏 / 封顶与触底 / 自研豁免 / 只乘正增长 / 信誉不碰');
+{
+  const sbA = makeSim(20261018);
+  sbA.RB.RISK_EV_K = 0; sbA.RB.RISK_DETECT_BASE_K = 0;
+  const R = sbA.state.relay, B = sbA.RB;
+  ok('EXPECT_GROW_FLOOR = 0.4', B.EXPECT_GROW_FLOOR === 0.4, String(B.EXPECT_GROW_FLOOR));
+  ok('EXPECT_GROW_CAP = 1.0(封顶=只打折从不奖励)', B.EXPECT_GROW_CAP === 1.0, String(B.EXPECT_GROW_CAP));
+  ok('倍率函数可用', typeof sbA.relayExpectMul === 'function');
+  const m = sbA.TM[0];
+  R.listedModel = m.n;
+  // 用 similarityTo 的返回值反推期望倍率(断言从源码取值,不手抄公式)
+  const sim = sbA.similarityTo(R.ability, m);
+  const mul = sbA.relayExpectMul();
+  ok('倍率 = clamp(sim/100, 0.4, 1)(与当前 sim 一致)',
+    Math.abs(mul - Math.max(0.4, Math.min(1, sim / 100))) < 1e-12, 'sim=' + sim.toFixed(1) + ' mul=' + mul.toFixed(3));
+  // sim 触底:能力极差 ⇒ 倍率 = FLOOR 而非 0(不砍死客流)
+  R.ability = { reasoning: 0, longCtx: 0, speed: 0, knowledge: 0, fit: 0, multimodal: 0, instruct: 0, params: 0, toolCall: 0 };
+  ok('期待值归 0 仍留四成(触底不砍死)', Math.abs(sbA.relayExpectMul() - 0.4) < 1e-12, String(sbA.relayExpectMul()));
+  // sim > 100 不放大(诚实线不喂雪球):capMul=(myCap/listedCap)^0.5 可到 6 ⇒ sim 真能破 100。
+  // ⚠️ 别用「能力堆满」构造 —— 实测满配只算出 sim=99.7(首版期望模型猜错,同 §20.10 坑1 教训)。
+  const realSim = sbA.similarityTo;
+  sbA.similarityTo = () => 250;
+  ok('sim>100 时倍率封顶 1(诚实线不喂雪球)', sbA.relayExpectMul() === 1, String(sbA.relayExpectMul()));
+  sbA.similarityTo = () => 150;
+  ok('sim=150 也不放大(>100 一律按满期待)', sbA.relayExpectMul() === 1, String(sbA.relayExpectMul()));
+  sbA.similarityTo = realSim;
+  // 自研豁免:无标榜 ⇒ 恒 1(§5.4「完全不触发」)
+  R.listedModel = null;
+  ok('自研(无标榜)倍率恒 1', sbA.relayExpectMul() === 1, String(sbA.relayExpectMul()));
+  // 作用面源码锚:只出现在 relayHourlyRefresh 的正增长分支,不得进 relayRepSettle / 成交层
+  const srcA = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
+  const rs = srcA.slice(srcA.indexOf('function relayRepSettle'), srcA.indexOf('function relayRepSettle') + 2000);
+  ok('信誉结算不碰期待值倍率(§20.10 已有闸,不双重收费)', rs.indexOf('relayExpectMul') < 0);
+  const hr = srcA.slice(srcA.indexOf('function relayHourlyRefresh'), srcA.indexOf('function relayRepSettle'));
+  ok('倍率只乘正增长(expAddRaw>0 分支;净流失原样通过)',
+    /expAddRaw > 0 \? expAddRaw \* relayExpectMul\(\) : expAddRaw/.test(hr));
+  // 行为级配对:低期待值的小时新增 < 高期待值(同随机串)
+  const sbB = makeSim(20261018);
+  sbB.RB.RISK_EV_K = 0; sbB.RB.RISK_DETECT_BASE_K = 0;
+  const RB2 = sbB.state.relay;
+  const mB = sbB.TM[0];
+  RB2.listedModel = mB.n;
+  RB2.reputation = 100; RB2.price = sbB.officialPriceOf(mB) * sbB.RB.CHEAP_LINE;
+  sbB.modelCapability = () => 100;
+  const runWith = (ability) => {
+    RB2.ability = ability;
+    RB2.userSlots = []; RB2.users = 0;
+    let rseed2 = 424242424;
+    sbB.Math.random = () => { rseed2 = (rseed2 * 1103515245 + 12345) % 2147483648; return rseed2 / 2147483648; };
+    for (let i = 0; i < 12; i++) sbB.relayHourlyRefresh();
+    return RB2.userSlots.length;
+  };
+  const nHi = runWith({ reasoning: 100, longCtx: 100, speed: 100, knowledge: 100, fit: 70, multimodal: 100, instruct: 100, params: 100, toolCall: 100 });
+  const nLo = runWith({ reasoning: 0, longCtx: 0, speed: 0, knowledge: 0, fit: 0, multimodal: 0, instruct: 0, params: 0, toolCall: 0 });
+  ok('12 游戏时后:高期待值人数 > 低期待值人数(倍率真的落地)', nHi > nLo, 'hi=' + nHi + ' lo=' + nLo);
+}
+
 console.log('\n' + '─'.repeat(60));
 
 console.log('\n' + '─'.repeat(60));

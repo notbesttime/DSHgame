@@ -1371,6 +1371,12 @@ const RELAY_BIZ = {
   // 单价优势 —— 只罚「拿不到新客」不够,要让天价开始吐人。K=0.6 实测:跑分线 −21%,诚实线 0 影响。
   GROW_NEG_K: 0.6,
   GROW_NEG_RATIO: 1.4,
+  // ===== §18.2 客户期待值→增长倍率(2026-10-18 星光拍板「按推荐来」)=====
+  // mul = clamp(期待值/100, FLOOR, CAP)。期待值 = 有效相似度(similarityTo,与调教页左上同一口径)。
+  // 只乘在 relayHourlyRefresh 的**正增长期望**上(净流失不乘,防与 C2 打架);信誉结算不碰
+  // (§20.10 已有 sim≥80 闸,再叠一层 = 双重收费,§20.12 耦合坑)。自研 listed=null ⇒ 恒 1(§5.4)。
+  EXPECT_GROW_FLOOR: 0.4,   // 期待值归 0 仍留四成(不砍死客流;虚标线本就靠 surge 注入)
+  EXPECT_GROW_CAP: 1.0,     // 封顶 1:「恰好满期待」是诚实线常态,不放大(防给 D180 偏强的诚实线喂雪球)
   // ===== C4 信誉→愿付溢价(2026-10-13 P1 单价腿)=====
   // 成交系数 ×(1 + K×信誉/100):信誉越高,同一份 token 卖得越贵。只作用于标榜线 ——
   // 自研线按 §5.4 设计「完全不触发信誉机制」,保持 1。K=0.6 ⇒ 信誉触顶(100)时 ×1.6。
@@ -2077,6 +2083,15 @@ function relayGrowWeight(price, official) {
   return Math.max(0, Math.min(1, (RELAY_BIZ.CHEAP_LINE + RELAY_BIZ.GROW_FALLOFF - ratio) / RELAY_BIZ.GROW_FALLOFF));
 }
 
+// 客户期待值→增长倍率(§18.2,2026-10-18)。纯缩放不设门槛(79→80 无断崖,与 cheapness/relayGrowWeight
+// 的连续函数族同风格);钳位 [FLOOR, CAP=1] —— sim 可 >100(capMul 0.4~6),超过一律按 1 算。
+function relayExpectMul() {
+  const listed = relayListedModel();
+  if (!listed) return 1;   // 自研:无「期待对象」,不适用(§5.4「完全不触发」)
+  const sim = similarityTo(state.relay.ability, listed);
+  return Math.max(RELAY_BIZ.EXPECT_GROW_FLOOR, Math.min(RELAY_BIZ.EXPECT_GROW_CAP, sim / 100));
+}
+
 // 用量系数(2026-10-04):定价对**单个用户消耗速度**的压制,补上「高价只挡新用户」的另一半。
 // 增长线(官价×CHEAP_LINE)以下满速;以上随溢价线性衰减到 USAGE_FLOOR。
 // 0.8×→100% / 1.0×→80% / 1.1×→70% / 1.5×→35%(K=1、FLOOR=0.35 时)。
@@ -2203,7 +2218,9 @@ function relayHourlyRefresh() {
     // ⇒ add 恒等于 1,§14.5 的「基础用户量 base = 2 + 信誉/25」完全空转(信誉对新增零影响)。
     // 现在直接按「期望新增 = base × pct」发放:整数部分必给、小数部分按概率给,
     // base 的差异重新体现出来,且是逐步发放、没有随机跳变。
-    const expAdd = base * pct;
+    const expAddRaw = base * pct;
+    // §18.2:期待值倍率只乘正增长;expAddRaw ≤ 0(C2 净流失)原样通过 —— 否则「期待值越低反而流失越少」
+    const expAdd = expAddRaw > 0 ? expAddRaw * relayExpectMul() : expAddRaw;
     let add = Math.floor(expAdd) + (Math.random() < (expAdd - Math.floor(expAdd)) ? 1 : 0);
     // C2(2026-10-13):add 为负 = 这一游戏时净流失 |add| 个用户。
     // pop() 从栈尾取 —— surge(发布注入)用户在栈尾,所以「贵到留不住人」先走注入流量。
