@@ -31,7 +31,7 @@ DSHgame/
 │   │                        在早期被跟踪过、仍在版本库里(walk_video.mp4 等关键原始素材已入库)
 │   ├── compressed/          第一代压缩(png/jpg)。**build.py 已不引用**;仍是 recompress_assets.py 的输入
 │   ├── compressed_webp/     ★ 第二代 WebP:`build.py` 的 `ASSET_FILES` 引用其中 **26 张**(全部内联)
-│   │                        ⚠️ 目录里另有 1 张 `tune_desk_girl.webp` **未被引用**(历史遗留,可清)
+│   │                        (历史遗留的未引用 `tune_desk_girl.webp` 已于 2026-10-18 深夜清理)
 │   └── audio/               ★ 三首 BGM(AAC 64k `.m4a`,~2.9M)+ 四个操作音效(`sfx_*.wav`,~43KB)—— **只外链、绝不内联**(见「两种构建模式」)
 ├── sim/                   ★ 仿真/标定脚手架(不参与构建;改数值前先在这里算,别靠手感)
 │   ├── startup_loop.js      起步期 30 天经济诊断(日表 + 汇总 + ⚖平账校验);
