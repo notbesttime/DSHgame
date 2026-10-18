@@ -3544,6 +3544,7 @@ function closeScreenPanel() {
   screenPanelOpen = false;
   showAttrDetail = false;
   backendDetailOpen = false;
+  trainHelpOpen = false;
   communityDetailKey = null;
   communityPostOpen = false;
   boardPickIdx = -1;
@@ -3671,6 +3672,7 @@ function layoutScreenPanel() {
       panelTab = tab.key;
       showAttrDetail = false;
       backendDetailOpen = false;
+      trainHelpOpen = false;
       communityDetailKey = null;
       communityPostOpen = false;
       boardPickIdx = -1;
@@ -3707,10 +3709,12 @@ function layoutScreenPanel() {
   attrDetailLayer.visible = boardPickIdx >= 0
     || (showAttrDetail && panelTab === 'model')
     || (backendDetailOpen && panelTab === 'backend')
-    || (communityPostOpen && panelTab === 'community');
+    || (communityPostOpen && panelTab === 'community')
+    || (trainHelpOpen && panelTab === 'train');
   if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
   else if (backendDetailOpen && panelTab === 'backend') drawBackendDetail(px, py, pw, ph);
   else if (communityPostOpen && panelTab === 'community') drawCommunityPost(px, py, pw, ph);
+  else if (trainHelpOpen && panelTab === 'train') drawTrainHelp(px, py, pw, ph);
   else if (attrDetailLayer.visible) drawAttrDetail(px, py, pw, ph);
 
   // 搜索框 DOM:只在「面板开着 + 榜单页 + 没打开模型面板」显示
@@ -4293,6 +4297,9 @@ function drawTrainPage(x, y, w, h) {
     { size: 15, color: '#8a7a68' });
   hud2.x = x + 20; hud2.y = y + 38;
   panelContentArea.addChild(hud2);
+
+  // §18.3 右上角「说明」(与模型页/后台同款纸页按钮;HUD 全靠左,右上无冲突)
+  drawTrainHelpButton(x + w, y);
 
   // 左上放大数字:能力 / 客户期待值(= §14.11 有效相似度换皮)
   const capNum = makeText(modelCapability(A).toFixed(1), { size: 36, color: '#5a4632', weight: 'bold' });
@@ -5289,6 +5296,7 @@ let backendSelIdx = -1;      // 选型列表中悬停/高亮的行(-1 无)
 let backendPriceBuf = '';    // 价格输入缓冲(空 = 显示当前价)
 let backendEditingPrice = false;
 let backendDetailOpen = false; // 「数据详情」弹层
+let trainHelpOpen = false;    // §18.3 训练页「说明」弹层(2026-10-18)
 
 // 后台「数据详情」的说明文案:信誉 / 用户量 各是什么、怎么涨怎么跌。
 // 和模型页 ATTR_DESC 同一套口语风格,玩家扫一眼就懂。
@@ -5301,6 +5309,118 @@ const BACKEND_DETAIL_ROWS = [
   ['服务中断', 'tokens 库存见底时无法供给,收入归零', '↑ 库存回满自动恢复 · ↓ 中断期间每满 1 游戏时信誉 -1'],
   ['定价区间', '硬带:标榜模型官方参考价 ×0.5 ~ ×1.5', '↑ 便宜→抽量/新增更友好 · ↓ 超官价×0.8 后单用户用量线性下降(0.8×→100%、1.1×→70%、1.5×→35%) · ↓ 超官价×1.0 增长停止、超×1.1 续约概率衰减(保底 25%) · 人均收入在 ×0.8~×1.1 最优,但每 token 收入随卖价上升 → 供给紧时可试高价,只是留客难 · 弱标榜(有效相似<80)再按 sim/80 折成交,下限 0.5'],
 ];
+
+// §18.3 训练页「说明」文案(2026-10-18)。风格同 BACKEND_DETAIL_ROWS:名称 + 一句话 + 细则。
+// ⚠️ 与代码逐条核对过:AP_REGEN/AP_MAX/压力公式见 TRAIN_CFG;考试 8 档/重考/方案B 见 §17.7;
+//    期待值倍率的三条拍板(只打折/无门槛纯缩放/封顶1)与自研豁免见 §18.2 —— 改机制必须同步这里。
+const TRAIN_HELP_ROWS = [
+  ['算力', '训练的体力值,上限 10;每现实 1 秒回 1',
+   '每局强化训练/道具卡按各自「N算力」扣除;回满才划算憋大招,但攒着不涨 = 浪费回复,多花多赚。'],
+  ['压力', '连训的副作用:训练效果 ×(1 − 压力/250)',
+   '满压 100 ⇒ 效果只 ×0.6;压力顶满触发「摆烂」硬锁(暂时练不动)。停手或消遣会回落——HUD 括号里显示当前折扣 ×多少。'],
+  ['客户期待值', '左上大号 %;= 有效相似度(你的能力 对标 标榜模型,后台页同款)',
+   '它决定「客户觉得你该有多能打」:期待值越不足,每小时**新增客流**按期待值/100 打折(最低仍留四成,不会归零)。'],
+  ['期待值只打折', '从不奖励 —— 100% 与 150% 完全同等待遇',
+   '超过满期待不会多来客人(封顶 1.0,防止强者恒强);练到 100% 就达标,溢出部分换信誉/成交更划算(见后台数据详情)。自研模式(不标榜)不适用这套,期待值恒满。'],
+  ['测评阶梯', '主线 60 天 8 场:随堂→月考→期中→期末→市→省→全国→毕业大考',
+   '及格线**不公布**,只有模糊信号(等级/名次/点评/历史对比);考前 HUD 显示得分与剩余游戏时。前 4 场小考只发现金(tokens),市级起通过才给**信誉 + 用户量**加成;落榜 7 天后可重考,每多重考一次奖励 ×0.7 递减,重考 token 三折。'],
+  ['考试点选', '考试时屏幕浮现限时提示卡:点中 = 本场分数 +N,属性 +δ',
+   '分数只进本场排名、**不进存档**;属性 +δ 是唯一带出局外的收益(每场最多 +6 点,狂点刷不满)。7 类提示对应 7 个维度——看到提示就知道该练哪一科。不点也能过(基础分由能力决定),挂机党不吃亏。'],
+];
+
+function drawTrainHelpButton(right, top) {
+  const bw = 108, bh = 30;
+  const bx = right - bw - 16, by = top + 14;
+  const btn = new PIXI.Graphics();
+  btn.lineStyle(1, 0xc4b8a8, 0.9);
+  btn.beginFill(trainHelpOpen ? 0xd4a574 : 0xe8e0d4, 1);
+  btn.drawRoundedRect(bx, by, bw, bh, 8);
+  btn.endFill();
+  drawPaperIcon(btn, bx + 13, by + 8, 14);
+  btn.eventMode = 'static';
+  btn.cursor = 'pointer';
+  btn.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+  btn.on('pointerdown', () => { trainHelpOpen = !trainHelpOpen; layoutScreenPanel(); });
+  panelContentArea.addChild(btn);
+
+  const label = makeText('训练说明', { size: 12, color: '#5a4632', weight: 'bold' });
+  label.x = bx + 34;
+  label.y = by + (bh - 12) / 2 - 2;
+  panelContentArea.addChild(label);
+}
+
+// §18.3 弹层:照抄 drawBackendDetail 的 shade+card+rows 结构;行高 66(说明两行制)。
+// ⚠️ 正文用 wordWrap(弹层 DOM 文本,不是 canvas 单行 HUD 文案,§20.12 宽度坑不适用,
+//    但仍给 wrapWidth 上限,窄屏不溢出卡片)。
+function drawTrainHelp(px, py, pw, ph) {
+  const w = app.screen.width, h = app.screen.height;
+
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w, h);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  shade.on('pointerdown', () => { trainHelpOpen = false; layoutScreenPanel(); });
+  attrDetailLayer.addChild(shade);
+
+  const rows = TRAIN_HELP_ROWS;
+  const rowH = 66, headH = 58, footH = 24;
+  const cw = Math.min(pw * 0.9, 860);
+  const chh = headH + rows.length * rowH + footH;
+  const cx = px + (pw - cw) / 2;
+  const cy = py + Math.max(8, (ph - chh) / 2);
+
+  const card = new PIXI.Graphics();
+  card.lineStyle(1, 0xc4b8a8, 0.9);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRoundedRect(cx, cy, cw, headH, 12);
+  card.endFill();
+  card.beginFill(0xe8e0d4, 1);
+  card.drawRect(cx, cy + headH - 12, cw, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('调教训练说明', { size: 17, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 20; title.y = cy + 17;
+  attrDetailLayer.addChild(title);
+
+  const tip = makeText('点卡片外任意处关闭', { size: 11, color: '#8a7a68' });
+  tip.x = cx + cw - tip.width - 20; tip.y = cy + 21;
+  attrDetailLayer.addChild(tip);
+
+  rows.forEach(([name, what, how], i) => {
+    const ry = cy + headH + i * rowH;
+    if (i > 0) {
+      const line = new PIXI.Graphics();
+      line.lineStyle(1, 0xc4b8a8, 0.28);
+      line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
+      attrDetailLayer.addChild(line);
+    }
+    const nm = makeText(name, { size: 14, color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 10;
+    attrDetailLayer.addChild(nm);
+
+    const wt = makeText(what, { size: 12, color: '#4a3c2c' });
+    wt.style.wordWrap = true;
+    wt.style.breakWords = true;
+    wt.style.wordWrapWidth = cw - 148 - 20;
+    wt.x = cx + 100; wt.y = ry + 8;
+    attrDetailLayer.addChild(wt);
+
+    const ht2 = makeText(how, { size: 11, color: '#8a7a68' });
+    ht2.style.wordWrap = true;
+    ht2.style.breakWords = true;
+    ht2.style.wordWrapWidth = cw - 148 - 20;
+    ht2.x = cx + 100; ht2.y = ry + 30;
+    attrDetailLayer.addChild(ht2);
+  });
+}
 
 function drawBackendPage(x, y, w, h) {
   backendLive = null;

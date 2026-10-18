@@ -773,6 +773,28 @@ console.log('\n[15] §18.2 期待值倍率:常量护栏 / 封顶与触底 / 自�
   const nLo = runWith({ reasoning: 0, longCtx: 0, speed: 0, knowledge: 0, fit: 0, multimodal: 0, instruct: 0, params: 0, toolCall: 0 });
   ok('12 游戏时后:高期待值人数 > 低期待值人数(倍率真的落地)', nHi > nLo, 'hi=' + nHi + ' lo=' + nLo);
 }
+// ── [16] §18.3 训练页「说明」弹层(2026-10-18):结构在位 + 复位链 + 教学口径锚 ──────────
+// 用 includes 而非正则:本段要锚的文案含 * ( ) 等符号,正则转义易错(§20.16 同类坑)。
+console.log('\n[16] §18.3 说明按钮:弹层结构 / 复位链 / 教学要点锚');
+{
+  const srcH = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
+  // ⚠️ 调用行必须**行首锚**(排除注释掉的行)——变异自检 M1 抓到 includes 写法对「注释行」无效(§20.16 同类)
+  ok('说明按钮存在且调用在位(非注释)',
+    srcH.includes('function drawTrainHelpButton(') && /^\s*drawTrainHelpButton\(x \+ w, y\);/m.test(srcH));
+  ok('弹层函数存在且 dispatch 分支在位(非注释)',
+    srcH.includes('function drawTrainHelp(') && /^\s*else if \(trainHelpOpen && panelTab === 'train'\)/m.test(srcH));
+  ok('点卡片外关闭(shade 复位)', srcH.includes("shade.on('pointerdown', () => { trainHelpOpen = false;"));
+  const resets = srcH.split('trainHelpOpen = false;').length - 1;
+  ok('复位链 ≥3 处(关面板 / 切 tab / shade 关闭)', resets >= 3, String(resets));
+  // 教学四句 = §18.2/§17.7 拍板口径,丢了就会误导玩家
+  ok('文案钉住「只打折从不奖励」(§18.2 封顶 1.0)', srcH.includes('从不奖励'));
+  ok('文案钉住「自研不适用」(§5.4 豁免)', srcH.includes('自研模式(不标榜)不适用'));
+  ok('文案钉住「及格线不公布」(§17.6 隐藏阈值)', srcH.includes('及格线**不公布**'));
+  ok('文案钉住「重考 7 天 / ×0.7 递减」(§17.7)', srcH.includes('7 天后可重考') && srcH.includes('×0.7 递减'));
+  const names = ['算力', '压力', '客户期待值', '期待值只打折', '测评阶梯', '考试点选'];
+  const have = names.filter(k => srcH.includes("  ['" + k + "',"));
+  ok('TRAIN_HELP_ROWS 六行齐全', have.length === 6, have.join('/'));
+}
 
 console.log('\n' + '─'.repeat(60));
 
