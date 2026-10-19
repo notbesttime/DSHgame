@@ -799,102 +799,96 @@ console.log('\n[16] §18.3 说明按钮:弹层结构 / 复位链 / 教学要点�
   ok('TRAIN_HELP_ROWS 六行齐全', have.length === 6, have.join('/'));
 }
 // ── [17] §8.3 预警横幅 + 公关确认弹窗(2026-10-19)──────────────────────────────
-// 星光两条诉求:① 预警要能点(原来只有浮字,路径断了);② 公关选项点一下不得直接执行。
 // 断言分两层:行为级(横幅状态纯函数,沙箱直测)+ 源码锚(挂点/调用行一律行首锚,§20.16 教训)。
 console.log('\n[17] §8.3 预警横幅可点 + 公关确认弹窗:纯函数行为 / 结构 / 挂点');
 {
   const sbC = makeSim(20261019);
   const R = sbC.state.relay, B = sbC.RB;
   const P = sbC.p2Ensure();
-  // ① 纯函数行为:无预警 ⇒ null
   P.warnUntilH = 0; P.warnProb = 0;
   ok('无预警 ⇒ 横幅状态 null(不显示)', sbC.prWarnBannerState(R, P) === null);
-  // ② 预警中 ⇒ 文案带概率、key 随概率与到期时刻变
   R.news.totalH = 100;
   P.warnUntilH = 100 + B.PR_WARN_LEAD_H; P.warnProb = 0.42;
   const s1 = sbC.prWarnBannerState(R, P);
-  ok('预警中 ⇒ 横幅状态存在且带风险百分比',
-    !!s1 && s1.line1.includes('42%') && s1.line2.includes('公关'), s1 && s1.line1);
-  ok('横幅 key 含概率与到期时刻(内容变才重建,防对象泄漏)',
-    s1.key.includes('42') || s1.key.includes('0.42') || /^w1\|\d+\|\d+$/.test(s1.key), s1.key);
+  ok('预警中 ⇒ 横幅状态存在且带风险百分比', !!s1 && s1.line1.includes('42%') && s1.line2.includes('公关'), s1 && s1.line1);
+  ok('横幅 key 含概率与到期时刻(内容变才重建,防对象泄漏)', /^w1\|\d+\|\d+$/.test(s1.key), s1.key);
   const s2 = sbC.prWarnBannerState(R, P);
   ok('同状态两次调用 key 相同(幂等 ⇒ 不重复重建)', s1.key === s2.key);
-  // ③ 到期 ⇒ 自动隐藏(每小时刷新钩子的作用面)
   P.warnUntilH = 100 - 1;
   ok('预警到期 ⇒ 横幅状态归 null(自动隐藏)', sbC.prWarnBannerState(R, P) === null);
-  // ④ 概率钳位(>1 或负数不炸 UI)
   R.news.totalH = 0; P.warnUntilH = 24; P.warnProb = 3;
   const s3 = sbC.prWarnBannerState(R, P);
   ok('概率越界被钳到 100%', !!s3 && s3.line1.includes('100%'), s3 && s3.line1);
-  // ⑤ 源码锚:确认弹窗调用必须在 dispatch 链最前(排在编辑器分支之前)
   const srcC = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
   const iConfirm = srcC.indexOf("if (prConfirm && panelTab === 'backend') drawPrConfirmBox");
   const iEditor = srcC.indexOf("else if (boardPickIdx >= 0) drawModelAttrEditor");
-  ok('确认弹窗接在 dispatch 链最前(行首调用,先于榜单编辑器)', iConfirm > 0 && iEditor > iConfirm);
-  // ⚠️ 断言写「存在行」不写「位置」:§8.4 在链尾插了 publishConfirm 后,原「prConfirm…);」的 ; 锚即失效
-  //    (本轮实测红了一次 —— 锚位依赖会让每条后续插层都来碰瓷,改成行存在性 + 新链自管)
+  ok('公关确认接在 dispatch 链靠前后于榜单编辑器', iConfirm > 0 && iEditor > iConfirm);
+  ok('选项 handler 只开弹窗、不直接执行(星光原始诉求)',
+    srcC.includes('prConfirm = { key: o.key') && !srcC.includes('P.prPolicy = o.key;'));
+  // 断言钉「存在这一行」而不是「这一行是最后一行」(§8.4 追加 publishConfirm 后行尾分号锚被挤红的教训)
   ok('visible 链纳入 prConfirm 与 publishConfirm',
     /\n\s*\|\| \(prConfirm && panelTab === 'backend'\)/.test(srcC)
     && /\n\s*\|\| \(publishConfirm && panelTab === 'publish'\);/.test(srcC));
-  // ⑥ 行为边界:选项 handler 里不得写 prPolicy(防回退成直接执行)
-  const handler = srcC.slice(srcC.indexOf("bg.on('pointerdown', (e) => {"), srcC.indexOf("bg.on('pointerdown', (e) => {") + 400);
-  ok('选项 handler 只开弹窗、不直接执行(星光原始诉求)',
-    handler.includes('prConfirm = {') && !handler.includes('P.prPolicy ='));
-  // ⑦ 弹窗三出口齐全:确认 / 取消 / 点 shade 外
   ok('弹窗提供确认+取消两按钮与点外取消',
     srcC.includes("'确认', 0xb85a10") && srcC.includes("'取消', 0x8a7a68") &&
     /shade\.on\('pointerdown', \(\) => \{ prConfirm = null;/.test(srcC));
-  // ⑧ 补贴价格行在确认弹窗里显示(买不起提示与 prResolve 语义一致)
   ok('确认弹窗对补贴显示价格与买不起提示',
-    srcC.includes('if (c.key === \'subsidize\')') && srcC.includes('现在买不起'));
-  // ⑨ 横幅挂进每小时刷新(typeof 守卫 ⇒ 沙箱不炸)
+    srcC.includes("if (c.key === 'subsidize')") && srcC.includes('现在买不起'));
   ok('横幅随 relayHourlyRefresh 刷新(带 typeof 守卫)',
     /^  if \(typeof updatePrWarnBanner === 'function'\) updatePrWarnBanner\(\);/m.test(srcC));
-  // ⑩ 横幅挂 topbar 层(面板之上、导航之下)+ 点击跳后台
   ok('横幅建于 topbar 层且点击跳后台',
     srcC.includes('layers.topbar.addChild(prWarnBanner)') &&
     /prWarnBanner\.on\('pointerdown', \(\) => jumpToBackendPR\(\)\)/.test(srcC));
-  ok('跳转清其它弹层并置 prFocus 高亮',
-    srcC.includes('prFocus = true;') && srcC.includes('prConfirm = null;'));
-  // ⑪ 高亮一次性:drawPrPanel 末尾必须消费 prFocus(否则永久高亮)——本轮自查抓出的瑕疵
+  ok('跳转清其它弹层并置 prFocus 高亮', srcC.includes('prFocus = true;') && srcC.includes('prConfirm = null;'));
   const panelTail = srcC.slice(srcC.indexOf('function drawPrPanel'), srcC.indexOf('function drawPrConfirmBox'));
   const consumeIdx = panelTail.lastIndexOf('prFocus = false;');
   const cardIdx = panelTail.indexOf('const card = new PIXI.Graphics();');
   ok('prFocus 绘后消费且位于描边绘制之后(一次性)',
-    consumeIdx > 0 && cardIdx > 0 && consumeIdx > cardIdx,
-    'consume@' + consumeIdx + ' card@' + cardIdx);
+    consumeIdx > 0 && cardIdx > 0 && consumeIdx > cardIdx, 'consume@' + consumeIdx + ' card@' + cardIdx);
 }
+
 // ── [18] §8.4 发布确认弹窗(2026-10-19 星光:「点一下不得直接发布」)────────────
-// 行为一致律的第二次应用(第一次是 §8.3 公关选择)。发布是比公关**更重**的动作:立即生效 + 锁标榜 + 自动存档。
 console.log('\n[18] §8.4 发布确认:执行唯一入口 / handler 反证 / 预览只读 / 滚轮护栏 / 复位');
 {
   const srcD = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
-  // ① doPublish 的**全部调用点**必须只剩确认弹窗 handler 一处(函数定义除外)
-  const calls = [...srcD.matchAll(/doPublish\(/g)].length;
-  const defCall = srcD.match(/function doPublish\(/g)?.length || 0;
+  const calls = (srcD.match(/doPublish\(/g) || []).length;
+  const defCall = (srcD.match(/function doPublish\(/g) || []).length;
   ok('模板里 doPublish 仅定义 + 确认弹窗一处调用', calls - defCall === 1, 'calls=' + calls);
-  // ② 模型行 handler 与「实话实说」handler:只置 publishConfirm,不得出现 doPublish(直接执行回退的反证)
   const rowH = srcD.slice(srcD.indexOf("row.on('pointerdown'"), srcD.indexOf("row.on('pointerdown'") + 240);
-  const honH = srcD.slice(srcD.indexOf("btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说'"), 0 + srcD.indexOf("btn(sx + sw + 16, gy, 96, 38, '返回'"));
+  const honH = srcD.slice(srcD.indexOf("btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说'"), srcD.indexOf("btn(sx + sw + 16, gy, 96, 38, '返回'"));
   ok('模型行 handler 只开弹窗', rowH.includes('publishConfirm = {') && !rowH.includes('doPublish'));
   ok('实话实说 handler 只开弹窗', honH.includes('publishConfirm = {') && !honH.includes('doPublish'));
-  // ③ dispatch 链:publishConfirm 分支必须在最前(先于 prConfirm)
   const iP = srcD.indexOf("if (publishConfirm && panelTab === 'publish') drawPublishConfirmBox");
   const iR = srcD.indexOf("else if (prConfirm && panelTab === 'backend') drawPrConfirmBox");
   ok('发布确认接在模态链最前(先于公关确认)', iP > 0 && iR > iP);
-  // ④ 弹窗确认 handler:清 publishConfirm **之后**才 doPublish(防重入双发)
   const cfmH = srcD.slice(srcD.indexOf("mk(cx + cw - bw - 16, '确认发布'"), srcD.indexOf("mk(cx + cw - bw - 16, '确认发布'") + 360);
   const idxNull = cfmH.indexOf('publishConfirm = null;');
   const idxPub = cfmH.indexOf('doPublish(k, mm)');
   ok('确认 handler 先清状态后执行(防重入双发)', idxNull >= 0 && idxPub > idxNull, 'null@' + idxNull + ' pub@' + idxPub);
-  // ⑤ 预览是只读的:弹窗文案引用 PUBLISH_CFG 现值,但不改任何 state
   ok('弹窗预览引用策略代价现值(锁定期/信誉区间)',
     srcD.includes('PUBLISH_CFG.BENCH_DAYS') && srcD.includes('PUBLISH_CFG.RUN_REP_LOSS[0]'));
-  // ⑥ 滚轮护栏:确认弹窗开着时不翻模型列表
   ok('滚轮带 !publishConfirm 护栏', /publishPhase === 'model' && !publishConfirm/.test(srcD));
-  // ⑦ 复位链:关面板 / 切tab / back / 跳转 四处都清 publishConfirm
   const resets = (srcD.match(/publishConfirm = null;/g) || []).length;
-  ok('publishConfirm 复位 ≥5 处(四处复位+确认/取消/shade 自身)', resets >= 5, String(resets));
+  ok('publishConfirm 复位 ≥5 处', resets >= 5, String(resets));
+}
+// ── [19] §19.9~§19.11 四件 UI 优化(2026-10-19 星光截图反馈)──────────────────
+// ⚠️ 本段用 fs.writeFileSync 拼接,不用 String.replace:断言文本含 `$'` 序列会被 replace 当特殊模式(本轮实测踩中)。
+console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后台数据重排');
+{
+  const srcJ = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('鞭打恢复保坐姿(不把 state 抹成 idle)', srcJ.includes("if (tuneWalker.ai.state !== 'sitting') {"));
+  ok('受击冻结期间坐姿贴桌对齐', srcJ.includes("if (ai.state === 'sitting' && rig.physics.sitOnChair) {") && srcJ.includes('tuneHitTimer > 0'));
+  ok('BGM 淡变 1s(20 步 × 50ms)且淡出后暂停(轨道保留零等待)', srcJ.includes('const BGM_FADE_MS = 1000;') && srcJ.includes('BGM_FADE_MS / steps') && srcJ.includes('from.pause()'));
+  const uses = (srcJ.match(/popupGeom\(px, py, pw, ph/g) || []).length;
+  ok('popupGeom 助手接入 ≥3 个弹窗(属性/经营/训练说明)', /function popupGeom\(/.test(srcJ) && uses >= 3, String(uses));
+  ok('窄屏(手机横屏)弹窗占比抬到 0.97/0.95/0.94', srcJ.includes('const narrow = pw < 560;') && (srcJ.match(/pw < 560 \? 0\.9/g) || []).length >= 4);
+  // 变异自检 M3 抓到漏网:只断言 helper 存在/被调用,钉不住它**内部**的钳高 ⇒ 补行为锚
+  ok('popupGeom 内部把卡片高度钳进可视区(手机横屏不裁底)',
+    srcJ.includes('const chh = Math.min(wantH, ph - 14);') && srcJ.includes('Math.max(24, (chh - headH - footH) / rows)'));
+  ok('旧五行小字 lines 数组已删(两处冗余文案为锚反证)', !srcJ.includes("当前标榜:' + listed.n + ' 模型") && !srcJ.includes("'速度属性 ' + fmt2(R.ability.speed)"));
+  ok('新左列:有效相似 22px 关键值 + 偏涨/掺水结论', srcJ.includes("simL.toFixed(0) + '%', infoY + PITCH + 16, 22") && srcJ.includes('掺水 ✗ 会被发现'));
+  ok('新右列:增长/续约/用量阈值状态各自着色', srcJ.includes("addR('增长线 ≤$" + "' + fmt2(growLine)") && srcJ.includes("addR('续约线 ≤$" + "' + fmt2(renewLine)") && srcJ.includes("'用量 ' +"));
+  ok('priceY 槽位公式同步新行高(116 基准)', srcJ.includes("? 116 + (R.serviceDown ? 22 : 0) + bnLines * 22 : 22) + 8"));
 }
 
 console.log('\n' + '─'.repeat(60));

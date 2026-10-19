@@ -3089,7 +3089,7 @@ function drawPrConfirmBox(px, py, pw, ph) {
   shade.on('pointerdown', () => { prConfirm = null; layoutScreenPanel(); });   // 点外=取消
   attrDetailLayer.addChild(shade);
 
-  const cw = Math.min(pw * 0.72, 460), chh = 178;
+  const cw = Math.min(pw * (pw < 560 ? 0.94 : 0.72), 460), chh = 178;   // §19.10 小屏放大
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1.5, 0xc4b8a8, 0.95);
@@ -3176,7 +3176,7 @@ function drawPublishConfirmBox(px, py, pw, ph) {
   const warn = c.strategy === 'bench' && listed && sim < PUBLISH_CFG.SIM_GATE
     ? '⚠ 相似度 ' + sim.toFixed(0) + '＜门槛 ' + PUBLISH_CFG.SIM_GATE + ',确认也会被退回' : '';
 
-  const cw = Math.min(pw * 0.72, 460), chh = warn ? 214 : 190;
+  const cw = Math.min(pw * (pw < 560 ? 0.94 : 0.72), 460), chh = warn ? 214 : 190;   // §19.10 小屏放大
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1.5, 0xc4b8a8, 0.95);
@@ -4107,6 +4107,19 @@ function drawPaperIcon(g, x, y, s) {
   }
 }
 
+// ---------- 弹层几何助手(§19.10,2026-10-19 星光:「弹窗放大一点,适配小屏手机」) ----------
+// 原状:各弹窗写死 640~860 宽 + 固定行高,667×375 手机横屏下卡片(488px)比屏还高 ⇒ 底部被裁。
+// 规则:窄面板(<560,手机横屏)宽度占比抬到 ~0.97;高度**永远钳进面板可视区**,行高按可用高均分;
+//       行高压不下去时(极矮屏)字号由调用方按 fsK 同步缩。桌面(fsw≥560)几何与旧版几乎一致。
+function popupGeom(px, py, pw, ph, rows, baseRowH, headH, footH, wFrac, capW) {
+  const narrow = pw < 560;
+  const cw = Math.min(pw * (narrow ? 0.97 : wFrac), capW);
+  const wantH = headH + rows * baseRowH + footH;
+  const chh = Math.min(wantH, ph - 14);
+  const rowH = rows > 0 ? Math.max(24, (chh - headH - footH) / rows) : baseRowH;
+  return { cw, chh, cx: px + (pw - cw) / 2, cy: py + (ph - chh) / 2, rowH };
+}
+
 // ---------- 模型页「数据详情」弹层 ----------
 // 阴影铺满整个屏幕(不只包住卡片),它同时是"点卡片外任意处关闭"的点击层。
 function drawAttrDetail(px, py, pw, ph) {
@@ -4121,11 +4134,10 @@ function drawAttrDetail(px, py, pw, ph) {
   shade.on('pointerdown', () => { showAttrDetail = false; layoutScreenPanel(); });
   attrDetailLayer.addChild(shade);
 
-  const cw = Math.min(pw * 0.74, 640);
-  const rowH = 40, headH = 58, footH = 24;
-  const chh = headH + RADAR_KEYS.length * rowH + footH;
-  const cx = px + (pw - cw) / 2;
-  const cy = py + (ph - chh) / 2;
+  const headH = 58, footH = 24;
+  const pg = popupGeom(px, py, pw, ph, RADAR_KEYS.length, 40, headH, footH, 0.74, 640);
+  const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
+  const fsK = Math.max(0.8, Math.min(1.1, rowH / 40));   // 行高被压时字同步缩(手机横屏)
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -4160,15 +4172,15 @@ function drawAttrDetail(px, py, pw, ph) {
       line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
       attrDetailLayer.addChild(line);
     }
-    const nm = makeText(ATTR_NAMES[k], { size: 14, color: '#2a2118', weight: 'bold' });
-    nm.x = cx + 20; nm.y = ry + 12;
+    const nm = makeText(ATTR_NAMES[k], { size: Math.round(14 * fsK), color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 12 * fsK;
     attrDetailLayer.addChild(nm);
 
-    const val = makeText(String(Math.round(ak[k])), { size: 13, color: '#c05a2a', weight: 'bold' });
-    val.x = cx + 96; val.y = ry + 13;
+    const val = makeText(String(Math.round(ak[k])), { size: Math.round(13 * fsK), color: '#c05a2a', weight: 'bold' });
+    val.x = cx + 96; val.y = ry + 13 * fsK;
     attrDetailLayer.addChild(val);
 
-    const desc = makeText(ATTR_DESC[k], { size: 12, color: '#8a7a68' });
+    const desc = makeText(ATTR_DESC[k], { size: Math.round(12 * fsK), color: '#8a7a68' });
     desc.style.wordWrap = true;
     desc.style.breakWords = true;
     desc.style.wordWrapWidth = cw - 148 - 20;
@@ -5417,8 +5429,9 @@ function drawCommunityPost(px, py, pw, ph) {
   shade.on('pointerdown', () => { communityPostOpen = false; layoutScreenPanel(); });
   attrDetailLayer.addChild(shade);
 
-  const cw = Math.min(pw * 0.88, 760);
-  const chh = Math.min(ph * 0.72, 480);
+  // §19.10:窄屏(手机横屏)放大占比,高度 0.72→0.9
+  const cw = Math.min(pw * (pw < 560 ? 0.97 : 0.88), 760);
+  const chh = Math.min(ph * (pw < 560 ? 0.9 : 0.72), 480);
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -5598,11 +5611,10 @@ function drawTrainHelp(px, py, pw, ph) {
   attrDetailLayer.addChild(shade);
 
   const rows = TRAIN_HELP_ROWS;
-  const rowH = 66, headH = 58, footH = 24;
-  const cw = Math.min(pw * 0.9, 860);
-  const chh = headH + rows.length * rowH + footH;
-  const cx = px + (pw - cw) / 2;
-  const cy = py + Math.max(8, (ph - chh) / 2);
+  const headH = 58, footH = 24;
+  const pg = popupGeom(px, py, pw, ph, rows.length, 66, headH, footH, 0.9, 860);
+  const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
+  const fsK = Math.max(0.8, Math.min(1.1, rowH / 66));
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -5635,22 +5647,22 @@ function drawTrainHelp(px, py, pw, ph) {
       line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
       attrDetailLayer.addChild(line);
     }
-    const nm = makeText(name, { size: 14, color: '#2a2118', weight: 'bold' });
-    nm.x = cx + 20; nm.y = ry + 10;
+    const nm = makeText(name, { size: Math.round(14 * fsK), color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 10 * fsK;
     attrDetailLayer.addChild(nm);
 
-    const wt = makeText(what, { size: 12, color: '#4a3c2c' });
+    const wt = makeText(what, { size: Math.round(12 * fsK), color: '#4a3c2c' });
     wt.style.wordWrap = true;
     wt.style.breakWords = true;
     wt.style.wordWrapWidth = cw - 148 - 20;
-    wt.x = cx + 100; wt.y = ry + 8;
+    wt.x = cx + 100; wt.y = ry + 8 * fsK;
     attrDetailLayer.addChild(wt);
 
-    const ht2 = makeText(how, { size: 11, color: '#8a7a68' });
+    const ht2 = makeText(how, { size: Math.round(11 * fsK), color: '#8a7a68' });
     ht2.style.wordWrap = true;
     ht2.style.breakWords = true;
     ht2.style.wordWrapWidth = cw - 148 - 20;
-    ht2.x = cx + 100; ht2.y = ry + 30;
+    ht2.x = cx + 100; ht2.y = ry + Math.min(rowH - 22, 30 * fsK);
     attrDetailLayer.addChild(ht2);
   });
 }
@@ -5772,61 +5784,51 @@ function drawBackendPage(x, y, w, h) {
     const um = relayUsageMul(R.price, official);
     const usageTxt = um >= 0.999 ? ' · 用量满速'
       : ' · 用量 ' + Math.round(um * 100) + '%(高价省着用)';
-    const lines = [
-      '当前标榜:' + listed.n + ' 模型  (' + listed.v + ' · ' + listed.t + ' · cap ' + listed.cap + ')',
-      null, // 价格行单独画(可能带划线)
-      '速度属性 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tokens/s  ·  定价 $' + fmt2(R.price) + ' /M',
-      simBreakdown(R.ability, listed).text
-        + '  (我的 cap ' + modelCapability(R.ability).toFixed(1) + ' / 标榜 ' + listed.cap + ')'
-        + (simL >= 80 || simL > 100 ? '  → 偏涨' : '  → 会被发现掺水')
-        + '  · 标榜门槛 ' + RELAY_BIZ.LIST_SIM_MIN + '%',
-      '增长线 ≤$' + fmt2(growLine) + growTxt
-        + '   续约线 ≤$' + fmt2(renewLine) + renewTxt
-        + usageTxt,
-    ];
-    if (R.serviceDown) lines.push('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)');
-    lines.forEach((s, i) => {      if (s === null) {
-        // 价格:原价划线 + 现价(降绿/涨红)
-        const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
-        const lab = makeText('官方参考价 $', { size: 13, color: '#4a3c2c' });
-        lab.x = x + padX; lab.y = infoY + 22;
-        panelContentArea.addChild(lab);
-        const ox = x + padX + 88;
-        if (Math.abs(mulNow - 1) > 0.01) {
-          const oldT = makeText(fmt(baseP), { size: 13, color: '#8a7a68' });
-          oldT.x = ox; oldT.y = infoY + 22;
-          // 删线:一条细横线压在数字上
-          panelContentArea.addChild(oldT);
-          const strike = new PIXI.Graphics();
-          strike.lineStyle(1, 0x8a7a68, 0.9);
-          strike.moveTo(ox, infoY + 22 + oldT.height * 0.55);
-          strike.lineTo(ox + oldT.width, infoY + 22 + oldT.height * 0.55);
-          panelContentArea.addChild(strike);
-          const sep = makeText(' → ', { size: 13, color: '#8a7a68' });
-          sep.x = ox + oldT.width + 2; sep.y = infoY + 22;
-          panelContentArea.addChild(sep);
-          const newT = makeText('$' + fmt(official) + ' /M', {
-            size: 13, color: mulNow < 1 ? '#2a7a3a' : '#c05a2a', weight: 'bold',
-          });
-          newT.x = ox + oldT.width + 28; newT.y = infoY + 22;
-          panelContentArea.addChild(newT);
-        } else {
-          const t = makeText('$' + fmt(baseP) + ' /M tokens', { size: 13, color: '#4a3c2c' });
-          t.x = ox; t.y = infoY + 22;
-          panelContentArea.addChild(t);
-        }
-        return;
-      }
-      const isSimLine = i === 3;
-        const t = makeText(s, {
-          size: 13,
-          color: isSimLine ? ((simL >= 80 || simL > 100) ? '#2a7a3a' : '#c05a2a')
-            : (i >= 5 ? '#c05a2a' : '#4a3c2c'),
-          weight: isSimLine ? 'bold' : 'normal',
-        });
-      t.x = x + padX; t.y = infoY + i * 22;
-      panelContentArea.addChild(t);
-    });
+    // §19.11 数据区重排(2026-10-19 星光:图1 数据字太小、信息太密,右侧空间没用):
+    // 左列 = 玩家决策要看的:标谁 / 有效相似(关键值 22px 大字) / 参考价与定价;
+    // 右列 = 增长 / 续约 / 用量 / 速度换算(阈值状态各自着色);公式拆解缩成 11px 灰(细账在「数据详情」弹窗)。
+    // ⚠️ 删掉的:「我的 cap/标榜 cap」数字(数据详情弹窗有)、「标榜门槛」(选型行已有 ✓可标)、行尾定价($ 输入框就在下面)。
+    const simBD = simBreakdown(R.ability, listed);
+    const good = simL >= 80 || simL > 100;
+    const PITCH = 26;
+    const rx = x + padX + Math.min(310, Math.max(235, w * 0.46));
+    const addL = (s, yy, size, color, bold) => {
+      const tt = makeText(s, { size: size, color: color, weight: bold ? 'bold' : 'normal' });
+      tt.x = x + padX; tt.y = yy; panelContentArea.addChild(tt); return tt;
+    };
+    const addR = (s, yy, color) => {
+      const tt = makeText(s, { size: 12, color: color });
+      tt.x = rx; tt.y = yy; panelContentArea.addChild(tt); return tt;
+    };
+    addL('当前标榜 ' + listed.n, infoY, 15, '#2a2118', true);
+    addL(listed.v + ' · ' + listed.t + ' · cap ' + listed.cap, infoY + 20, 11, '#8a7a68', false);
+    addL('有效相似', infoY + PITCH, 12, '#8a7a68', false);
+    const simBig = addL(simL.toFixed(0) + '%', infoY + PITCH + 16, 22, good ? '#2a7a3a' : '#c05a2a', true);
+    addL(good ? '偏涨 ✓ 信誉会涨' : '掺水 ✗ 会被发现', infoY + PITCH + 20, 13, good ? '#2a7a3a' : '#c05a2a', true);
+    addL('基础' + simBD.raw.toFixed(0) + '% × 能力' + simBD.mul.toFixed(2) + '×(我的 cap ' + modelCapability(R.ability).toFixed(1) + '/标 ' + listed.cap + ')', infoY + PITCH + 44, 11, '#8a7a68', false);
+    addL('官方参考价', infoY + PITCH * 3 + 12, 12, '#8a7a68', false);
+    const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
+    const priceYRow = infoY + PITCH * 3 + 28;
+    if (Math.abs(mulNow - 1) > 0.01) {
+      const oldT = addL(fmt(baseP), priceYRow, 15, '#8a7a68', false);
+      const strike = new PIXI.Graphics();
+      strike.lineStyle(1.5, 0xc05a2a, 0.9);
+      strike.moveTo(oldT.x, priceYRow + oldT.height * 0.55);
+      strike.lineTo(oldT.x + oldT.width, priceYRow + oldT.height * 0.55);
+      panelContentArea.addChild(strike);
+      const newT = addL('$' + fmt(official) + ' /M', priceYRow, 15, mulNow < 1 ? '#2a7a3a' : '#c05a2a', true);
+      newT.x = oldT.x + oldT.width + 10;
+    } else {
+      addL('$' + fmt(baseP) + ' /M tokens', priceYRow, 15, '#2a2118', false);
+    }
+    addR('增长线 ≤$' + fmt2(growLine), infoY, '#8a7a68');
+    addR(growTxt.replace(' · ', ''), infoY + 18, gw >= 0.999 ? '#2a7a3a' : gw > 0 ? '#8a6a2a' : '#c05a2a');
+    addR('续约线 ≤$' + fmt2(renewLine), infoY + PITCH + 16, '#8a7a68');
+    addR(renewTxt.replace(' · ', ''), infoY + PITCH + 34, rMul >= 0.999 ? '#2a7a3a' : '#8a6a2a');
+    addR('用量 ' + (um >= 0.999 ? '满速 ✓' : Math.round(um * 100) + '%'), infoY + PITCH * 2 + 16,
+      um >= 0.999 ? '#2a7a3a' : '#8a6a2a');
+    addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + PITCH * 2 + 34, '#8a7a68');
+    if (R.serviceDown) addL('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)', infoY + PITCH * 4 + 16, 13, '#c05a2a', true);
     // 瓶颈提示(2026-10-05):「卡产能还是卡客流」+ 库存可支撑时长,实时行(0.25s 节流刷新)。
     // 占据警告行下方的槽位;relayBottleneckInfo 为 null(没在卖/没客)时不画、不占位。
     const bnInfo = relayBottleneckInfo();
@@ -5838,7 +5840,7 @@ function drawBackendPage(x, y, w, h) {
     if (bnInfo) {
       const bt = makeText(bnInfo.text, { size: 12, color: bnInfo.color, weight: 'bold' });
       bt.x = x + padX;
-      bt.y = infoY + (R.serviceDown ? 6 : 5) * 22;
+      bt.y = infoY + (R.serviceDown ? 142 : 116);   // §19.11:左列 4 行×26 + 中断警告行(§19.11 前是 ×22 槽位)
       panelContentArea.addChild(bt);
       backendLive.bottleneck = bt;
       if (bnInfo.text2) {
@@ -5860,7 +5862,7 @@ function drawBackendPage(x, y, w, h) {
   // 价格输入(DOM,叠画布)—— 布局末尾统一显隐
   // 瓶颈提示行占位与警告行互斥相加:5 行固定 + 警告(serviceDown) + 瓶颈(有内容时),各占 22
   const priceY = infoY
-    + (listed ? 22 * (5 + (R.serviceDown ? 1 : 0) + bnLines) : 22) + 8;
+    + (listed ? 116 + (R.serviceDown ? 22 : 0) + bnLines * 22 : 22) + 8;   // §19.11:左列 4 行(PITCH26,块高~104)+警告+瓶颈
   const priceLabel = makeText('定价($/M):', { size: 13, color: '#4a3c2c' });
   priceLabel.x = x + padX; priceLabel.y = priceY + 4;
   panelContentArea.addChild(priceLabel);
@@ -6104,11 +6106,10 @@ function drawBackendDetail(px, py, pw, ph) {
   attrDetailLayer.addChild(shade);
 
   const rows = BACKEND_DETAIL_ROWS;
-  const rowH = 58, headH = 58, footH = 24;
-  const cw = Math.min(pw * 0.86, 780);
-  const chh = headH + rows.length * rowH + footH;
-  const cx = px + (pw - cw) / 2;
-  const cy = py + (ph - chh) / 2;
+  const headH = 58, footH = 24;
+  const pg = popupGeom(px, py, pw, ph, rows.length, 58, headH, footH, 0.86, 780);
+  const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
+  const fsK = Math.max(0.8, Math.min(1.1, rowH / 58));
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -6141,22 +6142,22 @@ function drawBackendDetail(px, py, pw, ph) {
       line.moveTo(cx + 20, ry); line.lineTo(cx + cw - 20, ry);
       attrDetailLayer.addChild(line);
     }
-    const nm = makeText(name, { size: 14, color: '#2a2118', weight: 'bold' });
-    nm.x = cx + 20; nm.y = ry + 10;
+    const nm = makeText(name, { size: Math.round(14 * fsK), color: '#2a2118', weight: 'bold' });
+    nm.x = cx + 20; nm.y = ry + 10 * fsK;
     attrDetailLayer.addChild(nm);
 
-    const wt = makeText(what, { size: 12, color: '#4a3c2c' });
+    const wt = makeText(what, { size: Math.round(12 * fsK), color: '#4a3c2c' });
     wt.style.wordWrap = true;
     wt.style.breakWords = true;
     wt.style.wordWrapWidth = cw - 148 - 20;
-    wt.x = cx + 100; wt.y = ry + 8;
+    wt.x = cx + 100; wt.y = ry + 8 * fsK;
     attrDetailLayer.addChild(wt);
 
-    const ht2 = makeText(how, { size: 11, color: '#8a7a68' });
+    const ht2 = makeText(how, { size: Math.round(11 * fsK), color: '#8a7a68' });
     ht2.style.wordWrap = true;
     ht2.style.breakWords = true;
     ht2.style.wordWrapWidth = cw - 148 - 20;
-    ht2.x = cx + 100; ht2.y = ry + 32;
+    ht2.x = cx + 100; ht2.y = ry + Math.min(rowH - 22, 32 * fsK);
     attrDetailLayer.addChild(ht2);
   });
 }
@@ -6492,6 +6493,13 @@ function updateWalkerRig(rig, mode) {
     rig.idle.texture = tuneHitTex;
     c.scale.set(1);
     showWalkerRig(rig, 'idle');
+    // 坐着挨打:保持贴桌对齐(layoutTuneScene 只在 state==='sitting' 时重算,这里跟着夹一次,
+    // 否则受击期间改窗口尺寸会留在旧坐标 ⇒ 看起来「滑出椅子」)
+    if (ai.state === 'sitting' && rig.physics.sitOnChair) {
+      if (tuneDeskSprite) ai.x = tuneDeskSprite.x;
+      ai.y = Math.min(deskSeat.sitY || (app.screen.height * 0.9), app.screen.height - 2);
+      c.x = ai.x; c.y = ai.y;
+    }
     return;
   }
 
@@ -6703,10 +6711,11 @@ function initBGM() {
 function bgmStopFade(a) {
   if (a && a.__fadeTimer) { clearInterval(a.__fadeTimer); a.__fadeTimer = null; }
 }
+const BGM_FADE_MS = 1000;   // §19.9(星光 2026-10-19):浅入浅出各 1 秒(原 10×30ms=300ms 太急)
 function bgmFade(a, target, done) {
   if (!a) { if (done) done(); return; }
   bgmStopFade(a); // 同轨只保留一条 fade,避免旧 interval 把音量抬回去
-  const start = a.volume, steps = 10, step = (target - start) / steps;
+  const start = a.volume, steps = 20, step = (target - start) / steps;
   let i = 0;
   const t = setInterval(() => {
     i++; a.volume = Math.max(0, Math.min(1, start + step * i));
@@ -6716,7 +6725,7 @@ function bgmFade(a, target, done) {
       clearInterval(t);
       if (done) done();
     }
-  }, 30);
+  }, BGM_FADE_MS / steps);
   a.__fadeTimer = t;
 }
 function currentBgmKey() { return tuneSceneOpen ? 'bgm_tune' : (relaySceneOpen ? 'bgm_relay' : 'bgm_basement'); }
@@ -8403,8 +8412,13 @@ app.ticker.add(() => {
         tuneHitTimer = 0;
         if (tuneWalker) {
           tuneWalker.idle.texture = tuneIdleTex;
-          tuneWalker.ai.state = 'idle';
-          tuneWalker.ai.timer = 60;
+          // ⚠️ 坐姿**不能被受击恢复抹成 idle**(2026-10-19 星光:鞭打坐着的模型会「从椅子上掉下」):
+          //    受击期间 state 一直是 'sitting'(updateWalkerAI 提前 return),这里若无条件写 idle,
+          //    人物立刻起身走开 ⇒ 观感就是被打飞下桌。坐着的抽完继续坐,站着/走着的才恢复 idle。
+          if (tuneWalker.ai.state !== 'sitting') {
+            tuneWalker.ai.state = 'idle';
+            tuneWalker.ai.timer = 60;
+          }
         }
       }
     }
