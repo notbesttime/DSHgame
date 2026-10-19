@@ -660,8 +660,11 @@ console.log('\n[13] 公关三选一:概率公式 / 诡辩罚客流 / 道歉 / �
   ok('UI 提供四个选项(诡辩/道歉/补贴/不公关)',
     /key: 'deflect'/.test(src5) && /key: 'apologize'/.test(src5)
     && /key: 'subsidize'/.test(src5) && /name: '不公关'/.test(src5));
-  ok('UI 选择写回 prPolicy(点了才生效)', /P\.prPolicy = o\.key;/.test(src5));
-  ok('UI 只在事件/预警时出现(平时不占版面)', /if \(!activeEv\.length && !warned\) return;/.test(src5));
+  // §8.3(2026-10-19)改:选项点击**不直接写** prPolicy,而是打开确认弹窗;「确认」才写。
+  // 两条断言钉死新行为(防止回退成「点一下直接生效」——星光的原始诉求)。
+  ok('UI 选项点击 = 打开确认弹窗(不直接写 prPolicy)', /prConfirm = \{ key: o\.key/.test(src5) && !/P\.prPolicy = o\.key;/.test(src5));
+  ok('确认按钮才写回 prPolicy(按 key)', /P\.prPolicy = prConfirm \? prConfirm\.key : null;/.test(src5));
+  ok('UI 只在事件/预警时出现(平时不占版面)', /if \(!activeEv\.length && !warned\) \{ prFocus = false; return; \}/.test(src5));
   // ⑦ 补贴估算率(2026-10-18 重标:D180 剂量曲线要求「可扫参 + 可断言」,故从函数体提进 RELAY_BIZ)
   ok('补贴估算率常量 PR_SUBSIDY_RATE = 0.005(现行基线值)', B8.PR_SUBSIDY_RATE === 0.005, String(B8.PR_SUBSIDY_RATE));
   R8.dollars = 100;
@@ -794,6 +797,69 @@ console.log('\n[16] §18.3 说明按钮:弹层结构 / 复位链 / 教学要点�
   const names = ['算力', '压力', '客户期待值', '期待值只打折', '测评阶梯', '考试点选'];
   const have = names.filter(k => srcH.includes("  ['" + k + "',"));
   ok('TRAIN_HELP_ROWS 六行齐全', have.length === 6, have.join('/'));
+}
+// ── [17] §8.3 预警横幅 + 公关确认弹窗(2026-10-19)──────────────────────────────
+// 星光两条诉求:① 预警要能点(原来只有浮字,路径断了);② 公关选项点一下不得直接执行。
+// 断言分两层:行为级(横幅状态纯函数,沙箱直测)+ 源码锚(挂点/调用行一律行首锚,§20.16 教训)。
+console.log('\n[17] §8.3 预警横幅可点 + 公关确认弹窗:纯函数行为 / 结构 / 挂点');
+{
+  const sbC = makeSim(20261019);
+  const R = sbC.state.relay, B = sbC.RB;
+  const P = sbC.p2Ensure();
+  // ① 纯函数行为:无预警 ⇒ null
+  P.warnUntilH = 0; P.warnProb = 0;
+  ok('无预警 ⇒ 横幅状态 null(不显示)', sbC.prWarnBannerState(R, P) === null);
+  // ② 预警中 ⇒ 文案带概率、key 随概率与到期时刻变
+  R.news.totalH = 100;
+  P.warnUntilH = 100 + B.PR_WARN_LEAD_H; P.warnProb = 0.42;
+  const s1 = sbC.prWarnBannerState(R, P);
+  ok('预警中 ⇒ 横幅状态存在且带风险百分比',
+    !!s1 && s1.line1.includes('42%') && s1.line2.includes('公关'), s1 && s1.line1);
+  ok('横幅 key 含概率与到期时刻(内容变才重建,防对象泄漏)',
+    s1.key.includes('42') || s1.key.includes('0.42') || /^w1\|\d+\|\d+$/.test(s1.key), s1.key);
+  const s2 = sbC.prWarnBannerState(R, P);
+  ok('同状态两次调用 key 相同(幂等 ⇒ 不重复重建)', s1.key === s2.key);
+  // ③ 到期 ⇒ 自动隐藏(每小时刷新钩子的作用面)
+  P.warnUntilH = 100 - 1;
+  ok('预警到期 ⇒ 横幅状态归 null(自动隐藏)', sbC.prWarnBannerState(R, P) === null);
+  // ④ 概率钳位(>1 或负数不炸 UI)
+  R.news.totalH = 0; P.warnUntilH = 24; P.warnProb = 3;
+  const s3 = sbC.prWarnBannerState(R, P);
+  ok('概率越界被钳到 100%', !!s3 && s3.line1.includes('100%'), s3 && s3.line1);
+  // ⑤ 源码锚:确认弹窗调用必须在 dispatch 链最前(排在编辑器分支之前)
+  const srcC = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
+  const iConfirm = srcC.indexOf("if (prConfirm && panelTab === 'backend') drawPrConfirmBox");
+  const iEditor = srcC.indexOf("else if (boardPickIdx >= 0) drawModelAttrEditor");
+  ok('确认弹窗接在 dispatch 链最前(行首调用,先于榜单编辑器)', iConfirm > 0 && iEditor > iConfirm);
+  ok('visible 链纳入 prConfirm',
+    /\n\s*\|\| \(prConfirm && panelTab === 'backend'\);/.test(srcC));
+  // ⑥ 行为边界:选项 handler 里不得写 prPolicy(防回退成直接执行)
+  const handler = srcC.slice(srcC.indexOf("bg.on('pointerdown', (e) => {"), srcC.indexOf("bg.on('pointerdown', (e) => {") + 400);
+  ok('选项 handler 只开弹窗、不直接执行(星光原始诉求)',
+    handler.includes('prConfirm = {') && !handler.includes('P.prPolicy ='));
+  // ⑦ 弹窗三出口齐全:确认 / 取消 / 点 shade 外
+  ok('弹窗提供确认+取消两按钮与点外取消',
+    srcC.includes("'确认', 0xb85a10") && srcC.includes("'取消', 0x8a7a68") &&
+    /shade\.on\('pointerdown', \(\) => \{ prConfirm = null;/.test(srcC));
+  // ⑧ 补贴价格行在确认弹窗里显示(买不起提示与 prResolve 语义一致)
+  ok('确认弹窗对补贴显示价格与买不起提示',
+    srcC.includes('if (c.key === \'subsidize\')') && srcC.includes('现在买不起'));
+  // ⑨ 横幅挂进每小时刷新(typeof 守卫 ⇒ 沙箱不炸)
+  ok('横幅随 relayHourlyRefresh 刷新(带 typeof 守卫)',
+    /^  if \(typeof updatePrWarnBanner === 'function'\) updatePrWarnBanner\(\);/m.test(srcC));
+  // ⑩ 横幅挂 topbar 层(面板之上、导航之下)+ 点击跳后台
+  ok('横幅建于 topbar 层且点击跳后台',
+    srcC.includes('layers.topbar.addChild(prWarnBanner)') &&
+    /prWarnBanner\.on\('pointerdown', \(\) => jumpToBackendPR\(\)\)/.test(srcC));
+  ok('跳转清其它弹层并置 prFocus 高亮',
+    srcC.includes('prFocus = true;') && srcC.includes('prConfirm = null;'));
+  // ⑪ 高亮一次性:drawPrPanel 末尾必须消费 prFocus(否则永久高亮)——本轮自查抓出的瑕疵
+  const panelTail = srcC.slice(srcC.indexOf('function drawPrPanel'), srcC.indexOf('function drawPrConfirmBox'));
+  const consumeIdx = panelTail.lastIndexOf('prFocus = false;');
+  const cardIdx = panelTail.indexOf('const card = new PIXI.Graphics();');
+  ok('prFocus 绘后消费且位于描边绘制之后(一次性)',
+    consumeIdx > 0 && cardIdx > 0 && consumeIdx > cardIdx,
+    'consume@' + consumeIdx + ' card@' + cardIdx);
 }
 
 console.log('\n' + '─'.repeat(60));

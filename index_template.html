@@ -2198,6 +2198,7 @@ function relayHourlyRefresh() {
     }
   }
   R.userSlots = keep;
+  if (typeof updatePrWarnBanner === 'function') updatePrWarnBanner();   // §8.3 横幅随游戏时刷新(到期自动隐藏)
   // 新增:标榜线 = 增长线(官价×0.8)以下全速、以上 FALLOFF 区间线性衰减到 0(2026-10-04 软化悬崖);
   // 自研线(P1-9)= 未标榜 + 价格在上限内。
   // ⚠️ 加 !R.serviceDown(2026-10-03):服务中断期间不该还有新用户进来(原来会出现
@@ -2486,6 +2487,59 @@ function prWarnTick(R, prob) {
       P.warnProb = Math.max(P.warnProb || 0, prob);
     }
   }
+}
+
+// ===== §8.3 预警可点横幅 + 公关确认弹窗(2026-10-19 星光:「开 A」+「公关选项要点一下不能直接执行」)=====
+// 预警原本只有浮字(飘 0.9 秒就没),「提前公关」的路径是断的 ⇒ 右上角常驻横幅,点击直达后台并高亮。
+// ⚠️ 纯展示+导航,零数值。sim 沙箱没有 PIXI/app ⇒ updatePrWarnBanner 必须 typeof 守卫 no-op(§18.2 同款套路)。
+function prWarnBannerState(R, P) {
+  const H = (R.news && R.news.totalH) || 0;
+  if (!P || !(P.warnUntilH > H)) return null;
+  const prob = Math.max(0, Math.min(1, P.warnProb || 0));
+  return {
+    line1: '⚠ 社区开始质疑你 · 风险 ' + Math.round(prob * 100) + '%',
+    line2: '点我去后台提前公关 →',
+    key: 'w1|' + Math.round(prob * 20) + '|' + Math.floor(P.warnUntilH),
+  };
+}
+const prWarnBanner = new PIXI.Container();
+prWarnBanner.eventMode = 'static';
+prWarnBanner.cursor = 'pointer';
+layers.topbar.addChild(prWarnBanner);
+prWarnBanner.on('pointerdown', () => jumpToBackendPR());
+function updatePrWarnBanner() {
+  if (typeof PIXI === 'undefined' || typeof app === 'undefined' || !app.screen) return;
+  const R = state.relay, P = p2Ensure();
+  const s = prWarnBannerState(R, P);
+  if (!s) { if (prWarnBanner.visible) { prWarnBanner.visible = false; prWarnBanner._key = ''; } return; }
+  if (prWarnBanner._key === s.key && prWarnBanner.visible) return;   // 状态没变不重建(横幅每游戏时刷,对象别泄漏)
+  prWarnBanner._key = s.key;
+  prWarnBanner.removeChildren();
+  const bw = 264, bh = 46;
+  const bg2 = new PIXI.Graphics();
+  bg2.lineStyle(1.5, 0xd8843a, 0.95);
+  bg2.beginFill(0x2a1f16, 0.92);
+  bg2.drawRoundedRect(0, 0, bw, bh, 9);
+  bg2.endFill();
+  prWarnBanner.addChild(bg2);
+  const t1 = makeText(s.line1, { size: 12, color: '#ffd98a', weight: 'bold' });
+  t1.x = 10; t1.y = 7; prWarnBanner.addChild(t1);
+  const t2 = makeText(s.line2, { size: 11, color: '#ff9a5a' });
+  t2.x = 10; t2.y = 26; prWarnBanner.addChild(t2);
+  prWarnBanner.x = app.screen.width - bw - 12;   // 右上角(topbar 居中 52 高之下,不碰任何既有 UI)
+  prWarnBanner.y = 74;
+  prWarnBanner.hitArea = new PIXI.Rectangle(0, 0, bw, bh);
+  prWarnBanner.visible = true;
+}
+function jumpToBackendPR() {
+  if (!screenPanelOpen) openScreenPanel();
+  panelTab = 'backend';
+  // 与切 tab 同款复位:其它弹层/编辑器全清,避免跳转瞬间叠层
+  showAttrDetail = false; backendDetailOpen = false; trainHelpOpen = false;
+  communityDetailKey = null; communityPostOpen = false; boardPickIdx = -1; editingKey = null;
+  publishMsg = ''; publishArmed = null; prConfirm = null;
+  prFocus = true;
+  layoutScreenPanel();
 }
 
 // 拍板定稿的编译期开关:1 = 倍率之后再钳一次(CAP 是真上限);0 = 设计稿原式(必发,留作对照)
@@ -2957,7 +3011,7 @@ function drawPrPanel(x, y, w, h, baseY) {
   const totalH = (R.news && R.news.totalH) || 0;
   const activeEv = (P.events || []).filter(e => e.untilH > totalH);
   const warned = (P.warnUntilH || 0) > totalH;
-  if (!activeEv.length && !warned) return;      // 无事件无预警 ⇒ 不显示
+  if (!activeEv.length && !warned) { prFocus = false; return; }      // 无事件无预警 ⇒ 不显示(高亮标记一并消费)
 
   const padX = w * 0.04;
   const pw = w - padX * 2;
@@ -2965,7 +3019,7 @@ function drawPrPanel(x, y, w, h, baseY) {
   const top = y + h - 132;
   const card = new PIXI.Graphics();
   card.beginFill(0xfff0e0, 0.92);
-  card.lineStyle(1.5, 0xd8843a, 0.9);
+  card.lineStyle(prFocus ? 3 : 1.5, 0xd8843a, prFocus ? 1 : 0.9);   // §8.3 预警跳转的一次性强高亮
   card.drawRoundedRect(x + padX, top, pw, 110, 8);
   card.endFill();
   panelContentArea.addChild(card);
@@ -2999,11 +3053,10 @@ function drawPrPanel(x, y, w, h, baseY) {
     bg.eventMode = 'static'; bg.cursor = 'pointer';
     bg.on('pointerdown', (e) => {
       e.stopPropagation();
-      P.prPolicy = o.key;
-      refreshRelayPanel();
-      if (typeof spawnFloatText === 'function') {
-        spawnFloatText('公关策略:' + o.name, x + w / 2, top - 8);
-      }
+      // §8.3(星光 2026-10-19):四选项一律「点击→弹窗确认→才生效」。
+      // 原直接写 prPolicy:诡辩/道歉/不公关体感像「选中」,补贴像「直接执行」,行为不一致 ⇒ 统一加确认。
+      prConfirm = { key: o.key, name: o.name, desc: o.desc };
+      layoutScreenPanel();
     });
     panelContentArea.addChild(bg);
     const nm = makeText(o.name, { size: 12, color: sel ? '#ffffff' : '#6a4a1a', weight: 'bold' });
@@ -3014,6 +3067,83 @@ function drawPrPanel(x, y, w, h, baseY) {
     if (ds.width > btnW - 10) ds.scale.set((btnW - 10) / ds.width);
     panelContentArea.addChild(ds);
   });
+  // §8.3 高亮是一次性:本次已按 prFocus 画出 3px 描边,绘完即消费 ⇒ 下次重绘恢复 1.5px
+  //   (不消费会永久高亮;放在末尾而非开头,否则首帧就看不到高亮)
+  prFocus = false;
+}
+
+// ===== §8.3 公关确认弹窗(2026-10-19 星光)=====
+// 星光的原话:「有的策略点击是会进行下一步,有的却是直接执行」——补贴要扣 token,点一下就像执行;
+// 诡辩/道歉/不公关只是选中。现在四个选项**一律**点击→本弹窗→按「确认」才写 prPolicy。
+// ⚠️ 弹窗只是**选择策略**,不是执行公关:真正执行仍是下次翻车/识破事件结算时 prResolve(损失落地前介入)。
+//    文案必须把这点说清,否则玩家以为点确认就当场消灾。
+function drawPrConfirmBox(px, py, pw, ph) {
+  const R = state.relay, c = prConfirm;
+  const w0 = app.screen.width, h0 = app.screen.height;
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w0, h0);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w0, h0);
+  shade.on('pointerdown', () => { prConfirm = null; layoutScreenPanel(); });   // 点外=取消
+  attrDetailLayer.addChild(shade);
+
+  const cw = Math.min(pw * 0.72, 460), chh = 178;
+  const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
+  const card = new PIXI.Graphics();
+  card.lineStyle(1.5, 0xc4b8a8, 0.95);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('确定采用公关策略：' + c.name + '？', { size: 16, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 20; title.y = cy + 16;
+  attrDetailLayer.addChild(title);
+
+  const L1 = makeText(c.desc, { size: 12, color: '#4a3c2c' });
+  L1.x = cx + 20; L1.y = cy + 46;
+  attrDetailLayer.addChild(L1);
+  const L2 = makeText('确认 = 只改策略;下次事件结算时才执行(不花 token、不立刻生效)', { size: 11, color: '#8a7a68' });
+  L2.x = cx + 20; L2.y = cy + 68;
+  attrDetailLayer.addChild(L2);
+  // 补贴专属:显示当前价与刀乐余额,买不起时提示会退回不公关(与 prResolve 语义一致)
+  if (c.key === 'subsidize') {
+    const costM = (prSubsidyCost(R) / 1e6).toFixed(1);
+    const afford = (state.tokens || 0) >= prSubsidyCost(R);
+    const L3 = makeText('补贴价约 ' + costM + 'M tok(随刀乐收入浮动)' + (afford ? '' : ' · 现在买不起⇒事件时退回不公关'),
+      { size: 11, color: afford ? '#8a3a10' : '#b0502a' });
+    L3.x = cx + 20; L3.y = cy + 90;
+    attrDetailLayer.addChild(L3);
+  }
+
+  const bw = 118, bh = 34, by = cy + chh - 52;
+  const mk = (bx, label, fill, lineC, handler) => {
+    const g = new PIXI.Graphics();
+    g.lineStyle(1.2, lineC, 0.95); g.beginFill(fill, 0.95);
+    g.drawRoundedRect(bx, by, bw, bh, 7); g.endFill();
+    g.eventMode = 'static'; g.cursor = 'pointer';
+    g.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+    g.on('pointerdown', (e) => { e.stopPropagation(); handler(); });
+    attrDetailLayer.addChild(g);
+    const t2 = makeText(label, { size: 13, color: '#ffffff', weight: 'bold' });
+    t2.x = bx + (bw - t2.width) / 2; t2.y = by + 8;
+    attrDetailLayer.addChild(t2);
+  };
+  mk(cx + cw - bw - 16, '确认', 0xb85a10, 0x8a3a10, () => {
+    const P = p2Ensure();
+    P.prPolicy = prConfirm ? prConfirm.key : null;
+    const nm = prConfirm ? prConfirm.name : '';
+    prConfirm = null;
+    if (typeof spawnFloatText === 'function') {
+      spawnFloatText('公关策略：' + nm, app.screen.width / 2, app.screen.height * 0.3);
+    }
+    layoutScreenPanel();
+  });
+  mk(cx + 16, '取消', 0x8a7a68, 0x5a4632, () => { prConfirm = null; layoutScreenPanel(); });   // 左=取消,右=确认(惯例)
 }
 
 // ===== §17.6 第二步:作文比赛式限时提示(点选加分)=====
@@ -3545,6 +3675,8 @@ function closeScreenPanel() {
   showAttrDetail = false;
   backendDetailOpen = false;
   trainHelpOpen = false;
+  prConfirm = null;      // §8.3
+  prFocus = false;       // §8.3
   communityDetailKey = null;
   communityPostOpen = false;
   boardPickIdx = -1;
@@ -3673,6 +3805,7 @@ function layoutScreenPanel() {
       showAttrDetail = false;
       backendDetailOpen = false;
       trainHelpOpen = false;
+      prConfirm = null;      // §8.3:确认弹窗只在 backend
       communityDetailKey = null;
       communityPostOpen = false;
       boardPickIdx = -1;
@@ -3710,8 +3843,12 @@ function layoutScreenPanel() {
     || (showAttrDetail && panelTab === 'model')
     || (backendDetailOpen && panelTab === 'backend')
     || (communityPostOpen && panelTab === 'community')
-    || (trainHelpOpen && panelTab === 'train');
-  if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
+    || (trainHelpOpen && panelTab === 'train')
+    || (prConfirm && panelTab === 'backend');
+  // §8.3 公关确认弹窗:必须在最前(它是从后台页面板里触发的模态,盖住面板内容)
+  // ⚠️ 行首锚断言依赖此调用形态(§20.16 教训:注释行也算在位)。
+  if (prConfirm && panelTab === 'backend') drawPrConfirmBox(px, py, pw, ph);
+  else if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
   else if (backendDetailOpen && panelTab === 'backend') drawBackendDetail(px, py, pw, ph);
   else if (communityPostOpen && panelTab === 'community') drawCommunityPost(px, py, pw, ph);
   else if (trainHelpOpen && panelTab === 'train') drawTrainHelp(px, py, pw, ph);
@@ -5297,6 +5434,8 @@ let backendPriceBuf = '';    // 价格输入缓冲(空 = 显示当前价)
 let backendEditingPrice = false;
 let backendDetailOpen = false; // 「数据详情」弹层
 let trainHelpOpen = false;    // §18.3 训练页「说明」弹层(2026-10-18)
+let prConfirm = null;         // §8.3 公关确认弹窗 {key,name,desc} / null(2026-10-19)
+let prFocus = false;          // §8.3 预警横幅跳转后,公关栏一次性强高亮
 
 // 后台「数据详情」的说明文案:信誉 / 用户量 各是什么、怎么涨怎么跌。
 // 和模型页 ATTR_DESC 同一套口语风格,玩家扫一眼就懂。
