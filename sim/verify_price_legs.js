@@ -889,6 +889,10 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('新左列:有效相似 22px 关键值 + 偏涨/掺水结论', srcJ.includes("simL.toFixed(0) + '%', infoY + PITCH + 16, 22") && srcJ.includes('掺水 ✗ 会被发现'));
   ok('新右列:增长/续约/用量阈值状态各自着色', srcJ.includes("addR('增长线 ≤$" + "' + fmt2(growLine)") && srcJ.includes("addR('续约线 ≤$" + "' + fmt2(renewLine)") && srcJ.includes("'用量 ' +"));
   ok('priceY 槽位公式同步新行高(116 基准)', srcJ.includes("? 116 + (R.serviceDown ? 22 : 0) + bnLines * 22 : 22) + 8"));
+  // 窄屏宽度护栏:左列公式行不得塞回 cap 数字(rx 仅 ~235px,带 cap 约 232px 会压右列)——文档/代码一致性锚
+  ok('左列公式行保持精简(不含 cap 数字)',
+    srcJ.includes("+ simBD.mul.toFixed(2) + '×', infoY + PITCH + 44")
+    && !srcJ.includes("'/标 ' + listed.cap + ')', infoY + PITCH + 44"));
 }
 
 console.log('\n' + '─'.repeat(60));

@@ -5805,7 +5805,9 @@ function drawBackendPage(x, y, w, h) {
     addL('有效相似', infoY + PITCH, 12, '#8a7a68', false);
     const simBig = addL(simL.toFixed(0) + '%', infoY + PITCH + 16, 22, good ? '#2a7a3a' : '#c05a2a', true);
     addL(good ? '偏涨 ✓ 信誉会涨' : '掺水 ✗ 会被发现', infoY + PITCH + 20, 13, good ? '#2a7a3a' : '#c05a2a', true);
-    addL('基础' + simBD.raw.toFixed(0) + '% × 能力' + simBD.mul.toFixed(2) + '×(我的 cap ' + modelCapability(R.ability).toFixed(1) + '/标 ' + listed.cap + ')', infoY + PITCH + 44, 11, '#8a7a68', false);
+    // ⚠️ 刻意**不含**「我的 cap/标 cap」数字(与 §19.11 文档口径一致):一是数据详情弹窗已有细账,
+    //    二是手机横屏左列宽度上限只有 ~235px(右列起点 rx),带 cap 时约 232px 只剩 3px 余量会压到右列。
+    addL('基础' + simBD.raw.toFixed(0) + '% × 能力' + simBD.mul.toFixed(2) + '×', infoY + PITCH + 44, 11, '#8a7a68', false);
     addL('官方参考价', infoY + PITCH * 3 + 12, 12, '#8a7a68', false);
     const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
     const priceYRow = infoY + PITCH * 3 + 28;
