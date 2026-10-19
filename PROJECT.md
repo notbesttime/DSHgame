@@ -6,13 +6,13 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-19 实测 8416 行 / 408KB,含少量 CSS/HTML)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-19 实测 8513 行 / 414KB,含少量 CSS/HTML)
 ├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
-├── check_all.py           ★ 一条龙自检:构建 → 语法 → 245 项断言 → 30 天仿真 → dist(失败即停)
+├── check_all.py           ★ 一条龙自检:构建 → 语法 → 253 项断言 → 30 天仿真 → dist(失败即停)
 ├── make_sfx.py            ★ 四个操作音效的程序化合成器(点击/购买/挥鞭/消除;改音色重跑)
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
@@ -43,7 +43,7 @@ DSHgame/
 │   ├── subsidy_scan.py      ★ 补贴定价扫描器:PR_SUBSIDY_RATE 三档 × 窗口 × 3 种子(§8.2;别设 P2_EVENT_*——模板已原生落码,会双重生效)
 │   ├── verify_gouge.js      层5「虚标成交折价」断言 20 项(秒级,不跑仿真)
 │   ├── verify_users.js      base/cap 两条人数约束断言 42 项(含 §17.7 userBoost 逐位回退锚;秒级)
-│   ├── verify_price_legs.js  断言 139 项:[8b]保价/[10]P2 22/[11]热点 14/[12]考试 20/[13]公关 21 等(秒级;含变异自检)── ★ 动经济机制必跑
+│   ├── verify_price_legs.js  断言 191 项:[8b]保价/[10]P2 22/[11]热点/[12]考试/[13]公关/[14]文案池/[15]期待值/[16]说明弹层/[17]预警横幅/[18]发布确认(秒级;含变异自检)── ★ 动经济机制与面板链必跑
 │   ├── tune_gouge_scan.js   虚标罚系数扫描(EXP 网格)   tune_users_scan.js  信誉→客流联合扫描(base×cap)
 │   ├── tune_board_scale/shape/scan.js、tune_coverage.js、tune_landscape.js  棋盘扩色与属性覆盖调参
 │   └── layout_check.js      各屏尺寸下「列车」棋盘布局是否溢出/压底栏
@@ -65,7 +65,7 @@ DSHgame/
 ## 常用命令
 
 ```bash
-python check_all.py        # ★ 一条龙自检:构建→语法→245项断言(42+20+183)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
+python check_all.py        # ★ 一条龙自检:构建→语法→253项断言(42+20+191)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
 python sim/subsidy_scan.py --days 30,90,180  # ★ 补贴定价剂量曲线(RATE×窗口×3种子;§8.2)
 python sync_exam_text.py   # ★ 考试文案同步:`--check` 只报告,默认写入模板(改《考试文案池.md》后跑)
 python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
@@ -88,7 +88,7 @@ node server.js             # http://localhost:8765(根目录自动补 index.html
 node sim/startup_loop.js         # 30 天经济诊断:诚实线 vs 跑分线 + ⚖平账校验 + 瓶颈链路
 node sim/verify_users.js         # base/cap 两条人数约束断言(秒级,改人数相关必跑)
 node sim/verify_gouge.js         # 层5 虚标折价断言(秒级,改价格/信誉层必跑)
-node sim/verify_price_legs.js   # 单价腿断言:C2 极价负增长 / C4 信誉愿付溢价(秒级,改单价腿必跑)
+node sim/verify_price_legs.js   # 大套断言(191):单价腿/保价/P2/考试/公关/文案池/期待值/弹层/横幅/发布确认(秒级;动经济或面板链必跑)
 node sim/tune_users_scan.js      # 信誉→客流 参数联合扫描(base × cap,5 档)
 CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十几秒)
 ```
@@ -113,7 +113,7 @@ CONC=5 node sim/tune_users_scan.js   # 并发跑扫描(单档 30 天数秒~十�
 |---|---|---|
 | 产物 | 单文件 `index.html` | `dist/index.html` + `dist/pixi.<hash>.js` + `dist/assets/<name>.<hash>.<ext>` |
 | 素材形态 | base64 内联(同步可得) | 独立文件(真异步加载),HTML 里只有路径表 |
-| 体积(2026-10-19 实测,§8.3 预警横幅+确认弹窗后) | **2584KB**(整个文件) | 首访 **5419KB** = HTML **409KB** + `pixi.<hash>.js` **446KB** + `assets/` **4564KB**(BGM 2866 + 26 张 WebP 1296 + 中文字体子集 357 + 音效 43);回访只需重下 **409KB** 的 index.html |
+| 体积(2026-10-19 §8.4 发布确认后) | **2589KB**(整个文件) | 首访 **5424KB** = HTML **414KB** + `pixi.<hash>.js` **446KB** + `assets/` **4564KB**(BGM 2866 + 26 张 WebP 1296 + 中文字体子集 357 + 音效 43);回访只需重下 **409KB** 的 index.html |
 | 用途 | 塞进「本体」/离线直接双击打开 | 发布到网页托管(配合平台内容哈希长缓存) |
 | 能否离线 | 能 | 不能(需要 http 服务) |
 
@@ -197,12 +197,12 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
   那条「跑分线」**是同一条线**,它纹丝不动是必然的、不是"对照成立"的证据。
   真正成组的对照只有 `LIST_POLICY=sim` 这一组,D30~D180 的完整数据见本节上方表格。
 
-### 自检体系(2026-10-12 搭好,2026-10-19 扩;全链 245 项 = `python check_all.py` 的 42+20+183)
+### 自检体系(2026-10-12 搭好,2026-10-19 扩;全链 253 项 = `python check_all.py` 的 42+20+191)
 
 | 层 | 手段 | 抓什么 |
 |---|---|---|
 | 构建 | `node check_syntax.js` | 语法 / `ASSETS` key 拼错 / 素材缺失 |
-| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(182,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅与确认[17]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
+| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(191,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅[17]/发布确认[18]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
 | 扫描 | `sim/tune_users_scan.js`、`sim/tune_gouge_scan.js` | 系数取值 + 「两旋钮一起扫」的交叉对照 |
 | 端到端 | `sim/startup_loop.js`(日表 + 汇总 + 平账) | 闭环走没走通、平没平账、瓶颈在哪条腿 |
 | 界面 | `local-ui-verify`(Edge + CDP,`uidiag.js`) | 真实产物渲染 / JS 异常 / **canvas 文案宽度** |
@@ -688,6 +688,19 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
 ## 仓库状态与提交
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
+
+### 2026-10-19 下午 §8.4 发布确认弹窗(「点一下不得直接发布」在发布页的落实)
+
+- 星光的原始痛点其实落在**发布页**:策略选择点了只是下一步,但「实话实说」与模型列表行**点一下就真发布**
+  (立即生效+锁标榜+自动存档)。§8.3 只处理了公关策略,本轮把同一条「行为一致律」推到 doPublish 的全部入口。
+- 实现:确认弹窗 `drawPublishConfirmBox`(接模态链**最前**,先于公关确认)——显示策略/相似度/锁定期/信誉代价预览,
+  对标不达相似度门槛时给「确认也会被退回」警示;**「确认发布」handler 先清 publishConfirm 再 doPublish(防重入双发)**。
+- 护栏加一圈:关面板/切 tab/back()/预警跳转四处复位;弹窗开着时滚轮不翻背后的模型列表;可见性链纳入 publishConfirm。
+- 断言 [18] 段 8 项(含 doPublish 调用点总数=1 的反证式锚、handler 只置弹窗、重入顺序、滚轮护栏),
+  全链 42+20+191=**253**;变异 3/3(回退直接发布→双锚报红/确认不清状态→顺序锚/删滚轮护栏)。
+- ⚠️ [17] 的 visible 链锚写死了行尾 `);`,§8.4 在链尾追加后它立刻变红——断言应钉「存在行」不钉「位置」,已改。
+  教训:**会追加新分支的链条,锚别把「自己那行恰好是最后一行」写进期望**。
+- 字体子集重跑无新字(357KB,弹窗用字与既有池重合);单文件 2590KB、dist 首访 5424KB。
 
 ### 2026-10-19 午 §8.3 预警可点横幅 + 公关确认弹窗(星光「开 A」+「点一下不能直接执行」)
 

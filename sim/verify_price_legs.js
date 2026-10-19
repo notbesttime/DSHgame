@@ -831,8 +831,11 @@ console.log('\n[17] §8.3 预警横幅可点 + 公关确认弹窗:纯函数行�
   const iConfirm = srcC.indexOf("if (prConfirm && panelTab === 'backend') drawPrConfirmBox");
   const iEditor = srcC.indexOf("else if (boardPickIdx >= 0) drawModelAttrEditor");
   ok('确认弹窗接在 dispatch 链最前(行首调用,先于榜单编辑器)', iConfirm > 0 && iEditor > iConfirm);
-  ok('visible 链纳入 prConfirm',
-    /\n\s*\|\| \(prConfirm && panelTab === 'backend'\);/.test(srcC));
+  // ⚠️ 断言写「存在行」不写「位置」:§8.4 在链尾插了 publishConfirm 后,原「prConfirm…);」的 ; 锚即失效
+  //    (本轮实测红了一次 —— 锚位依赖会让每条后续插层都来碰瓷,改成行存在性 + 新链自管)
+  ok('visible 链纳入 prConfirm 与 publishConfirm',
+    /\n\s*\|\| \(prConfirm && panelTab === 'backend'\)/.test(srcC)
+    && /\n\s*\|\| \(publishConfirm && panelTab === 'publish'\);/.test(srcC));
   // ⑥ 行为边界:选项 handler 里不得写 prPolicy(防回退成直接执行)
   const handler = srcC.slice(srcC.indexOf("bg.on('pointerdown', (e) => {"), srcC.indexOf("bg.on('pointerdown', (e) => {") + 400);
   ok('选项 handler 只开弹窗、不直接执行(星光原始诉求)',
@@ -860,6 +863,38 @@ console.log('\n[17] §8.3 预警横幅可点 + 公关确认弹窗:纯函数行�
   ok('prFocus 绘后消费且位于描边绘制之后(一次性)',
     consumeIdx > 0 && cardIdx > 0 && consumeIdx > cardIdx,
     'consume@' + consumeIdx + ' card@' + cardIdx);
+}
+// ── [18] §8.4 发布确认弹窗(2026-10-19 星光:「点一下不得直接发布」)────────────
+// 行为一致律的第二次应用(第一次是 §8.3 公关选择)。发布是比公关**更重**的动作:立即生效 + 锁标榜 + 自动存档。
+console.log('\n[18] §8.4 发布确认:执行唯一入口 / handler 反证 / 预览只读 / 滚轮护栏 / 复位');
+{
+  const srcD = fs.readFileSync(path.join(__dirname, '..', 'index_template.html'), 'utf8');
+  // ① doPublish 的**全部调用点**必须只剩确认弹窗 handler 一处(函数定义除外)
+  const calls = [...srcD.matchAll(/doPublish\(/g)].length;
+  const defCall = srcD.match(/function doPublish\(/g)?.length || 0;
+  ok('模板里 doPublish 仅定义 + 确认弹窗一处调用', calls - defCall === 1, 'calls=' + calls);
+  // ② 模型行 handler 与「实话实说」handler:只置 publishConfirm,不得出现 doPublish(直接执行回退的反证)
+  const rowH = srcD.slice(srcD.indexOf("row.on('pointerdown'"), srcD.indexOf("row.on('pointerdown'") + 240);
+  const honH = srcD.slice(srcD.indexOf("btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说'"), 0 + srcD.indexOf("btn(sx + sw + 16, gy, 96, 38, '返回'"));
+  ok('模型行 handler 只开弹窗', rowH.includes('publishConfirm = {') && !rowH.includes('doPublish'));
+  ok('实话实说 handler 只开弹窗', honH.includes('publishConfirm = {') && !honH.includes('doPublish'));
+  // ③ dispatch 链:publishConfirm 分支必须在最前(先于 prConfirm)
+  const iP = srcD.indexOf("if (publishConfirm && panelTab === 'publish') drawPublishConfirmBox");
+  const iR = srcD.indexOf("else if (prConfirm && panelTab === 'backend') drawPrConfirmBox");
+  ok('发布确认接在模态链最前(先于公关确认)', iP > 0 && iR > iP);
+  // ④ 弹窗确认 handler:清 publishConfirm **之后**才 doPublish(防重入双发)
+  const cfmH = srcD.slice(srcD.indexOf("mk(cx + cw - bw - 16, '确认发布'"), srcD.indexOf("mk(cx + cw - bw - 16, '确认发布'") + 360);
+  const idxNull = cfmH.indexOf('publishConfirm = null;');
+  const idxPub = cfmH.indexOf('doPublish(k, mm)');
+  ok('确认 handler 先清状态后执行(防重入双发)', idxNull >= 0 && idxPub > idxNull, 'null@' + idxNull + ' pub@' + idxPub);
+  // ⑤ 预览是只读的:弹窗文案引用 PUBLISH_CFG 现值,但不改任何 state
+  ok('弹窗预览引用策略代价现值(锁定期/信誉区间)',
+    srcD.includes('PUBLISH_CFG.BENCH_DAYS') && srcD.includes('PUBLISH_CFG.RUN_REP_LOSS[0]'));
+  // ⑥ 滚轮护栏:确认弹窗开着时不翻模型列表
+  ok('滚轮带 !publishConfirm 护栏', /publishPhase === 'model' && !publishConfirm/.test(srcD));
+  // ⑦ 复位链:关面板 / 切tab / back / 跳转 四处都清 publishConfirm
+  const resets = (srcD.match(/publishConfirm = null;/g) || []).length;
+  ok('publishConfirm 复位 ≥5 处(四处复位+确认/取消/shade 自身)', resets >= 5, String(resets));
 }
 
 console.log('\n' + '─'.repeat(60));

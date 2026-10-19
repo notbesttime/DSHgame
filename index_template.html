@@ -2537,7 +2537,7 @@ function jumpToBackendPR() {
   // 与切 tab 同款复位:其它弹层/编辑器全清,避免跳转瞬间叠层
   showAttrDetail = false; backendDetailOpen = false; trainHelpOpen = false;
   communityDetailKey = null; communityPostOpen = false; boardPickIdx = -1; editingKey = null;
-  publishMsg = ''; publishArmed = null; prConfirm = null;
+  publishMsg = ''; prConfirm = null; publishConfirm = null;
   prFocus = true;
   layoutScreenPanel();
 }
@@ -3146,6 +3146,94 @@ function drawPrConfirmBox(px, py, pw, ph) {
   mk(cx + 16, '取消', 0x8a7a68, 0x5a4632, () => { prConfirm = null; layoutScreenPanel(); });   // 左=取消,右=确认(惯例)
 }
 
+
+
+// ===== §8.4 发布确认弹窗(2026-10-19 星光)=====
+// 星光的原始痛点正落在这里:策略选择点了只是「下一步」,而「实话实说」与模型列表行**点一下就真发布**。
+// ⇒ 一切会执行 doPublish 的点击一律先开本弹窗,「确认发布」才执行;与 §8.3 公关确认同构(左取消右确认)。
+// 预览只读:展示策略/相似度/锁定期/代价(引用 PUBLISH_CFG 现值),不重复 doPublish 的判定逻辑,
+// 最终校验与后果仍以 doPublish 返回为准(防两处口径漂移)。
+function drawPublishConfirmBox(px, py, pw, ph) {
+  const R = state.relay, c = publishConfirm;
+  const w0 = app.screen.width, h0 = app.screen.height;
+  const shade = new PIXI.Graphics();
+  shade.beginFill(0x1a1208, 0.5);
+  shade.drawRect(0, 0, w0, h0);
+  shade.endFill();
+  shade.eventMode = 'static';
+  shade.hitArea = new PIXI.Rectangle(0, 0, w0, h0);
+  shade.on('pointerdown', () => { publishConfirm = null; layoutScreenPanel(); });   // 点外=取消
+  attrDetailLayer.addChild(shade);
+
+  const stratName = c.strategy === 'bench' ? '对标' : (c.strategy === 'run' ? '跑分' : '实话实说');
+  const listed = c.model ? findModelByName(c.model) : null;
+  const sim = listed ? similarityTo(R.ability, listed) : -1;
+  const L2 = c.strategy === 'honest'
+    ? '无额外用户、不涨不扣信誉;仅记录当前能力基线(随时可再发别的)'
+    : (c.strategy === 'bench'
+      ? '发布后标榜锁定 ' + PUBLISH_CFG.BENCH_DAYS + ' 游戏天(到期前不可改标榜/下架),信誉 +' + PUBLISH_CFG.BENCH_REP_GAIN + ' 并涨速 −20%'
+      : '短期爆量 ' + PUBLISH_CFG.RUN_DAYS + ' 游戏天;信誉随机降 ' + PUBLISH_CFG.RUN_REP_LOSS[0] + '~' + PUBLISH_CFG.RUN_REP_LOSS[1] + ' 点(定价越高扣越狠)');
+  const warn = c.strategy === 'bench' && listed && sim < PUBLISH_CFG.SIM_GATE
+    ? '⚠ 相似度 ' + sim.toFixed(0) + '＜门槛 ' + PUBLISH_CFG.SIM_GATE + ',确认也会被退回' : '';
+
+  const cw = Math.min(pw * 0.72, 460), chh = warn ? 214 : 190;
+  const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
+  const card = new PIXI.Graphics();
+  card.lineStyle(1.5, 0xc4b8a8, 0.95);
+  card.beginFill(0xf5f0e8, 1);
+  card.drawRoundedRect(cx, cy, cw, chh, 12);
+  card.endFill();
+  card.eventMode = 'static';
+  card.hitArea = new PIXI.Rectangle(cx, cy, cw, chh);
+  attrDetailLayer.addChild(card);
+
+  const title = makeText('确定发布？策略：' + stratName + (c.model ? (' · ' + c.model) : ''), { size: 16, color: '#2a2118', weight: 'bold' });
+  title.x = cx + 20; title.y = cy + 16;
+  attrDetailLayer.addChild(title);
+  if (c.model) {
+    const t1 = makeText('相似度(客户期待值) ' + sim.toFixed(0) + '%' + (listed ? (' · 官方参考价 $' + fmt2(officialPriceOf(listed))) : ''),
+      { size: 12, color: sim >= PUBLISH_CFG.SIM_GATE ? '#2a7a3a' : '#c05a2a' });
+    t1.x = cx + 20; t1.y = cy + 46;
+    attrDetailLayer.addChild(t1);
+  }
+  const t2 = makeText(L2, { size: 12, color: '#4a3c2c' });
+  t2.style.wordWrap = true; t2.style.wordWrapWidth = cw - 40;
+  t2.x = cx + 20; t2.y = cy + (c.model ? 68 : 48);
+  attrDetailLayer.addChild(t2);
+  const t3 = makeText('发布 = 立即生效并自动存档;后果提示随发布消息显示', { size: 11, color: '#8a7a68' });
+  t3.x = cx + 20; t3.y = cy + (c.model ? 96 : 76);
+  attrDetailLayer.addChild(t3);
+  if (warn) {
+    const tw = makeText(warn, { size: 11, color: '#b0502a', weight: 'bold' });
+    tw.x = cx + 20; tw.y = cy + 118;
+    attrDetailLayer.addChild(tw);
+  }
+
+  const bw = 118, bh = 34, by = cy + chh - 52;
+  const mk = (bx, label, fill, lineC, handler) => {
+    const gg = new PIXI.Graphics();
+    gg.lineStyle(1.2, lineC, 0.95); gg.beginFill(fill, 0.95);
+    gg.drawRoundedRect(bx, by, bw, bh, 7); gg.endFill();
+    gg.eventMode = 'static'; gg.cursor = 'pointer';
+    gg.hitArea = new PIXI.Rectangle(bx, by, bw, bh);
+    gg.on('pointerdown', (e) => { e.stopPropagation(); handler(); });
+    attrDetailLayer.addChild(gg);
+    const tt = makeText(label, { size: 13, color: '#ffffff', weight: 'bold' });
+    tt.x = bx + (bw - tt.width) / 2; tt.y = by + 8;
+    attrDetailLayer.addChild(tt);
+  };
+  mk(cx + cw - bw - 16, '确认发布', 0xb85a10, 0x8a3a10, () => {
+    const k = publishConfirm ? publishConfirm.strategy : null;
+    const mm = publishConfirm ? publishConfirm.model : null;
+    publishConfirm = null;
+    const r = doPublish(k, mm);
+    publishMsg = r.msg; publishMsgOk = r.ok;
+    if (r.ok) { publishPhase = 'overview'; publishPendingStrategy = null; }
+    layoutScreenPanel();
+  });
+  mk(cx + 16, '取消', 0x8a7a68, 0x5a4632, () => { publishConfirm = null; layoutScreenPanel(); });   // 左=取消,右=确认(与 §8.3 同款惯例)
+}
+
 // ===== §17.6 第二步:作文比赛式限时提示(点选加分)=====
 // 设计要点(用户拍板):
 //  · 屏幕上浮现**限时提示**,点中 ⇒ 本次考试**分数 +N**(100 分制,只在本次结算内有效)
@@ -3606,11 +3694,12 @@ let panelTab = 'model';
 let publishSel = null;
 let publishMsg = '';
 let publishMsgOk = true;
-let publishArmed = null;
+// (历史孤儿 publishArmed 已删 2026-10-19:旧「按钮二次点击 arm」方案的残留,被流程化 + §8.4 确认弹窗取代)
 // 发布页流程:概览 / 选策略 / 选模型;模型列表滚动偏移;待选模型的策略
 let publishPhase = 'overview';
 let publishModelScroll = 0;
 let publishPendingStrategy = null;
+let publishConfirm = null;   // §8.4 发布确认弹窗 {strategy, model} / null(2026-10-19 星光:点一下不得直接发布)
 
 // 「榜单」页的滚动位置(首行下标)与每行高度。只在 panelTab==='leaderboard' 时被读写。
 let boardScroll = 0;
@@ -3677,6 +3766,7 @@ function closeScreenPanel() {
   trainHelpOpen = false;
   prConfirm = null;      // §8.3
   prFocus = false;       // §8.3
+  publishConfirm = null; // §8.4
   communityDetailKey = null;
   communityPostOpen = false;
   boardPickIdx = -1;
@@ -3806,12 +3896,12 @@ function layoutScreenPanel() {
       backendDetailOpen = false;
       trainHelpOpen = false;
       prConfirm = null;      // §8.3:确认弹窗只在 backend
+      publishConfirm = null; // §8.4:发布确认只在 publish
       communityDetailKey = null;
       communityPostOpen = false;
       boardPickIdx = -1;
       editingKey = null;
       publishMsg = '';
-      publishArmed = null;
       publishPhase = 'overview';
       publishPendingStrategy = null;
       if (tab.key === 'model') radarAnim = true;   // 切回模型页也重播一次
@@ -3844,10 +3934,12 @@ function layoutScreenPanel() {
     || (backendDetailOpen && panelTab === 'backend')
     || (communityPostOpen && panelTab === 'community')
     || (trainHelpOpen && panelTab === 'train')
-    || (prConfirm && panelTab === 'backend');
-  // §8.3 公关确认弹窗:必须在最前(它是从后台页面板里触发的模态,盖住面板内容)
+    || (prConfirm && panelTab === 'backend')
+    || (publishConfirm && panelTab === 'publish');
+  // §8.3/§8.4 模态确认弹窗必须在最前(从面板内触发的模态,盖住面板内容)
   // ⚠️ 行首锚断言依赖此调用形态(§20.16 教训:注释行也算在位)。
-  if (prConfirm && panelTab === 'backend') drawPrConfirmBox(px, py, pw, ph);
+  if (publishConfirm && panelTab === 'publish') drawPublishConfirmBox(px, py, pw, ph);
+  else if (prConfirm && panelTab === 'backend') drawPrConfirmBox(px, py, pw, ph);
   else if (boardPickIdx >= 0) drawModelAttrEditor(px, py, pw, ph);
   else if (backendDetailOpen && panelTab === 'backend') drawBackendDetail(px, py, pw, ph);
   else if (communityPostOpen && panelTab === 'community') drawCommunityPost(px, py, pw, ph);
@@ -4572,7 +4664,7 @@ function drawPublishPage(x, y, w, h) {
     wrap.on('pointerdown', (e) => { e.stopPropagation(); onTap(); });
     panelContentArea.addChild(wrap);
   };
-  const back = () => { publishPhase = 'overview'; publishPendingStrategy = null; publishMsg = ''; layoutScreenPanel(); };
+  const back = () => { publishPhase = 'overview'; publishPendingStrategy = null; publishMsg = ''; publishConfirm = null; layoutScreenPanel(); };
   const fmtLeft = () => { const d = Math.floor(P.remainH / 24), rem = P.remainH - d * 24, hh = Math.floor(rem), mm = Math.floor((rem - hh) * 60); return d + '天' + ('' + hh).padStart(2, '0') + ':' + ('' + mm).padStart(2, '0'); };
 
   const bar = P.active
@@ -4599,7 +4691,8 @@ function drawPublishPage(x, y, w, h) {
     const sw = Math.min(380, w * 0.6), sh = 60, sx = x + 20, gy = topY + 26;
     btn(sx, gy, sw, sh, '对标', '选真实型号·相似度达标才发·5天锁标榜+少量信誉', () => { publishPendingStrategy = 'bench'; publishPhase = 'model'; publishModelScroll = 0; layoutScreenPanel(); });
     btn(sx, gy + (sh + 10), sw, sh, '跑分', '不达标可发·短期爆量·随机扣信誉', () => { publishPendingStrategy = 'run'; publishPhase = 'model'; publishModelScroll = 0; layoutScreenPanel(); });
-    btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说', '无额外用户·无代价(记录基线)', () => { const r = doPublish('honest', null); publishMsg = r.msg; publishMsgOk = r.ok; publishPhase = 'overview'; layoutScreenPanel(); });
+    // §8.4:点一下不直接发布 —— 与公关同款「确认才执行」(星光的诉求本质是行为一致,不特判策略)
+    btn(sx, gy + 2 * (sh + 10), sw, sh, '实话实说', '无额外用户·无代价(记录基线)', () => { publishConfirm = { strategy: 'honest', model: null }; layoutScreenPanel(); });
     btn(sx + sw + 16, gy, 96, 38, '返回', null, back);
     return;
   }
@@ -4617,7 +4710,8 @@ function drawPublishPage(x, y, w, h) {
     const row = new PIXI.Graphics();
     row.lineStyle(2, 0xc4b8a8, 0.9); row.beginFill(0xf5ecd8, 0.9); row.drawRoundedRect(listX, yy, listW, rowH - 4, 6); row.endFill();
     row.eventMode = 'static'; row.cursor = 'pointer'; row.hitArea = new PIXI.Rectangle(listX, yy, listW, rowH - 4);
-    row.on('pointerdown', (e) => { e.stopPropagation(); const r = doPublish(publishPendingStrategy, m.n); publishMsg = r.msg; publishMsgOk = r.ok; if (r.ok) { publishPhase = 'overview'; publishPendingStrategy = null; } layoutScreenPanel(); });
+    // §8.4:选模型 = 打开确认弹窗(带相似度预览);doPublish 只在弹窗「确认」里执行
+    row.on('pointerdown', (e) => { e.stopPropagation(); publishConfirm = { strategy: publishPendingStrategy, model: m.n }; layoutScreenPanel(); });
     panelContentArea.addChild(row);
     txt(m.n, { size: 13, color: '#3a2f22' }, listX + 10, yy + 5);
     const tag = publishPendingStrategy === 'bench' ? (ok ? '✓ 可对标' : ('相似度 ' + sim.toFixed(0))) : ('相似度 ' + sim.toFixed(0));
@@ -6885,7 +6979,7 @@ function clientToStage(e) {
 
 // 滚轮:发布页「选模型」阶段翻页
 app.view.addEventListener('wheel', (e) => {
-  if (!(screenPanelOpen && panelTab === 'publish' && publishPhase === 'model')) return;
+  if (!(screenPanelOpen && panelTab === 'publish' && publishPhase === 'model' && !publishConfirm)) return;   // §8.4 弹窗开着时不翻页
   e.preventDefault();
   publishModelScroll += (e.deltaY > 0 ? 1 : -1);
   layoutScreenPanel();
