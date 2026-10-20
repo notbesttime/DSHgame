@@ -5800,19 +5800,23 @@ function drawBackendPage(x, y, w, h) {
       const tt = makeText(s, { size: 12, color: color });
       tt.x = rx; tt.y = yy; panelContentArea.addChild(tt); return tt;
     };
+    // §19.11b(2026-10-20 星光截图:三行重叠)—— 22px 大字占高 ~31px,旧版把结论(PITCH+20)和公式(PITCH+44)
+    // 都塞进它的字面范围 ⇒ 三层叠印。v2:**结论与大字同行**(左标签 62px 起排,横向链式),公式/参考价各自独占整行。
     addL('当前标榜 ' + listed.n, infoY, 15, '#2a2118', true);
-    addL(listed.v + ' · ' + listed.t + ' · cap ' + listed.cap, infoY + 20, 11, '#8a7a68', false);
-    addL('有效相似', infoY + PITCH, 12, '#8a7a68', false);
-    const simBig = addL(simL.toFixed(0) + '%', infoY + PITCH + 16, 22, good ? '#2a7a3a' : '#c05a2a', true);
-    addL(good ? '偏涨 ✓ 信誉会涨' : '掺水 ✗ 会被发现', infoY + PITCH + 20, 13, good ? '#2a7a3a' : '#c05a2a', true);
-    // ⚠️ 刻意**不含**「我的 cap/标 cap」数字(与 §19.11 文档口径一致):一是数据详情弹窗已有细账,
-    //    二是手机横屏左列宽度上限只有 ~235px(右列起点 rx),带 cap 时约 232px 只剩 3px 余量会压到右列。
-    addL('基础' + simBD.raw.toFixed(0) + '% × 能力' + simBD.mul.toFixed(2) + '×', infoY + PITCH + 44, 11, '#8a7a68', false);
-    addL('官方参考价', infoY + PITCH * 3 + 12, 12, '#8a7a68', false);
+    addL(listed.v + ' · ' + listed.t + ' · cap ' + listed.cap, infoY + 22, 11, '#8a7a68', false);
+    const labY = infoY + 48;
+    addL('有效相似', labY + 4, 12, '#8a7a68', false);
+    const simBig = addL(simL.toFixed(0) + '%', labY, 22, good ? '#2a7a3a' : '#c05a2a', true);
+    simBig.x = x + padX + 62;   // 与标签同行,横向排(大字占高 31px,纵向再塞行必叠)
+    const vdT = addL(good ? '偏涨 ✓ 信誉会涨' : '掺水 ✗ 会被发现', labY + 7, 13, good ? '#2a7a3a' : '#c05a2a', true);
+    vdT.x = simBig.x + simBig.width + 10;
+    addL('基础' + simBD.raw.toFixed(0) + '% × 能力' + simBD.mul.toFixed(2) + '×', labY + 32, 11, '#8a7a68', false);
+    addL('官方参考价', labY + 54, 12, '#8a7a68', false);
     const fmt = (v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1));
-    const priceYRow = infoY + PITCH * 3 + 28;
+    const priceYRow = labY + 52;
     if (Math.abs(mulNow - 1) > 0.01) {
       const oldT = addL(fmt(baseP), priceYRow, 15, '#8a7a68', false);
+      oldT.x = x + padX + 62;   // 与大数字左缘对齐
       const strike = new PIXI.Graphics();
       strike.lineStyle(1.5, 0xc05a2a, 0.9);
       strike.moveTo(oldT.x, priceYRow + oldT.height * 0.55);
@@ -5821,16 +5825,17 @@ function drawBackendPage(x, y, w, h) {
       const newT = addL('$' + fmt(official) + ' /M', priceYRow, 15, mulNow < 1 ? '#2a7a3a' : '#c05a2a', true);
       newT.x = oldT.x + oldT.width + 10;
     } else {
-      addL('$' + fmt(baseP) + ' /M tokens', priceYRow, 15, '#2a2118', false);
+      const okT = addL('$' + fmt(baseP) + ' /M tokens', priceYRow, 15, '#2a2118', false);
+      okT.x = x + padX + 62;
     }
     addR('增长线 ≤$' + fmt2(growLine), infoY, '#8a7a68');
     addR(growTxt.replace(' · ', ''), infoY + 18, gw >= 0.999 ? '#2a7a3a' : gw > 0 ? '#8a6a2a' : '#c05a2a');
     addR('续约线 ≤$' + fmt2(renewLine), infoY + PITCH + 16, '#8a7a68');
-    addR(renewTxt.replace(' · ', ''), infoY + PITCH + 34, rMul >= 0.999 ? '#2a7a3a' : '#8a6a2a');
+    addR(renewTxt.replace(' · ', ''), infoY + PITCH + 36, rMul >= 0.999 ? '#2a7a3a' : '#8a6a2a');
     addR('用量 ' + (um >= 0.999 ? '满速 ✓' : Math.round(um * 100) + '%'), infoY + PITCH * 2 + 16,
       um >= 0.999 ? '#2a7a3a' : '#8a6a2a');
-    addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + PITCH * 2 + 34, '#8a7a68');
-    if (R.serviceDown) addL('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)', infoY + PITCH * 4 + 16, 13, '#c05a2a', true);
+    addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + PITCH * 2 + 40, '#8a7a68');
+    if (R.serviceDown) addL('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)', labY + 76, 13, '#c05a2a', true);
     // 瓶颈提示(2026-10-05):「卡产能还是卡客流」+ 库存可支撑时长,实时行(0.25s 节流刷新)。
     // 占据警告行下方的槽位;relayBottleneckInfo 为 null(没在卖/没客)时不画、不占位。
     const bnInfo = relayBottleneckInfo();
@@ -5842,7 +5847,7 @@ function drawBackendPage(x, y, w, h) {
     if (bnInfo) {
       const bt = makeText(bnInfo.text, { size: 12, color: bnInfo.color, weight: 'bold' });
       bt.x = x + padX;
-      bt.y = infoY + (R.serviceDown ? 142 : 116);   // §19.11:左列 4 行×26 + 中断警告行(§19.11 前是 ×22 槽位)
+      bt.y = infoY + (R.serviceDown ? 148 : 124);   // §19.11b:左列到 labY+76 = infoY+124(高亮行 19px 至 +143)
       panelContentArea.addChild(bt);
       backendLive.bottleneck = bt;
       if (bnInfo.text2) {
@@ -5864,7 +5869,7 @@ function drawBackendPage(x, y, w, h) {
   // 价格输入(DOM,叠画布)—— 布局末尾统一显隐
   // 瓶颈提示行占位与警告行互斥相加:5 行固定 + 警告(serviceDown) + 瓶颈(有内容时),各占 22
   const priceY = infoY
-    + (listed ? 116 + (R.serviceDown ? 22 : 0) + bnLines * 22 : 22) + 8;   // §19.11:左列 4 行(PITCH26,块高~104)+警告+瓶颈
+    + (listed ? 124 + (R.serviceDown ? 24 : 0) + bnLines * 22 : 22) + 6;   // §19.11b:左列到 infoY+124(见上)
   const priceLabel = makeText('定价($/M):', { size: 13, color: '#4a3c2c' });
   priceLabel.x = x + padX; priceLabel.y = priceY + 4;
   panelContentArea.addChild(priceLabel);

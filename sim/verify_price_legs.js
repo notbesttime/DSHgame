@@ -886,13 +886,13 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('popupGeom 内部把卡片高度钳进可视区(手机横屏不裁底)',
     srcJ.includes('const chh = Math.min(wantH, ph - 14);') && srcJ.includes('Math.max(24, (chh - headH - footH) / rows)'));
   ok('旧五行小字 lines 数组已删(两处冗余文案为锚反证)', !srcJ.includes("当前标榜:' + listed.n + ' 模型") && !srcJ.includes("'速度属性 ' + fmt2(R.ability.speed)"));
-  ok('新左列:有效相似 22px 关键值 + 偏涨/掺水结论', srcJ.includes("simL.toFixed(0) + '%', infoY + PITCH + 16, 22") && srcJ.includes('掺水 ✗ 会被发现'));
+  ok('新左列:有效相似 22px 大字与结论**同行**(修三层叠印)', srcJ.includes("simL.toFixed(0) + '%', labY, 22") && srcJ.includes('vdT.x = simBig.x + simBig.width + 10'));
   ok('新右列:增长/续约/用量阈值状态各自着色', srcJ.includes("addR('增长线 ≤$" + "' + fmt2(growLine)") && srcJ.includes("addR('续约线 ≤$" + "' + fmt2(renewLine)") && srcJ.includes("'用量 ' +"));
-  ok('priceY 槽位公式同步新行高(116 基准)', srcJ.includes("? 116 + (R.serviceDown ? 22 : 0) + bnLines * 22 : 22) + 8"));
+  ok('priceY 槽位公式同步 v2 行高(122 基准)', srcJ.includes("+ (listed ? 124 + (R.serviceDown ? 24 : 0) + bnLines * 22 : 22) + 6;"));
   // 窄屏宽度护栏:左列公式行不得塞回 cap 数字(rx 仅 ~235px,带 cap 约 232px 会压右列)——文档/代码一致性锚
   ok('左列公式行保持精简(不含 cap 数字)',
-    srcJ.includes("+ simBD.mul.toFixed(2) + '×', infoY + PITCH + 44")
-    && !srcJ.includes("'/标 ' + listed.cap + ')', infoY + PITCH + 44"));
+    srcJ.includes("+ simBD.mul.toFixed(2) + '×', labY + 32")
+    && !srcJ.includes("'/标 ' + listed.cap + ')', labY"));
 }
 
 console.log('\n' + '─'.repeat(60));
