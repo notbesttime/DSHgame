@@ -897,6 +897,12 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('右列标签与状态同行(状态 x 链在标签宽后,不再压下一行)',
     srcJ.includes('gs1.x = rx + gl1.width + 10;') && srcJ.includes('rs1.x = rx + rl1.width + 10;'));
   ok('右列字体 12→13、行距 30', srcJ.includes('size: size || 13') && srcJ.includes("addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + 90"));
+  // §19.13 调教小游戏反馈强化(2026-10-20 星光:维度数值特效放大/步数明显/没步数点击抖动+拒绝音)
+  ok('维度行放大到 17px + 变化时脉冲(scale 与绿色高亮)', srcJ.includes('const TALLY_FONT = 17;') && srcJ.includes('TALLY_PULSE_SCALE') && srcJ.includes("tl.style.fill = changed ? '#8fe0a8'"));
+  ok('脉冲由主 ticker 驱动(不新开 rAF)', srcJ.includes('updateTallyPulse();') && srcJ.includes('function updateTallyPulse()'));
+  ok('剩余步数 18→24px 且按紧张度配色', srcJ.includes("'剩余 ' + gameState.moves + ' 步', { size: 24") && srcJ.includes('function movesColor(n)'));
+  ok('没步数/点孤块 → 抖动 + 拒绝音(不再静默 return)', srcJ.includes('function gameReject(reason)') && srcJ.includes("playSfx('reject')") && srcJ.includes("gameReject('moves')") && srcJ.includes("gameReject('group')"));
+  ok('拒绝音已注册到 SFX 与构建资源表', srcJ.includes("reject: 'sfx_reject'")),
   ok('小屏弹窗字号增益 1.15 + 三内容弹窗上限放大',
     (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
 }

@@ -70,10 +70,14 @@ whip = mix(noise(0.13, amp=0.65, decay=34, lowpass=2.2),
            tone(0.10, 165, 95, amp=0.5, decay=26, attack=0.001))
 # 4) 消除:75ms 上滑泡泡"啵"(380→950Hz)
 pop = tone(0.075, 380, 950, amp=0.52, decay=24, attack=0.002)
+# 5) 拒绝(§19.13):120ms 低沉下坠双音"咚-咚"(220→110Hz),短促不悦耳、和购买的上行"叮咚"形成反向对比
+reject = concat(tone(0.10, 220, 190, amp=0.40, decay=18, attack=0.002),
+                tone(0.14, 150, 110, amp=0.36, decay=15, attack=0.002))
 
 made = []
 for name, xs in (('sfx_click.wav', click), ('sfx_buy.wav', buy),
-                 ('sfx_whip.wav', whip), ('sfx_pop.wav', pop)):
+                 ('sfx_whip.wav', whip), ('sfx_pop.wav', pop),
+                 ('sfx_reject.wav', reject)):
     made.append(write_wav(name, clip(xs)))
 
 ff = shutil.which('ffmpeg') or os.environ.get('FFMPEG')

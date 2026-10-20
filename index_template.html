@@ -1126,11 +1126,12 @@ const SIM_OVER_K = 0.3;
 //   修法:距离里加一条**cap 对数比**项(量级差才是「不相称」的根源,差值会被属性重合淹没)。
 //   取值 CAP_SIM_W ∈ {0, 0.15, 0.3, 0.6, 1.0} 扫描(三个玩家画像):0.15 起就跳到相称档,
 //   0.3~1.0 结果稳定 ⇒ 取 0.3(与 SIM_OVER_K 同量级,保守)。
-const CAP_SIM_W = 0.3;          // closestModel 距离里的 cap 对数比权重(见上方取值依据)
+const CAP_SIM_W = 0.4;          // §21.3:0.3→0.4(与 T0 收紧配套;扫描见设计 §21.3)
 // §21.2(2026-10-20 星光:「可以稍微严格一点」):线性项对「差一档」罚得太轻 ——
 //   cap33 仍会贴到 cap16(比值 0.48)。改成**门槛后平方**:|log比| ≤ CAP_SIM_T0 视为相称不罚,
 //   超出部分平方放大 ⇒ 差半档几乎不痛、差一倍明显痛(量级差本来就是质变不是线性)。
-const CAP_SIM_T0 = 0.35;        // 相称容差:比值 e^0.35≈1.42 倍以内不算「不相称」
+const CAP_SIM_T0 = 0.25;        // §21.3(星光再次「严格一点」):相称容差 e^0.25≈1.28 倍以内不算「不相称」
+                                //   0.35(1.42×)偏松 —— 差一档半仍能挤进来;收到 1.28× 后档位更贴身
 const SIM_GATE_KNOWLEDGE = 0.18; // 知识截止落后 >3 月(原 0.35,过重)
 const SIM_GATE_MULTIMODAL = 0.20; // 多模态档位不够(原 0.30)
 const SIM_SAT = 1.0;           // 加权距离 ≥ 1.0 → 相似度 0
@@ -6836,7 +6837,7 @@ function setBgmVolume(v) {
 // 触发点:生产点击(clickMask)/ 购买成功(createBuyItem 扣款点)/ 挥鞭(调教选中鞭子时按下)/ 成组消除。
 // 全部由用户手势触发,不受浏览器自动播放策略限制。池化复用、上限 8 并发,超出丢弃(连点不炸内存)。
 // 改音色:改 make_sfx.py 里的参数重跑即可。
-const SFX = { names: { click: 'sfx_click', buy: 'sfx_buy', whip: 'sfx_whip', pop: 'sfx_pop' }, pool: [] };
+const SFX = { names: { click: 'sfx_click', buy: 'sfx_buy', whip: 'sfx_whip', pop: 'sfx_pop', reject: 'sfx_reject' }, pool: [] };   // §19.13 拒绝音
 function playSfx(name) {
   const key = SFX.names[name];
   if (!key || !AUDIO[key] || sfxVolume <= 0) return;
@@ -6909,6 +6910,7 @@ let tuneSelectedItem = null;
 // 强化训练(调教场景内,与电脑面板区分):入口按钮 + 棋盘层
 let tuneTrainBtn = null;
 let tuneGameLayer = null;
+let tuneGameShakeBase = { x: 0, y: 0 };   // §19.13 抖动基准坐标
 // 训练页活动引用(电脑面板「训练」页原地刷新用;抽屉不碰)
 let tunePropLive = null;
 // 疗程闭关:人物自动落座课桌 + 场景内进度提示
@@ -7349,6 +7351,17 @@ function gameProjectedGain(k, count) {
   const wt = (k === gameState.mode.primary) ? GAME_CFG.WEIGHT_PRIMARY : GAME_CFG.WEIGHT_SECOND;
   return (100 - R.ability[k]) * frac * wt * mul;
 }
+// §19.13(2026-10-20 星光「强化训练的右侧维度数值变化可以有点特效和放大一点」):
+// 维度行从 14px 放大到 17px,并在**块数变化时**做一次「放大→回落」脉冲 + 绿色高亮 ⇒ 一眼看到哪一维在涨。
+const TALLY_FONT = 17;          // 维度行字号(原 14)
+const TALLY_PULSE_MS = 260;     // 脉冲时长
+const TALLY_PULSE_SCALE = 1.32; // 脉冲起始放大倍数
+const tallyPulse = {};          // key → {t0, from}:本次变化的时间戳与变化前块数
+function tallyPulseMark(k, n) {
+  const prev = tallyPulse[k];
+  if (!prev || prev.n !== n) { tallyPulse[k] = { t0: performance.now(), n }; return true; }
+  return false;
+}
 function gameTallyLabel(k) {
   const n = gameState.tally[k] || 0;
   const g = gameProjectedGain(k, n);
@@ -7361,22 +7374,72 @@ function trainResLine() {
   return '算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
     ' · token ' + formatNum(state.tokens) + ' · 每步 -' + formatNum(gameMoveTokenCost());
 }
+function movesColor(n) { return n <= 3 ? '#ff6a4a' : (n <= 8 ? '#ffb44a' : '#ffe9c4'); }   // §19.13 步数紧张度配色
+// §19.13:维度数值的「放大→回落」脉冲。纯视觉:只改 scale/alpha,不碰 tally 与属性值。
+// 用主 ticker 驱动(不新开 rAF),关场景/无文本时直接 return。
+function updateTallyPulse() {
+  if (!tuneGameTallyTexts || !tuneGameTallyTexts.length) return;
+  const now = performance.now();
+  for (let i = 0; i < tuneGameTallyTexts.length; i++) {
+    const k = gameState.mode.colors[i];
+    const p = tallyPulse[k];
+    const tl = tuneGameTallyTexts[i];
+    if (!p || !tl || tl.destroyed) continue;
+    const e = (now - p.t0) / TALLY_PULSE_MS;
+    if (e < 0 || e >= 1) { tl.scale.set(1); continue; }
+    // 先冲高再回落(1→放大→1),用 sin 峰值在 1/3 处,观感比线性更"弹"
+    const bump = Math.sin(Math.min(1, e * 1.5) * Math.PI);
+    tl.scale.set(1 + (TALLY_PULSE_SCALE - 1) * bump);
+  }
+}
 function gameRefreshHud() {
-  if (tuneGameMovesText) tuneGameMovesText.text = '剩余 ' + gameState.moves + ' 步';
+  if (tuneGameMovesText) {
+    tuneGameMovesText.text = '剩余 ' + gameState.moves + ' 步';
+    tuneGameMovesText.style.fill = movesColor(gameState.moves);
+  }
   if (tuneGameResText) tuneGameResText.text = trainResLine();
   if (tuneGameTallyTexts) for (let i = 0; i < tuneGameTallyTexts.length; i++) {
     const k = gameState.mode.colors[i];
-    tuneGameTallyTexts[i].text = gameTallyLabel(k);
+    const n = gameState.tally[k] || 0;
+    const changed = tallyPulseMark(k, n);
+    const tl = tuneGameTallyTexts[i];
+    tl.text = gameTallyLabel(k);
+    // §19.13:变化的那一维立刻变亮绿,并在 ticker 里做放大回落(纯视觉,不碰数值)
+    tl.style.fill = changed ? '#8fe0a8' : '#ffe9c4';
   }
 }
 // 带动画的消除:点→够组就弹掉+爆环+扣费计步,落定后新/移位的块缩放入场
+// §19.13(星光「没有后点击会有抖动和拒绝的音效」):点不动的时候要给反馈,不能静默返回。
+// 三种拒绝:步数用完 / token 不够 / 没够组(点了孤块)。抖动棋盘 + 拒绝音效。
+function gameReject(reason) {
+  playSfx('reject');
+  if (tuneGameLayer) {
+    const t0 = performance.now();
+    const base = tuneGameShakeBase;
+    const tick = (now) => {
+      if (!tuneGameLayer || tuneGameLayer.destroyed) return;
+      const e = (now - t0) / 220;
+      if (e >= 1) { tuneGameLayer.x = base.x; tuneGameLayer.y = base.y; return; }
+      const damp = (1 - e) * 6;
+      tuneGameLayer.x = base.x + Math.sin(e * Math.PI * 8) * damp;
+      tuneGameLayer.y = base.y + Math.sin(e * Math.PI * 6) * damp * 0.4;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+  if (tuneGameMovesText && reason === 'moves') {
+    tuneGameMovesText.style.fill = '#ff3a2a';
+    setTimeout(() => { if (tuneGameMovesText && !tuneGameMovesText.destroyed) tuneGameMovesText.style.fill = movesColor(gameState ? gameState.moves : 0); }, 320);
+  }
+}
 function gameClearAt(r, c) {
-  if (!gameState || gameState.over || tuneGameAnimating) return;
-  if (state.tokens < gameMoveTokenCost()) return;
+  if (!gameState || tuneGameAnimating) return;
+  if (gameState.over || gameState.moves <= 0) { gameReject('moves'); return; }
+  if (state.tokens < gameMoveTokenCost()) { gameReject('tokens'); return; }
   const board = gameState.board;
   const colorIdx = board[r][c];
   const cells = findGroup(board, r, c);
-  if (cells.length < GAME_CFG.MIN_GROUP) return;
+  if (cells.length < GAME_CFG.MIN_GROUP) { gameReject('group'); return; }
   tuneGameAnimating = true;
   const key = gameState.mode.colors[colorIdx];
   if (key) gameState.tally[key] = (gameState.tally[key] || 0) + cells.length;
@@ -7452,8 +7515,9 @@ function buildTuneGameLayer() {
   for (let r = 0; r < GAME_CFG.ROWS; r++) for (let c = 0; c < GAME_CFG.COLS; c++) gameTileSet(r, c, gameState.board[r][c], false);
 
   // 属性区放在棋盘右侧(2 列 x 3 行) —— 横屏是「宽而矮」,竖排 6 行/放下方都会顶到屏幕底;右侧是唯一有富余的方向。
-  tuneGameMovesText = makeText('剩余 ' + gameState.moves + ' 步', { size: 18, color: '#ffe9c4', weight: 'bold', anchor: 1 });
-  tuneGameMovesText.x = w - 20; tuneGameMovesText.y = 68; layer.addChild(tuneGameMovesText);
+  // §19.13:步数是本局唯一硬约束,18px 容易被棋盘吃掉 → 24px + 少步变红
+  tuneGameMovesText = makeText('剩余 ' + gameState.moves + ' 步', { size: 24, color: movesColor(gameState.moves), weight: 'bold', anchor: 1 });
+  tuneGameMovesText.x = w - 20; tuneGameMovesText.y = 62; layer.addChild(tuneGameMovesText);
 
   const listX = bx + bw2 + GAP, colW = listW / 2;
   const tHead = makeText('色块 = 维度 · 数字 = 已消块数 · +N = 预计属性增量', { size: 12, color: '#e8dcc2' });
@@ -7465,8 +7529,10 @@ function buildTuneGameLayer() {
     const k = mode.colors[i];
     const cx = listX + (i % 2) * colW, cy = listY0 + Math.floor(i / 2) * ROW_H;
     const sw = new PIXI.Graphics(); sw.beginFill(GAME_TILE_HEX[i], 0.95); sw.drawRoundedRect(cx, cy + 2, 14, 14, 3); sw.endFill(); layer.addChild(sw);
-    const tl = makeText(gameTallyLabel(k), { size: 14, color: '#ffe9c4' });
-    tl.x = cx + 22; tl.y = cy; layer.addChild(tl);
+    const tl = makeText(gameTallyLabel(k), { size: TALLY_FONT, color: '#ffe9c4' });
+    tl.x = cx + 22; tl.y = cy - 1; layer.addChild(tl);
+    tl.anchor.set(0, 0);
+    tallyPulse[k] = { t0: 0, n: gameState.tally[k] || 0 };   // 建立基准,首帧不脉冲
     tuneGameTallyTexts.push(tl);
   }
   const sbw = Math.min(200, listW), sbh = SBH, sbx = listX;
@@ -7481,6 +7547,7 @@ function buildTuneGameLayer() {
   sl.x = sbx + sbw / 2; sl.y = sby + sbh / 2; layer.addChild(sl);
   if (gameState.over) { const hint = makeText('步数用完，点结算', { size: 12, color: '#8fe0a8' }); hint.x = sbx; hint.y = sby + sbh + 6; layer.addChild(hint); }
 
+  tuneGameShakeBase = { x: layer.x, y: layer.y };   // §19.13 抖动基准(避免连续抖动漂移)
   tuneGameLayer = layer;
   tuneScene.addChild(layer); // 追加到最后 = 盖住人物/课桌/抽屉
   if (whipCursor) whipCursor.visible = false;
@@ -8354,6 +8421,7 @@ app.ticker.add(() => {
     timeDebt -= dt;
   }
   updateTweens(dt);
+  updateTallyPulse();   // §19.13 维度数值脉冲(内部自判空,开销可忽略)
   // 雷达图轴标签数字滚动(只在雷达开启动画的 0.45s 内有活,平时直接 return)
   radarTicker();
   // 中转站行走人物AI(不受暂停影响)

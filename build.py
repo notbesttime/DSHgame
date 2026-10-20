@@ -61,6 +61,7 @@ AUDIO_FILES = {
     "sfx_buy": "assets/audio/sfx_buy.wav",
     "sfx_whip": "assets/audio/sfx_whip.wav",
     "sfx_pop": "assets/audio/sfx_pop.wav",
+    "sfx_reject": "assets/audio/sfx_reject.wav",   # §19.13 拒绝音(步数用完/点孤块)
 }
 
 # 兜底字体(§20.17):子集化 Noto Sans SC(OFL 可再分发;make_font_subset.py 生成)。
