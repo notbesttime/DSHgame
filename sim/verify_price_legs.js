@@ -893,6 +893,12 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('左列公式行保持精简(不含 cap 数字)',
     srcJ.includes("+ simBD.mul.toFixed(2) + '×', labY + 32")
     && !srcJ.includes("'/标 ' + listed.cap + ')', labY"));
+  // §19.12 右列同行 + 字号增益(星光:「略有重叠,放开一点,字体大一点」)
+  ok('右列标签与状态同行(状态 x 链在标签宽后,不再压下一行)',
+    srcJ.includes('gs1.x = rx + gl1.width + 10;') && srcJ.includes('rs1.x = rx + rl1.width + 10;'));
+  ok('右列字体 12→13、行距 30', srcJ.includes('size: size || 13') && srcJ.includes("addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + 90"));
+  ok('小屏弹窗字号增益 1.15 + 三内容弹窗上限放大',
+    (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
 }
 
 console.log('\n' + '─'.repeat(60));

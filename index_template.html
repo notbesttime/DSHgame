@@ -3089,7 +3089,7 @@ function drawPrConfirmBox(px, py, pw, ph) {
   shade.on('pointerdown', () => { prConfirm = null; layoutScreenPanel(); });   // 点外=取消
   attrDetailLayer.addChild(shade);
 
-  const cw = Math.min(pw * (pw < 560 ? 0.94 : 0.72), 460), chh = 178;   // §19.10 小屏放大
+  const cw = Math.min(pw * (pw < 560 ? 0.96 : 0.8), 520), chh = 178;   // §19.12 小屏放大
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1.5, 0xc4b8a8, 0.95);
@@ -3176,7 +3176,7 @@ function drawPublishConfirmBox(px, py, pw, ph) {
   const warn = c.strategy === 'bench' && listed && sim < PUBLISH_CFG.SIM_GATE
     ? '⚠ 相似度 ' + sim.toFixed(0) + '＜门槛 ' + PUBLISH_CFG.SIM_GATE + ',确认也会被退回' : '';
 
-  const cw = Math.min(pw * (pw < 560 ? 0.94 : 0.72), 460), chh = warn ? 214 : 190;   // §19.10 小屏放大
+  const cw = Math.min(pw * (pw < 560 ? 0.96 : 0.8), 520), chh = warn ? 214 : 190;   // §19.12 小屏放大
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1.5, 0xc4b8a8, 0.95);
@@ -4117,7 +4117,7 @@ function popupGeom(px, py, pw, ph, rows, baseRowH, headH, footH, wFrac, capW) {
   const wantH = headH + rows * baseRowH + footH;
   const chh = Math.min(wantH, ph - 14);
   const rowH = rows > 0 ? Math.max(24, (chh - headH - footH) / rows) : baseRowH;
-  return { cw, chh, cx: px + (pw - cw) / 2, cy: py + (ph - chh) / 2, rowH };
+  return { cw, chh, cx: px + (pw - cw) / 2, cy: py + (ph - chh) / 2, rowH, narrow };
 }
 
 // ---------- 模型页「数据详情」弹层 ----------
@@ -4135,9 +4135,9 @@ function drawAttrDetail(px, py, pw, ph) {
   attrDetailLayer.addChild(shade);
 
   const headH = 58, footH = 24;
-  const pg = popupGeom(px, py, pw, ph, RADAR_KEYS.length, 40, headH, footH, 0.74, 640);
+  const pg = popupGeom(px, py, pw, ph, RADAR_KEYS.length, 40, headH, footH, 0.8, 720);   // §19.12:放大
   const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
-  const fsK = Math.max(0.8, Math.min(1.1, rowH / 40));   // 行高被压时字同步缩(手机横屏)
+  const fsK = (pg.narrow ? 1.15 : 1) * Math.max(0.95, Math.min(1.1, rowH / 40));   // §19.12:小屏字号增益(星光:看得清)
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -5430,8 +5430,8 @@ function drawCommunityPost(px, py, pw, ph) {
   attrDetailLayer.addChild(shade);
 
   // §19.10:窄屏(手机横屏)放大占比,高度 0.72→0.9
-  const cw = Math.min(pw * (pw < 560 ? 0.97 : 0.88), 760);
-  const chh = Math.min(ph * (pw < 560 ? 0.9 : 0.72), 480);
+  const cw = Math.min(pw * (pw < 560 ? 0.97 : 0.92), 860);
+  const chh = Math.min(ph * (pw < 560 ? 0.94 : 0.78), 560);   // §19.12:放大
   const cx = px + (pw - cw) / 2, cy = py + (ph - chh) / 2;
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -5612,9 +5612,9 @@ function drawTrainHelp(px, py, pw, ph) {
 
   const rows = TRAIN_HELP_ROWS;
   const headH = 58, footH = 24;
-  const pg = popupGeom(px, py, pw, ph, rows.length, 66, headH, footH, 0.9, 860);
+  const pg = popupGeom(px, py, pw, ph, rows.length, 66, headH, footH, 0.94, 980);   // §19.12:放大
   const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
-  const fsK = Math.max(0.8, Math.min(1.1, rowH / 66));
+  const fsK = (pg.narrow ? 1.15 : 1) * Math.max(0.95, Math.min(1.1, rowH / 66));   // §19.12:小屏字号增益
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
@@ -5796,8 +5796,8 @@ function drawBackendPage(x, y, w, h) {
       const tt = makeText(s, { size: size, color: color, weight: bold ? 'bold' : 'normal' });
       tt.x = x + padX; tt.y = yy; panelContentArea.addChild(tt); return tt;
     };
-    const addR = (s, yy, color) => {
-      const tt = makeText(s, { size: 12, color: color });
+    const addR = (s, yy, color, size) => {
+      const tt = makeText(s, { size: size || 13, color: color });   // §19.12:12→13(星光:字体大一点)
       tt.x = rx; tt.y = yy; panelContentArea.addChild(tt); return tt;
     };
     // §19.11b(2026-10-20 星光截图:三行重叠)—— 22px 大字占高 ~31px,旧版把结论(PITCH+20)和公式(PITCH+44)
@@ -5828,13 +5828,17 @@ function drawBackendPage(x, y, w, h) {
       const okT = addL('$' + fmt(baseP) + ' /M tokens', priceYRow, 15, '#2a2118', false);
       okT.x = x + padX + 62;
     }
-    addR('增长线 ≤$' + fmt2(growLine), infoY, '#8a7a68');
-    addR(growTxt.replace(' · ', ''), infoY + 18, gw >= 0.999 ? '#2a7a3a' : gw > 0 ? '#8a6a2a' : '#c05a2a');
-    addR('续约线 ≤$' + fmt2(renewLine), infoY + PITCH + 16, '#8a7a68');
-    addR(renewTxt.replace(' · ', ''), infoY + PITCH + 36, rMul >= 0.999 ? '#2a7a3a' : '#8a6a2a');
-    addR('用量 ' + (um >= 0.999 ? '满速 ✓' : Math.round(um * 100) + '%'), infoY + PITCH * 2 + 16,
-      um >= 0.999 ? '#2a7a3a' : '#8a6a2a');
-    addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + PITCH * 2 + 40, '#8a7a68');
+    // §19.12(星光截图:「略有重叠,放开一点,字体大一点」):标签与状态**同行**(状态 x 链在标签宽后),
+    // 行距 30、字号 12→13 —— 状态不再压下一个标签。右列 4 行到 infoY+90+17,均在警告行(infoY+124)之上。
+    const gl1 = addR('增长线 ≤$' + fmt2(growLine), infoY, '#8a7a68', 13);
+    const gs1 = addR(growTxt.replace(' · ', ''), infoY, gw >= 0.999 ? '#2a7a3a' : gw > 0 ? '#8a6a2a' : '#c05a2a', 13);
+    gs1.x = rx + gl1.width + 10;
+    const rl1 = addR('续约线 ≤$' + fmt2(renewLine), infoY + 30, '#8a7a68', 13);
+    const rs1 = addR(renewTxt.replace(' · ', ''), infoY + 30, rMul >= 0.999 ? '#2a7a3a' : '#8a6a2a', 13);
+    rs1.x = rx + rl1.width + 10;
+    const ul1 = addR('用量 ' + (um >= 0.999 ? '满速 ✓' : Math.round(um * 100) + '%'), infoY + 60,
+      um >= 0.999 ? '#2a7a3a' : '#8a6a2a', 13);
+    addR('速度 ' + fmt2(R.ability.speed) + ' → 每用户 ' + fmt2(R.ability.speed) + ' tok/s', infoY + 90, '#8a7a68', 13);
     if (R.serviceDown) addL('⚠ 库存见底 · 服务中断中(每小时信誉 -0.1 · 流失 10% 用户)', labY + 76, 13, '#c05a2a', true);
     // 瓶颈提示(2026-10-05):「卡产能还是卡客流」+ 库存可支撑时长,实时行(0.25s 节流刷新)。
     // 占据警告行下方的槽位;relayBottleneckInfo 为 null(没在卖/没客)时不画、不占位。
@@ -6114,9 +6118,9 @@ function drawBackendDetail(px, py, pw, ph) {
 
   const rows = BACKEND_DETAIL_ROWS;
   const headH = 58, footH = 24;
-  const pg = popupGeom(px, py, pw, ph, rows.length, 58, headH, footH, 0.86, 780);
+  const pg = popupGeom(px, py, pw, ph, rows.length, 58, headH, footH, 0.9, 900);   // §19.12:放大
   const cw = pg.cw, rowH = pg.rowH, chh = pg.chh, cx = pg.cx, cy = pg.cy;
-  const fsK = Math.max(0.8, Math.min(1.1, rowH / 58));
+  const fsK = (pg.narrow ? 1.15 : 1) * Math.max(0.95, Math.min(1.1, rowH / 58));   // §19.12:小屏字号增益
 
   const card = new PIXI.Graphics();
   card.lineStyle(1, 0xc4b8a8, 0.9);
