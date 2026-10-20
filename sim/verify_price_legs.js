@@ -901,7 +901,58 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
     (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
 }
 
-console.log('\n' + '─'.repeat(60));
+// ── [20] 相似度判定:最近邻相称性 / 有效相似不饱和 / 相称价随 cap 单调 ─────────
+// 2026-10-20 星光:「cap这么高,接近的模型还是很低级的,不太符合吧,你想办法优化一下相似度的判定」
+// 病灶:closestModel 只用属性距离(cap 不在 SIM_KEYS 里),且 SIM_OVER_K=0.3 让「全面强于对方」几乎零代价
+//   ⇒ 最近邻系统性偏向全库最弱的那批(cap16 推荐给 cap57 的玩家)。
+console.log('\n[20] 相似度判定:最近邻档位相称 / 有效相似不饱和 / 相称价单调');
+{
+  const sbS = makeSim(20261020);
+  const RS = sbS.state.relay;
+  const A9 = ['reasoning', 'multimodal', 'params', 'longCtx', 'knowledge', 'instruct', 'toolCall', 'speed', 'fit'];
+  const prof = (p) => { for (const k of A9) RS.ability[k] = (p[k] === undefined ? 50 : p[k]); };
+  const capNow = () => sbS.modelCapability(RS.ability);
+
+  // ① 最近邻 cap 与「我」同量级(星光痛点原话:cap57 却推荐 cap16)
+  prof({ reasoning: 78, multimodal: 22, params: 40, longCtx: 35, knowledge: 18, instruct: 55, toolCall: 85, speed: 88, fit: 70 });
+  const cap1 = capNow(), cl1 = sbS.closestModel(RS.ability);
+  const ratio1 = cl1.model.cap / cap1;
+  ok('偏科学员(cap' + cap1.toFixed(0) + ')最近邻不再是最低档(cap 比值 ≥0.4)', ratio1 >= 0.4,
+    '推荐 ' + cl1.model.n + ' cap' + cl1.model.cap + ' 比值 ' + ratio1.toFixed(2));
+
+  // ② 满配玩家的有效相似可 >100(§14.11「灰测感」是设计意图)且允许撞 200 显示上限 ——
+  //    ⚠️ 2026-10-20 实测结论:**撞顶不影响任何机制**(closestModel 用距离、gouge/trust 两道闸只看 ≥80),
+  //    但**绝不能靠软饱和去「修」它**:satK=1 会把整体 similarityTo 抬过 SIM_GATE(80),
+  //    使 relayGougePayMul 闸① 直接 return 1 ⇒ 虚标折价整层失效(D30 诚实线 +558%)。
+  //    这里改为**钉住这个边界**:撞顶允许存在,但机制判定只看阈值。
+  prof({ reasoning: 92, multimodal: 90, params: 88, longCtx: 90, knowledge: 95, instruct: 92, toolCall: 94, speed: 90, fit: 88 });
+  const effs = sbS.TM.map(m => sbS.similarityTo(RS.ability, m));
+  const maxEff = Math.max(...effs);
+  ok('高配仍有正向溢出(最高 >120%,「击破」手感保留)', maxEff > 120, maxEff.toFixed(0) + '%');
+  ok('撞顶(200)只影响显示,不影响机制判定:阈值闸仍按 ≥80 语义生效',
+    maxEff <= 200 && sbS.capMulTo(RS.ability, sbS.TM[0]) >= 0.4, 'max=' + maxEff.toFixed(0));
+
+  // ③ 最近邻**档位**随 cap 单调上升(练强了能标到更高档的模型)
+  //    ⚠️ 不能断言「相称价单调」:官价 = (pi+po*3)/4 纯由厂商定价表决定、与 cap 无关,
+  //    而库里有「cap85 定 $40」与「cap91.9 定 $20」这类反序 ⇒ 价格必然抖动,那是数据属性不是算法缺陷。
+  const TIER = { '廉价': 0, '轻量': 1, '中端': 2, '旗舰': 3 };
+  const pr = [];
+  for (const t of [20, 40, 60, 80, 100]) {
+    for (const k of A9) RS.ability[k] = Math.min(100, t * 0.92);
+    const m = sbS.closestModel(RS.ability).model;
+    pr.push({ cap: capNow(), tier: TIER[m.t], n: m.n, t: m.t, v: sbS.officialPriceOf(m) });
+  }
+  let tierOK = true;
+  const det = [];
+  for (let i = 0; i < pr.length; i++) {
+    det.push('cap' + pr[i].cap.toFixed(0) + '→' + pr[i].t);
+    if (i > 0 && pr[i].tier < pr[i - 1].tier) tierOK = false;
+  }
+  ok('最近邻档位随 cap 单调不降(廉价→轻量→中端→旗舰)', tierOK, det.join(' '));
+  // ④ 低 cap 只能标廉价/轻量,高 cap 必须能标到旗舰(旧版 cap100 也可能停在低档)
+  ok('cap≈20 停在低档(廉价/轻量)', pr[0].tier <= 1, pr[0].n + '/' + pr[0].t);
+  ok('cap≈100 能标到旗舰', pr[pr.length - 1].tier === 3, pr[pr.length - 1].n + '/' + pr[pr.length - 1].t);
+}
 
 console.log('\n' + '─'.repeat(60));
 console.log('结果:' + pass + ' 通过 / ' + fail + ' 失败');

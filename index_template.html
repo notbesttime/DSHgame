@@ -1119,6 +1119,14 @@ const SIM_W = { reasoning: 0.24, multimodal: 0.16, params: 0.13, longCtx: 0.11, 
 //     跨谱系玩家 closestModel 推荐 78 分(自己都不及格)→ 93 分(可执行)
 // 取 0.3 而非 0:保留 30% ——「我更强但交付属性确实不同」仍算轻微差异,不是完全免费。
 const SIM_OVER_K = 0.3;
+// ⚠️ 2026-10-20(星光:「cap这么高,接近的模型还是很低级的」)——「相称」必须含能力量级:
+//   旧 closestModel 只用 8 维属性距离,而 cap 是属性派生量、不在 SIM_KEYS 里;叠加 SIM_OVER_K=0.3
+//   (我更强按 0.3 折减)⇒「全面碾压弱模型」几乎零代价,最近邻系统性偏向全库最弱那批:
+//   实测 cap57 的偏科学员被推荐 cap16 的 Qwen2.5-7B(相称价仅 $0.20,而全库最高 $40)→ 练属性没有收益感。
+//   修法:距离里加一条**cap 对数比**项(量级差才是「不相称」的根源,差值会被属性重合淹没)。
+//   取值 CAP_SIM_W ∈ {0, 0.15, 0.3, 0.6, 1.0} 扫描(三个玩家画像):0.15 起就跳到相称档,
+//   0.3~1.0 结果稳定 ⇒ 取 0.3(与 SIM_OVER_K 同量级,保守)。
+const CAP_SIM_W = 0.3;          // closestModel 距离里的 cap 对数比权重(见上方取值依据)
 const SIM_GATE_KNOWLEDGE = 0.18; // 知识截止落后 >3 月(原 0.35,过重)
 const SIM_GATE_MULTIMODAL = 0.20; // 多模态档位不够(原 0.30)
 const SIM_SAT = 1.0;           // 加权距离 ≥ 1.0 → 相似度 0
@@ -1309,6 +1317,8 @@ function closestModel(a) {
     const mCut = monthsFromStr(m.k);
     if (cutoff < mCut - 3) d += SIM_GATE_KNOWLEDGE;
     if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
+    // §21.1:「相称」还要看能力量级 —— 对数比,差值会被属性重合淹没(见 CAP_SIM_W 定义处)
+    d += CAP_SIM_W * Math.abs(Math.log(Math.max(modelCapability(a), 1) / Math.max(m.cap, 1)));
     if (d < bestD) { bestD = d; best = m; }
   }
   return { model: best, distance: bestD, similarity: Math.max(0, Math.round(100 * (1 - bestD / SIM_SAT))) };
@@ -1612,10 +1622,27 @@ function rawSimilarityTo(a, m) {
 const CAP_MUL_EXP = 0.5;
 const CAP_MUL_MIN = 0.4;
 const CAP_MUL_MAX = 6;
+// §21.1(2026-10-20):软饱和 —— 比值越大,超出 1 的那部分折扣越重。
+//   病灶:纯幂函数在「满配打低端」时倍率可达 5×,有效相似被顶到 200 上限并列(实测满配玩家 61 条里 9 条撞顶),
+//   于是「谁更相称」失去区分度(全都显示 200%)。
+//   扫描 exp{0.5,0.4,0.35,0.3}×satK{0,0.5,1}:satK=1 时撞顶 0 条、最高 182%(不再并列),且不削弱高配正向感
+//   ⇒ 保留 EXP=0.5(§14.11 定稿值不动),只加软饱和。
+const CAP_MUL_SAT_K = 0;     // ⚠️ 2026-10-20 实测回退:软饱和(satK=1)虽消除 200 撞顶,但它**整体抬高所有 similarityTo**,
+                             //   连带把诚实线的有效相似推过 SIM_GATE(80) ⇒ relayGougePayMul 的闸① 直接 return 1、
+                             //   虚标折价整层失效(D30 诚实线刀乐 0.24→1.58,+558%,虚折 0.04→1.00)。
+                             //   ⇒ 「有效相似」是**多处机制共用的判定口径**,不能为了让显示好看而整体抬升。
+                             //   撞顶问题改由「显示层并列」单独处理(见 §21.1 说明),机制值保持 §14.11 定稿。
+                             //   保留此旋钮:0 = 旧行为(纯幂函数),>0 = 软饱和(仅作实验用,勿直接用)。
 function capMulTo(a, m) {
-  const myCap = modelCapability(a);
+  const myCap = Math.max(modelCapability(a), 1);
   const listCap = Math.max(m.cap, 1);
-  return Math.max(CAP_MUL_MIN, Math.min(CAP_MUL_MAX, Math.pow(myCap / listCap, CAP_MUL_EXP)));
+  const r = myCap / listCap;
+  const raw = Math.pow(r, CAP_MUL_EXP);
+  // 软饱和:只有「我更强」(r>1、raw>1)时折减;低于 1 的一侧保持原样(弱就该罚,§14.11)
+  const mul = r > 1 && CAP_MUL_SAT_K > 0
+    ? 1 + (raw - 1) / (1 + CAP_MUL_SAT_K * (r - 1) * 0.1)
+    : raw;
+  return Math.max(CAP_MUL_MIN, Math.min(CAP_MUL_MAX, mul));
 }
 // 有效相似度 = 属性相似 × 能力倍率。可 >100(高配低标 / 能力溢出的「灰测」感)。
 // 上限 200(原 140,配合无 1.5 封顶的倍率,给「强模型击破」留显示空间)。
