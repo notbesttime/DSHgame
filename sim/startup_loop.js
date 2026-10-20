@@ -289,7 +289,7 @@ const CODE = [
   exC('SIM_KEYS'), exC('SIM_W'), exC('SIM_SAT'), exC('SIM_GATE_KNOWLEDGE'), exC('SIM_GATE_MULTIMODAL'),
   SIM_OVER_K_SRC,   // 2026-10-11 加:rawSimilarityTo/closestModel 的方向折扣系数(env 可覆盖,见上)
   exC('CAP_MUL_EXP'), exC('CAP_MUL_MIN'), exC('CAP_MUL_MAX'), exC('CAP_MUL_SAT_K'),   // §21.1 软饱和
-  exC('CAP_SIM_W'),   // §21.1 closestModel 的 cap 对数比权重
+  exC('CAP_SIM_W'), exC('CAP_SIM_T0'),   // §21.1/§21.2 closestModel 的 cap 项(权重 + 相称容差)
   exC('REAL_MODELS'),
   RB_SRC,   // exC('RELAY_BIZ'),P2_PR_SUBSIDY_RATE 可覆盖补贴估算率(2026-10-18) —— 换行须保 exC 计数注释同步
   exC('PUBLISH_CFG'), exC('TRAIN_CFG'), exC('TRAIN_ITEMS'),

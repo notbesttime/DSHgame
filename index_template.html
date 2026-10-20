@@ -1127,6 +1127,10 @@ const SIM_OVER_K = 0.3;
 //   取值 CAP_SIM_W ∈ {0, 0.15, 0.3, 0.6, 1.0} 扫描(三个玩家画像):0.15 起就跳到相称档,
 //   0.3~1.0 结果稳定 ⇒ 取 0.3(与 SIM_OVER_K 同量级,保守)。
 const CAP_SIM_W = 0.3;          // closestModel 距离里的 cap 对数比权重(见上方取值依据)
+// §21.2(2026-10-20 星光:「可以稍微严格一点」):线性项对「差一档」罚得太轻 ——
+//   cap33 仍会贴到 cap16(比值 0.48)。改成**门槛后平方**:|log比| ≤ CAP_SIM_T0 视为相称不罚,
+//   超出部分平方放大 ⇒ 差半档几乎不痛、差一倍明显痛(量级差本来就是质变不是线性)。
+const CAP_SIM_T0 = 0.35;        // 相称容差:比值 e^0.35≈1.42 倍以内不算「不相称」
 const SIM_GATE_KNOWLEDGE = 0.18; // 知识截止落后 >3 月(原 0.35,过重)
 const SIM_GATE_MULTIMODAL = 0.20; // 多模态档位不够(原 0.30)
 const SIM_SAT = 1.0;           // 加权距离 ≥ 1.0 → 相似度 0
@@ -1317,8 +1321,9 @@ function closestModel(a) {
     const mCut = monthsFromStr(m.k);
     if (cutoff < mCut - 3) d += SIM_GATE_KNOWLEDGE;
     if (a.multimodal < ma.multimodal) d += SIM_GATE_MULTIMODAL;
-    // §21.1:「相称」还要看能力量级 —— 对数比,差值会被属性重合淹没(见 CAP_SIM_W 定义处)
-    d += CAP_SIM_W * Math.abs(Math.log(Math.max(modelCapability(a), 1) / Math.max(m.cap, 1)));
+    // §21.1/§21.2:「相称」还要看能力量级 —— 对数比 + 门槛后平方(见 CAP_SIM_W / CAP_SIM_T0 定义处)
+    const lcap = Math.abs(Math.log(Math.max(modelCapability(a), 1) / Math.max(m.cap, 1)));
+    d += CAP_SIM_W * Math.pow(Math.max(0, lcap - CAP_SIM_T0) / CAP_SIM_T0, 2) * 4;
     if (d < bestD) { bestD = d; best = m; }
   }
   return { model: best, distance: bestD, similarity: Math.max(0, Math.round(100 * (1 - bestD / SIM_SAT))) };

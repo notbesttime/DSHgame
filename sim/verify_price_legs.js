@@ -917,7 +917,7 @@ console.log('\n[20] 相似度判定:最近邻档位相称 / 有效相似不饱�
   prof({ reasoning: 78, multimodal: 22, params: 40, longCtx: 35, knowledge: 18, instruct: 55, toolCall: 85, speed: 88, fit: 70 });
   const cap1 = capNow(), cl1 = sbS.closestModel(RS.ability);
   const ratio1 = cl1.model.cap / cap1;
-  ok('偏科学员(cap' + cap1.toFixed(0) + ')最近邻不再是最低档(cap 比值 ≥0.4)', ratio1 >= 0.4,
+  ok('偏科学员(cap' + cap1.toFixed(0) + ')最近邻不再是最低档(cap 比值 ≥0.6)', ratio1 >= 0.6,   // §21.2 门槛后平方后实测 0.73
     '推荐 ' + cl1.model.n + ' cap' + cl1.model.cap + ' 比值 ' + ratio1.toFixed(2));
 
   // ② 满配玩家的有效相似可 >100(§14.11「灰测感」是设计意图)且允许撞 200 显示上限 ——
