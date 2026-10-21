@@ -308,6 +308,7 @@ const CODE = [
   exF('p2CrashNews'), exF('p2RiskSettle'),   // §20.15:P2-1/P2-4 已落模板,沙箱须能解析 settle 钩子
   exF('prChance'), exF('prSubsidyCost'), exF('prResolve'), exF('prWarnTick'),   // §8 P2-2 公关
   exF('prWarnBannerState'),   // §8.3 预警横幅纯函数(只依赖 R/P/Math/RELAY_BIZ,无 PIXI ⇒ 可沙箱直测)
+  exF('examHintRect'),        // §24 灵感卡命中矩形(纯函数:只算几何,无 PIXI)⇒ examHintClick 依赖它
   exF('p2CategoryOf'), exF('p2HeatTick'), exF('p2HeatMul'),   // §20.16:P2-3 热点已落模板
   exC('NEWS_LIFE_H'), exC('NEWS_MAX_ACTIVE'), // p2CrashNews 的日报条目用到
   exC('HEAT_CATS'),                           // P2-3 热点类别表(p2HeatTick 用)

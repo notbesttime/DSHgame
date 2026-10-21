@@ -701,7 +701,9 @@ console.log('\n[14] 文案池:内心戏按最弱维度×对错抽取 / 提示卡
   ok('内心戏可抽取(答错分支非空)', !!badLine, badLine.slice(0, 24));
   ok('弱维度不同 ⇒ 抽到的池不同(推理弱时不会是知识池)', okLine !== badLine);
   // ④ 抽到的文案必须真的来自模板里的池(防止函数返回硬编码)
-  ok('抽到的文案存在于模板文本池中', src9.includes(okLine.replace(/'/g, "\\'")) || src9.includes(okLine));
+  // §24:examThinkLine 现在统一以「……」收尾(星光要求),故匹配前先剥掉省略号与末尾标点再比对。
+  const bare = (x) => String(x).replace(/[…\.。!！?？,，;；]+$/, '');
+  ok('抽到的文案存在于模板文本池中', src9.includes(bare(okLine).replace(/'/g, "\\'")) || src9.includes(bare(okLine)));
   // ⑤ 扫描器脚本在位(用户改文档后要能重跑)
   ok('sync_exam_text.py 在位', fs.existsSync(require('path').join(__dirname, '..', 'sync_exam_text.py')));
   ok('《考试文案池.md》在位', fs.existsSync(require('path').join(__dirname, '..', '考试文案池.md')));
@@ -947,8 +949,8 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   // §23 管理员指令 /test(榜单搜索框输入 → 选考试 → 直接开考并跳训练面板)
   ok('/test 指令存在且挂在回车拦截前(先 /test 后 /admodel)',
     srcJ.includes('function tryTestCmd(v)') && srcJ.includes('if (!tryTestCmd(inp.value) && !tryAdmodel(inp.value))'));
-  ok('/test 复用真实 startExam + 跳训练面板(不绕 examSession)',
-    srcJ.includes('startExam(i);') && srcJ.includes("panelTab = 'train';"));
+  ok('/test 复用真实 startExam + 直接进考场(不绕 examSession)',
+    srcJ.includes('startExam(i);') && srcJ.includes(" 开考(调试)'"));
   ok('/test 列出全部 8 场考试(含及格线与时长)',
     srcJ.includes("TRAIN_CFG.EXAMS.forEach((ex, i) => {") && srcJ.includes("' · ' + ex.durationH + '游戏时 · 及格线 '"));
       RF.ability.fit = 75; sbF.fitPullTowardOpt(0.35); const a75 = RF.ability.fit; return a80 > a75 && Math.abs(a80 - 76.5) < 0.01; })());

@@ -3066,6 +3066,10 @@ function startExam(idx) {
   // 分数只进本次考试(不进存档/不影响局外);属性是唯一带出局外的收益,且每场有总量上限防刷。
   T.examSession = { idx, startH: totalH, endH: totalH + (ex.durationH || 6), score: 0,
                     clicks: 0, attrGain: 0, hints: [], hintSeq: 0, nextHintH: totalH + 0.3 };
+  // §24:开考即进入考试场景(隐藏其它 UI),并给第一句内心戏
+  T.examSession.thinkLine = '进考场了……先看题。';
+  T.examSession.thinkUntilH = totalH + 3;
+  if (typeof openExamScene === 'function') openExamScene();
   if (typeof spawnFloatText === 'function') {
     spawnFloatText(ex.name + ' 开考(持续 ' + (ex.durationH || 6) + ' 游戏时)', app.screen.width / 2, app.screen.height * 0.32);
   }
@@ -3089,6 +3093,16 @@ function examTick(totalH, gameHours) {
   spawnExamHint(s, ex, totalH, gameHours);
   // 清理过期
   if (s.hints && s.hints.length) s.hints = s.hints.filter(h => h.untilH > totalH);
+  // §24:考试场景内的内心戏轮播(模型「在想」)。没到期的旧句子不打断,过期就换下一句。
+  // ⚠️ examSceneOpen 是模块级 let,沙箱抽 examTick 时**进不去**(§20.14 同类坑)⇒ 必须 typeof 守卫生效。
+  if (typeof examSceneOpen !== 'undefined' && examSceneOpen && typeof examThinkLine === 'function') {
+    if (!(totalH < (s.thinkUntilH || 0))) {
+      // 签名是 examThinkLine(R, passed):内部用自增游标轮播,零随机(§17.9 铁律)
+      s.thinkLine = examThinkLine(R, (s.score || 0) >= 60);
+      s.thinkUntilH = totalH + 2.5;
+    }
+    if (typeof layoutExamScene === 'function') layoutExamScene();
+  }
   if (totalH >= s.endH) settleExam();
 }
 
@@ -3572,11 +3586,12 @@ function examHintClick(px, py, area) {
   // 从后往前判(后画的在上层)
   for (let i = s.hints.length - 1; i >= 0; i--) {
     const h = s.hints[i];
+    // §24:命中尺寸改走 examHintRect(2× = 104~240 × 52),与场景里画的大卡片一致。
+    //   ⚠️ 这里若与绘制不一致,玩家点大卡片会点空(本轮已统一到同一函数)。
     const cx = area.x + h.ux * area.w;
     const cy = area.y + h.uy * area.h;
-    const hw = Math.max(52, Math.min(120, area.w * 0.22)) / 2;
-    const hh = 16;
-    if (Math.abs(px - cx) <= hw && Math.abs(py - cy) <= hh) {
+    const r = examHintRect(h, area.w, area.h);
+    if (Math.abs(px - cx) <= r.w / 2 && Math.abs(py - cy) <= r.h / 2) {
       // ① 本次考试分数(只在本次结算内有效)
       s.score = Math.min(100, s.score + h.score);
       s.clicks = (s.clicks || 0) + 1;
@@ -3605,6 +3620,8 @@ function settleExam() {
   const s = T.examSession;
   if (!s) return;
   T.examSession = null;
+  // §24:结算即退出考试场景(回到生产)
+  if (typeof closeExamScene === 'function' && examSceneOpen) closeExamScene();
   const idx = s.idx, ex = TRAIN_CFG.EXAMS[idx];
   if (!ex) return;
   const score = Math.max(0, Math.min(100, s.score));
@@ -3682,7 +3699,10 @@ function examThinkLine(R, passed) {
   //    改自增游标:零随机、跨考试轮播;游标挂 R 上(exF 只抽函数体,模块级变量进不了沙箱)。
   const tick = ((R.examThinkTick || 0) + 1);
   R.examThinkTick = tick;
-  return src[tick % src.length];
+  // §24(星光:「思考结尾大多是『……』而不是句号」):剥掉原句末标点,统一收在省略号上 ——
+  //   视觉上像「还在想」而不是「已经想完了」。文案池里的原句保留全角标点,只在展示时处理。
+  const raw = src[tick % src.length];
+  return String(raw).replace(/[。.!！?？,，;；]+$/, '') + '……';
 }
 
 // 旧名字保留(其它调用点/外部脚本可能引用):立刻按「满时长考完」结算一次
@@ -4845,8 +4865,9 @@ function drawTrainPage(x, y, w, h) {
 
   // ===== §17.6 第二步:考试中的「限时提示」渲染(点选加分)=====
   // 只画卡片本身;命中判定在 examHintClick(用同一套 area/x/y,坐标口径一致)。
+  // §24:考试已在独立场景显示(openExamScene),面板内不再重复画卡片/提示
   const es = T.examSession;
-  if (es && es.hints && es.hints.length) {
+  if (es && es.hints && es.hints.length && !examSceneOpen && false) {
     const totalH = (state.relay.news && state.relay.news.totalH) || 0;
     const area = { x: x, y: y, w: w, h: h };
     for (const hd of es.hints) {
@@ -5397,11 +5418,7 @@ function tryTestCmd(v) {
     d.addEventListener('pointerleave', () => { d.style.background = ''; });
     d.addEventListener('click', () => {
       dom.drop.style.display = 'none';
-      startExam(i);
-      // 跳到训练面板(与点标签同路径)
-      if (typeof openScreenPanel === 'function') openScreenPanel();
-      panelTab = 'train';
-      if (typeof layoutScreenPanel === 'function') layoutScreenPanel();
+      startExam(i);   // §24:startExam 内部会 openExamScene(),直接进考场
       spawnFloatText(ex.name + ' 开考(调试)', app.screen.width / 2, 90);
     });
     dom.drop.appendChild(d);
@@ -7123,6 +7140,201 @@ const tuneScene = new PIXI.Container();
 tuneScene.visible = false;
 app.stage.addChildAt(tuneScene, app.stage.getChildIndex(layers.topbar));
 let tuneSceneOpen = false;
+
+// ==================== §24 考试场景(2026-10-21)====================
+// 星光:「考试不是这样正常游戏,是来到考试的环境」——考试期间切到独立全屏场景:
+//   · 背景 = 考场试卷照(exam_bg),其他生产/中转站 UI 全部隐藏;
+//   · 左上角只留「剩余时间进度条」;
+//   · 模型蹲在右下角,以 thought bubble(think_bubble)弹出内心戏;
+//   · 灵感卡放大 2× 铺在卷面上。
+const examScene = new PIXI.Container();
+examScene.visible = false;
+app.stage.addChildAt(examScene, app.stage.getChildIndex(layers.topbar));
+let examSceneOpen = false;
+const examBgSprite = PIXI.Sprite.from(ASSETS.exam_bg);
+examScene.addChild(examBgSprite);
+// 卷面压暗一层(让卡片/气泡在亮纸面上可读)
+const examShade = new PIXI.Graphics();
+examScene.addChild(examShade);
+// 考试 UI 容器(进度条 / 灵感卡 / 思考气泡 / 右下角模型)都挂这里
+const examLayer = new PIXI.Container();
+examScene.addChild(examLayer);
+let examProgressBar = null, examProgressText = null;
+let examHudGroup = null;
+let examHintSprites = [];        // [{bg, txt}] 与 es.hints 一一对应(重绘时整体重建)
+let examThinkBubble = null;      // { sprite, text } 右下角思考气泡
+let examThinkShowUntilH = 0;     // 气泡显示到哪个游戏时
+
+function openExamScene() {
+  examSceneOpen = true;
+  examScene.visible = true;
+  setProductionLayersVisible(false);
+  if (relaySceneOpen) { relaySceneOpen = false; relayScene.visible = false; }
+  if (tuneSceneOpen) { tuneSceneOpen = false; tuneScene.visible = false; }
+  setBGM('bgm_tune');   // 考场沿用调教那首(都是室内安静场景)
+  layoutExamScene();
+}
+// §24 考试场景布局:背景 cover 铺满 + 进度条(左上) + 灵感卡(2×) + 右下角模型与思考气泡。
+// 与 layoutTuneScene 同套路:全屏容器重建,不做增量布局。
+function layoutExamScene() {
+  const w = app.screen.width, h = app.screen.height;
+  // 背景 cover(等比铺满,溢出裁掉)
+  const tw = examBgSprite.texture.width > 1 ? examBgSprite.texture.width : 1280;
+  const th = examBgSprite.texture.height > 1 ? examBgSprite.texture.height : 960;
+  const s = Math.max(w / tw, h / th);
+  examBgSprite.scale.set(s);
+  examBgSprite.x = (w - tw * s) / 2;
+  examBgSprite.y = (h - th * s) / 2;
+  // 压暗:卷面是白纸,不压暗卡片和气泡会糊在一起
+  examShade.clear();
+  examShade.beginFill(0x0a0806, 0.34);
+  examShade.drawRect(0, 0, w, h);
+  examShade.endFill();
+
+  examHintSprites = [];
+  examThinkBubble = null;
+  const es = state.relay.train.examSession;
+  if (!es) return;
+  const ex = TRAIN_CFG.EXAMS[es.idx] || {};
+  const totalH = (state.relay.news && state.relay.news.totalH) || 0;
+
+  // ── 左上角:剩余时间进度条(唯一保留的 HUD)──
+  const barW = Math.min(320, w * 0.30), barH = 16, barX = 20, barY = 20;
+  const box = new PIXI.Graphics();
+  box.beginFill(0x1a1208, 0.72);
+  box.drawRoundedRect(barX - 8, barY - 8, barW + 16, barH + 40, 10);
+  box.endFill();
+  examLayer.addChild(box);
+  const leftH = Math.max(0, es.endH - totalH);
+  const totalSpan = Math.max(0.001, es.endH - es.startH);
+  const pct = Math.max(0, Math.min(1, leftH / totalSpan));
+  const fill = new PIXI.Graphics();
+  fill.beginFill(pct > 0.3 ? 0x6ad08a : 0xd0442a, 0.95);
+  fill.drawRoundedRect(barX, barY, Math.max(2, barW * pct), barH, 8);
+  fill.endFill();
+  examLayer.addChild(fill);
+  const barFrame = new PIXI.Graphics();
+  barFrame.lineStyle(1.5, 0xc4b8a8, 0.9);
+  barFrame.drawRoundedRect(barX, barY, barW, barH, 8);
+  examLayer.addChild(barFrame);
+  const t1 = makeText((ex.name || '考试') + '  ·  剩余 ' + leftH.toFixed(1) + ' 游戏时',
+    { size: 15, color: '#ffe9c4', weight: 'bold' });
+  t1.x = barX; t1.y = barY + barH + 4;
+  examLayer.addChild(t1);
+  const t2 = makeText('得分 ' + Math.round(es.score || 0) + '  ·  已抓 ' + (es.clicks || 0) + ' 张灵感',
+    { size: 13, color: '#c9b892' });
+  t2.x = barX; t2.y = barY + barH + 22;
+  examLayer.addChild(t2);
+
+  // ── 灵感卡:星光「长方形边框可以大一些,尝试 2 倍」──
+  //   原 examHintClick 的命中口径是 52~120 宽 × 26 高,这里 2× ⇒ 104~240 × 52。
+  //   ⚠️ 命中判定必须与之一致(见 examHintRect),否则点了没反应。
+  const totalH2 = totalH;
+  for (const hd of (es.hints || [])) {
+    const r = examHintRect(hd, w, h);
+    const left = Math.max(0, hd.untilH - totalH2);
+    const ttl0 = Math.max(0.001, examHintLerp(EXAM_HINT_CFG.TTL_H, ex.importance || 0.2));
+    const urgency = 1 - Math.min(1, left / ttl0);
+    const bg = new PIXI.Graphics();
+    bg.beginFill(0xfff4d6, 0.96 - urgency * 0.08);
+    bg.lineStyle(2.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95);
+    bg.drawRoundedRect(r.x, r.y, r.w, r.h, 12);
+    bg.endFill();
+    examLayer.addChild(bg);
+    const tx = makeText((hd.prefix || '') + ' ' + (hd.text || ''), { size: 22, color: '#6a4a1a', weight: 'bold' });
+    tx.x = r.x + 14; tx.y = r.y + 14;
+    if (tx.width > r.w - 28) tx.scale.set((r.w - 28) / tx.width);
+    examLayer.addChild(tx);
+    // 剩余时间细条(2× 高)
+    const tb = new PIXI.Graphics();
+    tb.beginFill(0xd0442a, 0.8);
+    tb.drawRect(r.x + 6, r.y + r.h - 8, Math.max(0, (r.w - 12) * (left / ttl0)), 4);
+    tb.endFill();
+    examLayer.addChild(tb);
+    examHintSprites.push({ hd, r, bg });
+    // §24:透明命中层(画在卡片之上;点它 = 点这张卡)
+    const hit = new PIXI.Graphics();
+    hit.beginFill(0xffffff, 0.002);
+    hit.drawRoundedRect(r.x, r.y, r.w, r.h, 12);
+    hit.endFill();
+    hit.eventMode = 'static';
+    hit.cursor = 'pointer';
+    hit.on('pointerdown', (e) => {
+      e.stopPropagation();
+      const p = e.global || { x: r.cx, y: r.cy };
+      if (examHintClick(p.x, p.y, { x: 0, y: 0, w, h })) layoutExamScene();
+    });
+    examLayer.addChild(hit);
+  }
+
+  // ── 右下角:模型 + 思考气泡(星光:「像生产板块一样把模型放在右下角,图2 作为气泡框」)──
+  const modelScale = Math.min(1.0, h / 900);
+  const mw = 190 * modelScale, mh = 260 * modelScale;
+  const mx = w - mw - 24, my = h - mh - 12;
+  // 模型占位:用 char1(张口的立绘)示意「正在思考」(真正的人物层可后续接 tuneWalker)
+  const modelSprite = PIXI.Sprite.from(ASSETS.char1);
+  if (modelSprite.texture && modelSprite.texture.width > 1) {
+    modelSprite.scale.set(Math.min(mw / modelSprite.texture.width, mh / modelSprite.texture.height));
+  }
+  modelSprite.x = mx + (mw - (modelSprite.width || mw)) / 2;
+  modelSprite.y = my + (mh - (modelSprite.height || mh));
+  examLayer.addChild(modelSprite);
+  // 思考气泡(挂模型左上;气泡尾巴在下方,所以气泡底边贴着模型头顶)
+  const bubbleW = Math.min(300, w * 0.30), bubbleH = bubbleW * 0.92;
+  const bx = mx - bubbleW * 0.72, by = my - bubbleH * 0.62;
+  const bub = PIXI.Sprite.from(ASSETS.think_bubble);
+  if (bub.texture && bub.texture.width > 1) {
+    bub.scale.set(Math.min(bubbleW / bub.texture.width, bubbleH / bub.texture.height));
+  }
+  bub.x = bx; bub.y = by;
+  examLayer.addChild(bub);
+  const think = makeText(es.thinkLine || '', { size: 18, color: '#2a3a5a', weight: 'bold', align: 'center' });
+  think.style.wordWrap = true;
+  think.style.wordWrapWidth = Math.max(80, bub.width * 0.68);
+  think.style.breakWords = true;
+  think.anchor.set(0.5, 0.5);
+  think.x = bub.x + bub.width / 2;
+  think.y = bub.y + bub.height * 0.44;
+  examLayer.addChild(think);
+  examThinkBubble = { sprite: bub, text: think, model: modelSprite };
+  examThinkShowUntilH = es.thinkUntilH || 0;
+  // 气泡该不该显示:有内心戏且未过期
+  const visible = !!es.thinkLine && totalH < (es.thinkUntilH || 0);
+  bub.visible = visible;
+  think.visible = visible;
+}
+
+// 灵感卡的命中矩形(与绘制共用,2× 后尺寸):星光要求放大 2 倍
+function examHintRect(hd, w, h) {
+  const cw = Math.max(104, Math.min(240, w * 0.22));   // 原 52~120 的 2×
+  const ch = 52;                                        // 原 26 的 2×
+  const cx = hd.ux * w;
+  const cy = hd.uy * h;
+  return { x: cx - cw / 2, y: cy - ch / 2, w: cw, h: ch, cx, cy };
+}
+
+// §24 考试场景每帧刷新:进度条/卡片倒计时会变,但**不能每帧重建整个场景**(PIXI 对象重建开销大)。
+//   真源是 examTick(每游戏时推进),这里只做「显示层跟随」:节流 0.25s 重排一次即可。
+let examSceneAccum = 0;
+function updateExamScene() {
+  if (!examSceneOpen) return;
+  const dt = app.ticker.deltaMS / 1000;
+  examSceneAccum += dt;
+  if (examSceneAccum < 0.25) return;   // 4Hz 足够(进度条按游戏时走,不需要 60fps)
+  examSceneAccum = 0;
+  const s = state.relay.train.examSession;
+  if (!s) { closeExamScene(); return; }
+  layoutExamScene();
+}
+
+function closeExamScene() {
+  examSceneOpen = false;
+  examScene.visible = false;
+  examHintSprites = [];
+  examThinkBubble = null;
+  setProductionLayersVisible(true);
+  setBGM('bgm_basement');
+}
 const tuneBgSprite = PIXI.Sprite.from(ASSETS.tune_bg);
 tuneScene.addChild(tuneBgSprite);
 // 轻压暗,保证人物在亮窗区仍可辨识(不挡人物)
@@ -8720,6 +8932,7 @@ app.ticker.add(() => {
   }
   updateTweens(dt);
   updateTallyPulse();   // §19.13 维度数值脉冲(内部自判空,开销可忽略)
+  updateExamScene();    // §24 考试场景(进度条/卡片 TTL/气泡),只在 examSceneOpen 时干活
   // 雷达图轴标签数字滚动(只在雷达开启动画的 0.45s 内有活,平时直接 return)
   radarTicker();
   // 中转站行走人物AI(不受暂停影响)

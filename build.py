@@ -30,6 +30,9 @@ ASSET_FILES = {
     "fan": ("assets/compressed_webp/fan.webp", "image/webp"),
     "placeholder": ("assets/compressed_webp/placeholder.webp", "image/webp"),
     "speech_bubble": ("assets/compressed_webp/speech_bubble.webp", "image/webp"),
+    # §24 考试场景(2026-10-21):考场试卷照 + 模型思考气泡框
+    "exam_bg": ("assets/compressed_webp/exam_bg.webp", "image/webp"),
+    "think_bubble": ("assets/compressed_webp/think_bubble.webp", "image/webp"),
     "pc_case_upgraded": ("assets/compressed_webp/pc_case_upgraded.webp", "image/webp"),
     "transfer_bg": ("assets/compressed_webp/transfer_bg.webp", "image/webp"),
     "chair": ("assets/compressed_webp/chair_hi.webp", "image/webp"),
