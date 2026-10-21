@@ -5293,7 +5293,7 @@ function ensureLbDom() {
     inp.addEventListener('input', () => handleLbSearch(inp.value));
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
-        if (!tryAdmodel(inp.value)) {
+        if (!tryTestCmd(inp.value) && !tryAdmodel(inp.value)) {
           const hits = lbHits(inp.value);
           if (hits.length) jumpToModel(hits[0].i);
         }
@@ -5364,6 +5364,49 @@ function jumpToModel(i) {
   // 移动鼠标后蓝框消失:一次性 pointermove 监听
   const clear = () => { searchHitIdx = -1; layoutScreenPanel(); window.removeEventListener('pointermove', clear); };
   window.addEventListener('pointermove', clear, { once: true });
+}
+
+// ===== §23 管理员指令 /test =====
+// ★**刻意不放进 __DEBUG_STRIP__ 块**:这是**管理员功能**,发布后仍需可用(线上排查考试/文案时全靠它)。
+//   与 /admodel(开发者调试,发布即剔除)性质不同,故保留。
+// 用法:榜单搜索框输入 /test 回车 → 下拉列出 8 场考试 → 点任意一场 → 直接开考并跳到训练面板。
+// 用法:榜单搜索框输入 /test 回车 → 下拉列出 8 场考试 → 点任意一场直接开考并跳到训练面板。
+//   · 跳面板:openScreenPanel() + panelTab='train'(与点「训练」标签同路径)
+//   · 开考:startExam(idx)(与正式流程同一个函数,不绕过 examSession 结构)
+//   · 不检查考试阶段/天数限制,纯粹用于调文案与手感
+function tryTestCmd(v) {
+  if (v.trim().toLowerCase() !== '/test') return false;
+  const dom = ensureLbDom();
+  dom.drop.innerHTML = '';
+  dom.drop.style.display = 'block';
+  dom.inp.value = '';
+  const rect = dom.inp.getBoundingClientRect();
+  dom.drop.style.left = rect.left + 'px';
+  dom.drop.style.top = (rect.bottom + 4) + 'px';
+  dom.drop.style.width = Math.max(240, rect.width) + 'px';
+  const T = state.relay.train;
+  TRAIN_CFG.EXAMS.forEach((ex, i) => {
+    const passed = (T.examStage || 0) > i;
+    const cur = T.examSession && T.examSession.idx === i;
+    const d = document.createElement('div');
+    d.textContent = (cur ? '▶ ' : '') + (i + 1) + '. ' + ex.name + ' · D' + ex.atDay
+      + ' · ' + ex.durationH + '游戏时 · 及格线 ' + Math.round(ex.passGrade * 100) + '%'
+      + (passed ? ' · 已过' : '');
+    d.style.cssText = 'padding:6px 12px;cursor:pointer;font-size:14px;color:' + (cur ? '#2a7a3a' : '#3a2f22') + ';';
+    d.addEventListener('pointerenter', () => { d.style.background = '#f0e6d8'; });
+    d.addEventListener('pointerleave', () => { d.style.background = ''; });
+    d.addEventListener('click', () => {
+      dom.drop.style.display = 'none';
+      startExam(i);
+      // 跳到训练面板(与点标签同路径)
+      if (typeof openScreenPanel === 'function') openScreenPanel();
+      panelTab = 'train';
+      if (typeof layoutScreenPanel === 'function') layoutScreenPanel();
+      spawnFloatText(ex.name + ' 开考(调试)', app.screen.width / 2, 90);
+    });
+    dom.drop.appendChild(d);
+  });
+  return true;
 }
 
 function tryAdmodel(v) {

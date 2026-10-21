@@ -944,6 +944,13 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
     srcJ.includes('function fitPullTowardOpt(pull)') && srcJ.includes('return fitDrift(-dev * Math.max(0, Math.min(1, pull)));'));
   ok('考试回拉单调:80 减后(76.5)仍比 75 减后(73.25)离 70 更远',
     (() => { const sbF = makeSim(20261021); const RF = sbF.state.relay; RF.ability.fit = 80; sbF.fitPullTowardOpt(0.35); const a80 = RF.ability.fit;
+  // §23 管理员指令 /test(榜单搜索框输入 → 选考试 → 直接开考并跳训练面板)
+  ok('/test 指令存在且挂在回车拦截前(先 /test 后 /admodel)',
+    srcJ.includes('function tryTestCmd(v)') && srcJ.includes('if (!tryTestCmd(inp.value) && !tryAdmodel(inp.value))'));
+  ok('/test 复用真实 startExam + 跳训练面板(不绕 examSession)',
+    srcJ.includes('startExam(i);') && srcJ.includes("panelTab = 'train';"));
+  ok('/test 列出全部 8 场考试(含及格线与时长)',
+    srcJ.includes("TRAIN_CFG.EXAMS.forEach((ex, i) => {") && srcJ.includes("' · ' + ex.durationH + '游戏时 · 及格线 '"));
       RF.ability.fit = 75; sbF.fitPullTowardOpt(0.35); const a75 = RF.ability.fit; return a80 > a75 && Math.abs(a80 - 76.5) < 0.01; })());
   ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
     srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));
