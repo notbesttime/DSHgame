@@ -930,6 +930,17 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('道具消耗写明「消耗 $X + Y 算力」', srcJ.includes("('消耗 ' + trainPriceText(trainItemPrice(it.key)) + ' + ' + it.ap + ' 算力')"));
   ok('开局消耗写明「消耗 N 算力 + M token 开局」', srcJ.includes("'消耗 ' + GAME_CFG.AP_COST + ' 算力 + '") && srcJ.includes("' token 开局'"));
   ok('每步消耗写明「每步消耗 N」', srcJ.includes("' · 每步消耗 ' + formatNum(gameMoveTokenCost())"));
+  // §22 拟合度涨落(2026-10-21 星光:初始改低为30,训练过程中伴随拟合度增长和减少,玩家要关注维持)
+  ok('拟合初值 30(欠拟合开局,两处默认值都改)',
+    (srcJ.match(/fit: 30, multimodal/g) || []).length >= 2 && !srcJ.includes('fit: 70, multimodal'));
+  ok('每件道具自带 fitDrift(专一维推得猛/均衡推得轻)',
+    srcJ.includes('fitDrift:7') && srcJ.includes('fitDrift:6') && srcJ.includes('fitDrift:3 ') && srcJ.includes('fitDrift:1.5'));
+  ok('训练推高拟合度(useTrainItem 调 fitDrift)', srcJ.includes('if (item.fitDrift) fitDrift(item.fitDrift);'));
+  ok('空闲回落只收超出最优点的部分(欠拟合不会自动变好)',
+    srcJ.includes('if (a.fit <= CAP_FIT_OPT) return 0;') && srcJ.includes('Math.min(amount, a.fit - CAP_FIT_OPT)'));
+  ok('考试结算额外回落 4 点(考试=泛化检验)', srcJ.includes('fitRelaxTowardOpt(TRAIN_CFG.FIT_EXAM_RELIEF)'));
+  ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
+    srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));
 }
 
 // ── [20] 相似度判定:最近邻相称性 / 有效相似不饱和 / 相称价随 cap 单调 ─────────

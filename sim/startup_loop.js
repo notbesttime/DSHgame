@@ -289,6 +289,7 @@ const CODE = [
   exC('SIM_KEYS'), exC('SIM_W'), exC('SIM_SAT'), exC('SIM_GATE_KNOWLEDGE'), exC('SIM_GATE_MULTIMODAL'),
   SIM_OVER_K_SRC,   // 2026-10-11 加:rawSimilarityTo/closestModel 的方向折扣系数(env 可覆盖,见上)
   exC('CAP_MUL_EXP'), exC('CAP_MUL_MIN'), exC('CAP_MUL_MAX'), exC('CAP_MUL_SAT_K'),   // §21.1 软饱和
+  exF('fitDrift'), exF('fitRelaxTowardOpt'), exF('fitStateText'), exF('fitStateColor'),   // §22 拟合度涨落(常量 CAP_FIT_* 已在上面抽取,别重复)
   exC('CAP_SIM_W'), exC('CAP_SIM_T0'),   // §21.1/§21.2 closestModel 的 cap 项(权重 + 相称容差)
   exC('REAL_MODELS'),
   RB_SRC,   // exC('RELAY_BIZ'),P2_PR_SUBSIDY_RATE 可覆盖补贴估算率(2026-10-18) —— 换行须保 exC 计数注释同步
@@ -373,7 +374,8 @@ const INIT = `
   state.scripts = { autoClick:false, miracle:false };
   recalcProduction();
   state.relay = {
-    ability: { reasoning:5, longCtx:2, speed:5, knowledge:5, fit:70, multimodal:10, instruct:5, params:5, toolCall:5 },
+    // §22:拟合初值与模板一致(fit:30 欠拟合开局)。仿真必须复刻玩家真实起点,否则测出来的能力/相称价偏高。
+    ability: { reasoning:5, longCtx:2, speed:5, knowledge:5, fit:30, multimodal:10, instruct:5, params:5, toolCall:5 },
     listedModel: null, price: 0, pool:'standard', reputation: 1, dollars: 0,
     users: 2, userSlots: [{leftH:3},{leftH:5}], activeCoef: 0.65,
     gameHour: 0, hourAccum: 0, repAccum: 0, serviceDown: false,

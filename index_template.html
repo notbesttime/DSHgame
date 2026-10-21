@@ -1547,6 +1547,11 @@ const TRAIN_CFG = {
   PRESSURE_DECAY_PER_GAME_H: 6, // 空闲时每小时泄压
   PRESSURE_PENALTY_DIV: 250,    // 软性惩罚:训练效果 ×(1 - 压力/此值),满压 100 时约 ×0.6;到 PRESSURE_MAX 再触发摆烂硬锁
   GAIN_MUL_K: 0.6,              // §10:训练增益倍率 = 1 + 参数/100 × K
+  // ===== §22 拟合度涨落(2026-10-21 星光:训练过程中伴随拟合度概览增长和减少,玩家要关注维持)=====
+  // 设计依据见《中转站设计.md》§9/§585:「训练方法给 Δ属性向量 + Δ拟合,玩家自己决定何时收手」。
+  // 拟合度是**策略刻度**不是永久加成:练单一维度推高它(过拟合→伪装流),均衡练/打考试/空闲把它拉回 70。
+  FIT_DECAY_PER_GAME_H: 1.2,    // 空闲时每小时向 CAP_FIT_OPT 回落 1.2 点(只回落超出部分)
+  FIT_EXAM_RELIEF: 4,           // 每场考试结算额外回落(考试=泛化检验,现实里就是在防过拟合)
   // 道具涨价(2026-10-05 定稿):同一件反复买会越来越贵 —— 把「随手刷的日常品」压回「偶尔买的达标工具」。
   //   第 n 次单价 = cost × (1 + PRICE_ESC × (n-1));n 取「涨价计数」priceCount(会衰减)。
   //   硬上限另看 bought(只增不减):衰减只让价格回落,不让买满的又能再买。
@@ -1581,15 +1586,16 @@ const TRAIN_CFG = {
 // cap=累计购买硬上限(2026-10-05):口径=「这件练到头了」——按 (100-当前值)*rate*gainMul 反推
 //   「买到该维≈90、单次增益已<0.5 点」的次数,故 cap ∝ 1/rate(咖啡能磨 35 次,指鹿为马 6 次练满)。
 const TRAIN_ITEMS = [
-  { key:'coffee',  name:'速溶咖啡',         sub:'蒸馏·加速',     kind:'instant', attr:['speed'],                rate:{speed:0.05},               cost:3,  ap:1, duraMin:0,   pres:5,  cap:35, color:0x6a4a2a },
-  { key:'cheat',   name:'备忘录',            sub:'RAG·检索',      kind:'instant', attr:['knowledge'],            rate:{knowledge:0.05},           cost:3,  ap:1, duraMin:0,   pres:2,  cap:35, color:0x3a6a8a },
-  { key:'pie',     name:'画饼',             sub:'指令对齐',       kind:'instant', attr:['instruct'],             rate:{instruct:0.05},            cost:3,  ap:1, duraMin:0,   pres:1,  cap:35, color:0xba8a3a },
-  { key:'tutor',   name:'诸葛亮给张飞的小玩具', sub:'RLHF·蒸馏',  kind:'session', attr:['reasoning','instruct'], rate:{reasoning:0.10, instruct:0.08}, cost:20, ap:3, duraMin:45,  pres:10, cap:16, color:0x3a9a6a },
-  { key:'drill',   name:'五年高考三年模拟', sub:'预训练刷题',     kind:'session', attr:['reasoning','longCtx'],  rate:{reasoning:0.15, longCtx:0.08},cost:35, ap:4, duraMin:90,  pres:18, cap:10, color:0xc05a2a },
-  { key:'gym',     name:'俯卧撑预备!',       sub:'Scale-up 扩容',  kind:'session', attr:['params'],               rate:{params:0.12},              cost:50, ap:4, duraMin:120, pres:8,  cap:13, color:0x8a5a20 },
-  { key:'eyes',    name:'指鹿为马ing',       sub:'Vision head',   kind:'session', attr:['multimodal'],           rate:{multimodal:0.25},          cost:60, ap:4, duraMin:100, pres:12, cap:6,  color:0x3a6a8a },
-  { key:'ear',     name:'助听器',            sub:'音频模态',       kind:'session', attr:['multimodal'],           rate:{multimodal:0.18},          cost:70, ap:4, duraMin:100, pres:12, cap:9,  color:0x3a6a8a, need:{multimodal:40} },
-  { key:'toolkit', name:'工程制图强化学习',   sub:'Function·Agent',kind:'session', attr:['toolCall'],             rate:{toolCall:0.28},            cost:45, ap:3, duraMin:80,  pres:8,  cap:5,  color:0x5a6a7a },
+  // fitDrift = 单次训练对拟合度的推力(§22):练得越**专一**推得越猛(数据单一=过拟合),均衡练推得轻。
+  { key:'coffee',  name:'速溶咖啡',         sub:'蒸馏·加速',     kind:'instant', attr:['speed'],                rate:{speed:0.05},               cost:3,  ap:1, duraMin:0,   pres:5,  cap:35, color:0x6a4a2a, fitDrift:1.5 },
+  { key:'cheat',   name:'备忘录',            sub:'RAG·检索',      kind:'instant', attr:['knowledge'],            rate:{knowledge:0.05},           cost:3,  ap:1, duraMin:0,   pres:2,  cap:35, color:0x3a6a8a, fitDrift:1.5 },
+  { key:'pie',     name:'画饼',             sub:'指令对齐',       kind:'instant', attr:['instruct'],             rate:{instruct:0.05},            cost:3,  ap:1, duraMin:0,   pres:1,  cap:35, color:0xba8a3a , fitDrift:1.5 },
+  { key:'tutor',   name:'诸葛亮给张飞的小玩具', sub:'RLHF·蒸馏',  kind:'session', attr:['reasoning','instruct'], rate:{reasoning:0.10, instruct:0.08}, cost:20, ap:3, duraMin:45,  pres:10, cap:16, color:0x3a9a6a, fitDrift:3 },   // 双维均衡 → 中
+  { key:'drill',   name:'五年高考三年模拟', sub:'预训练刷题',     kind:'session', attr:['reasoning','longCtx'],  rate:{reasoning:0.15, longCtx:0.08},cost:35, ap:4, duraMin:90,  pres:18, cap:10, color:0xc05a2a, fitDrift:3.5 },   // 双维 → 中
+  { key:'gym',     name:'俯卧撑预备!',       sub:'Scale-up 扩容',  kind:'session', attr:['params'],               rate:{params:0.12},              cost:50, ap:4, duraMin:120, pres:8,  cap:13, color:0x8a5a20 , fitDrift:5 },
+  { key:'eyes',    name:'指鹿为马ing',       sub:'Vision head',   kind:'session', attr:['multimodal'],           rate:{multimodal:0.25},          cost:60, ap:4, duraMin:100, pres:12, cap:6,  color:0x3a6a8a , fitDrift:6 },
+  { key:'ear',     name:'助听器',            sub:'音频模态',       kind:'session', attr:['multimodal'],           rate:{multimodal:0.18},          cost:70, ap:4, duraMin:100, pres:12, cap:9,  color:0x3a6a8a, fitDrift:6, need:{multimodal:40} },
+  { key:'toolkit', name:'工程制图强化学习',   sub:'Function·Agent',kind:'session', attr:['toolCall'],             rate:{toolCall:0.28},            cost:45, ap:3, duraMin:80,  pres:8,  cap:5,  color:0x5a6a7a, fitDrift:7 },
 ];
 function trainDefaults() {
   return { ap: 0, apAccum: 0, pressure: 0, examStage: 0, examStartH: null, session: null,
@@ -2885,6 +2891,31 @@ function trainGainMul() {
   const pressureMul = Math.max(0, 1 - (state.relay.train.pressure / TRAIN_CFG.PRESSURE_PENALTY_DIV));
   return base * pressureMul;
 }
+// §22 拟合度推进(2026-10-21):统一入口 —— 不越界,并让「回落」只作用于超出最优点的那部分。
+//   回落不会让欠拟合自动变好(那必须靠训练),只会把过拟合往回拉。
+// §22 拟合度状态(玩家要能一眼看出「该练 / 稳 / 过头了」)
+function fitStateText(fit) {
+  if (fit < CAP_FIT_OPT - 12) return '欠拟合';
+  if (fit <= CAP_FIT_OPT + 10) return '良好';
+  return '过拟合';
+}
+function fitStateColor(fit) {
+  if (fit < CAP_FIT_OPT - 12) return '#c07a2a';   // 欠拟合:橙
+  if (fit <= CAP_FIT_OPT + 10) return '#2a7a3a';  // 良好:绿
+  return '#8a4ab8';                                // 过拟合:紫(伪装流)
+}
+function fitDrift(delta) {
+  const a = state.relay.ability;
+  const before = a.fit;
+  a.fit = Math.max(0, Math.min(100, a.fit + delta));
+  return a.fit - before;
+}
+function fitRelaxTowardOpt(amount) {
+  const a = state.relay.ability;
+  if (a.fit <= CAP_FIT_OPT) return 0;
+  const cut = Math.min(amount, a.fit - CAP_FIT_OPT);
+  return fitDrift(-cut);
+}
 function abilityAdd(attr, v) {
   const a = state.relay.ability;
   a[attr] = Math.max(0, Math.min(100, a[attr] + v));
@@ -2924,6 +2955,8 @@ function useTrainItem(item) {
   R.dollars -= trainItemPrice(item.key);   // 2026-10-05:按涨价后的价扣
   spendAP(item.ap);
   T.pressure = Math.min(TRAIN_CFG.PRESSURE_MAX, T.pressure + item.pres);
+  // §22:训练推高拟合度 —— 练得越专一推得越猛(数据配比单一 = 过拟合);数值见 TRAIN_ITEMS 的 fitDrift。
+  if (item.fitDrift) fitDrift(item.fitDrift);
   T.bought[item.key] = (T.bought[item.key] || 0) + 1;          // 硬上限账本(只增)
   T.priceCount[item.key] = (T.priceCount[item.key] || 0) + 1;   // 涨价账本(每 10 游戏天 ×0.8)
   if (item.kind === 'instant') {
@@ -2970,6 +3003,8 @@ function updateTrain(gameHours) {
     while (T.apAccum >= 1 && T.ap < TRAIN_CFG.AP_MAX) { T.apAccum -= 1; T.ap += 1; }
     if (T.ap >= TRAIN_CFG.AP_MAX) T.apAccum = 0;
   }
+  // §22:空闲时拟合度向最优点回落(只收超出部分);闭关训练期间不回落(那正是在练)
+  if (!T.session) fitRelaxTowardOpt(TRAIN_CFG.FIT_DECAY_PER_GAME_H * gameHours);
   if (T.session) {
     T.session.remainMin -= gm;
     if (T.session.remainMin <= 0) finishSession();
@@ -3478,6 +3513,8 @@ function settleExam() {
   const passed = score >= passLine;
   const retakes = T.examRetakes[idx] || 0;
   T.examScores[idx] = Math.round(score);
+  // §22:考试 = 泛化检验 ⇒ 每场额外把拟合度拉回最优点(现实里做 eval 就是在发现过拟合)
+  fitRelaxTowardOpt(TRAIN_CFG.FIT_EXAM_RELIEF);
   T.examLastGrade[idx] = score;
   // 等级映射(模糊信号第 1 层):按「得分 / 隐藏阈值」的比值分档,不公开分界
   const rr = score / passLine;
@@ -4565,6 +4602,12 @@ function drawTrainPage(x, y, w, h) {
     { size: 16, color: '#5a4632', weight: 'bold' });
   hud.x = x + 20; hud.y = y + 12;
   panelContentArea.addChild(hud);
+  // §22:拟合度概览 —— 玩家必须能实时看见它在练/在回落(星光:「训练过程中伴随拟合度的概览增长和减少」)
+  const fitV = A.fit;
+  const fitTxt = makeText('拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV),
+    { size: 15, color: fitStateColor(fitV), weight: 'bold' });
+  fitTxt.x = hud.x + hud.width + 20; fitTxt.y = y + 13;
+  panelContentArea.addChild(fitTxt);
   const ex = T.examStage < TRAIN_CFG.EXAMS.length ? TRAIN_CFG.EXAMS[T.examStage] : null;
   const elapsed = trainElapsedDays();
   // §17.6 考试进行中:显示当前得分与剩余时长(过程化可见性);不显示及格线。
@@ -8195,7 +8238,7 @@ const state = {
     // 旧值 10 会被 fitMul 罚掉约 29% 能力,而当时 fit 没有任何提升途径(9 件道具 / 强化训练 4 色都不含 fit)
     // → 玩家被系统性压制且无法自救。真实模型 fit 全在 70~79(§3.1 设计属性第 8 位),只有玩家是异类。
     // 将来实装「伪装/过拟合 payoff」(§16.8)时,再把初值调回 10~25 并补「↑fit 对齐」「↓fit 退烧」两件道具。
-    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 70, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 30, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,   // 标榜的真实模型名(未上架 = null)
     price: 0,            // 自定售价(刀乐 / 百万 tokens)
     pool: 'standard',    // 号池档位(v1 占位)
@@ -8288,7 +8331,8 @@ function loadGame() {
       // 拟合初值迁移(2026-10-03):旧默认 fit=10 会被 fitMul 罚掉约 29% 能力,而当时无任何提升途径。
       // 当前版本没有任何代码能修改玩家 fit(道具/强化训练/编辑器都不碰它),所以 fit===10 只可能来自旧默认值,
       // 不会误伤玩家操作 —— 将来补了 fit 道具后删掉本段迁移。
-      if (state.relay.ability.fit === 10) state.relay.ability.fit = 70;
+      // §22:拟合有涨落途径后,旧档迁移目标从 70 改为 30(与全新档一致)
+      if (state.relay.ability.fit === 10) state.relay.ability.fit = 30;
       // 经营 v1 迁移:老存档(无 dollars)的 reputation=50 是旧稿初值,按 §14 重置
       if (data.relay.dollars === undefined) {
         state.relay.reputation = 1;
@@ -8394,7 +8438,7 @@ function resetGame() {
   state.relay = {
     // 中转站:模型养成 + 经营 v1。设计文档 §2 / §14。
     // 拟合初值 70(对齐默认 state;2026-10-03 从 10 改来,原因见 state 定义处)
-    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 70, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
+    ability: { reasoning: 5, longCtx: 2, speed: 5, knowledge: 5, fit: 30, multimodal: 10, instruct: 5, params: 5, toolCall: 5 },
     listedModel: null,
     price: 0,
     pool: 'standard',
