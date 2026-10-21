@@ -4611,14 +4611,16 @@ function drawTrainPage(x, y, w, h) {
   drawRadar(x + w * 0.26, y + 176 + radarR, radarR, A, their);
 
   // 右:训练道具卡列表(沿用原鞭子卡样式:圆角槽 + 左图标块 + 名 + 描述;点=买并用)
-  const listX = x + w * 0.50, listW = w * 0.48, gap = 8;
-  const startY = y + 66;
+  // §19.15(2026-10-21 星光「强化训练的按钮可以大一点」):卡片加高 + 字号抬一档 + 右侧加「使用」按钮区,
+  //   让「这张卡能点」这件事一眼可见(原来整卡是热区但没有按钮观感,像只读列表)。
+  const listX = x + w * 0.50, listW = w * 0.48, gap = 10;
+  const startY = y + 68;
   const n = TRAIN_ITEMS.length;
-  const cardH = Math.max(40, Math.min(60, ((y + h - 12) - startY - gap * (n - 1)) / n));
-  const head = makeText('训练道具（点开使用）', { size: 14, color: '#5a4632', weight: 'bold' });
-  head.x = listX; head.y = y + 42;
+  const cardH = Math.max(48, Math.min(76, ((y + h - 12) - startY - gap * (n - 1)) / n));
+  const head = makeText('训练道具（点卡片使用）', { size: 15, color: '#5a4632', weight: 'bold' });
+  head.x = listX; head.y = y + 40;
   panelContentArea.addChild(head);
-  const iconSz = Math.min(36, cardH - 10);
+  const iconSz = Math.min(44, cardH - 12);   // §19.15 图标块同步放大
   for (let i = 0; i < n; i++) {
     const it = TRAIN_ITEMS[i];
     const cy = startY + i * (cardH + gap);
@@ -4639,29 +4641,49 @@ function drawTrainPage(x, y, w, h) {
     card.on('pointerdown', (e) => { e.stopPropagation(); if (useTrainItem(it)) layoutScreenPanel(); });
     panelContentArea.addChild(card);
     const tx = listX + 8 + iconSz + 10;
-    const nm = makeText(it.name, { size: 14, color: maxed ? '#8a8278' : '#3a2f22', weight: 'bold' });
-    nm.x = tx; nm.y = cy + cardH * 0.10;
+    const nm = makeText(it.name, { size: 16, color: maxed ? '#8a8278' : '#3a2f22', weight: 'bold' });
+    nm.x = tx; nm.y = cy + cardH * 0.08;
     panelContentArea.addChild(nm);
-    const costStr = inSession ? ('闭关 ' + Math.max(0, Math.ceil(T.session.remainMin)) + 'min')
-      : (maxed ? '已学到肚子里了'
-        : (trainPriceText(trainItemPrice(it.key)) + ' · ' + it.ap + '算力'));
-    const cost = makeText(costStr, { size: 12, color: maxed ? '#8a8278' : '#7a5a2a', weight: 'bold' });
+    // §19.15:消耗必须**写清「消耗」二字**(星光要求)——原来只写「$1.20 · 8算力」,玩家得自己猜哪是钱哪是点数。
+    //   有闭关时只显示剩余分钟数(此时不再扣费,详见 useTrainItem 的 session 分支)。
+    const btnW = Math.min(76, listW * 0.26);   // 右侧「使用」按钮区宽
+    const costStr = inSession ? ('闭关中 剩 ' + Math.max(0, Math.ceil(T.session.remainMin)) + ' 分钟')
+      : (maxed ? '已练到头'
+        : ('消耗 ' + trainPriceText(trainItemPrice(it.key)) + ' + ' + it.ap + ' 算力'));
+    const cost = makeText(costStr, { size: 13, color: maxed ? '#8a8278' : '#7a5a2a', weight: 'bold' });
     cost.anchor.set(1, 0);
-    cost.x = listX + listW - 10; cost.y = cy + cardH * 0.10;
+    cost.x = listX + listW - 10 - btnW - 8; cost.y = cy + cardH * 0.10;
     panelContentArea.addChild(cost);
     const gain = Object.keys(it.rate).map((k) => {
       const dynamicGain = (100 - A[k]) * it.rate[k] * trainGainMul();
       return (ATTR_CN[k] || k) + '+' + dynamicGain.toFixed(1);
     }).join(' ');
-    const gainT = makeText(maxed ? '再买也不涨了' : ('得到 ' + gain), { size: 11, color: maxed ? '#8a8278' : '#2a7a3a' });
-    gainT.x = tx; gainT.y = cy + cardH * 0.42;
+    const gainT = makeText(maxed ? '再买也不涨了' : ('得到 ' + gain), { size: 12, color: maxed ? '#8a8278' : '#2a7a3a' });
+    gainT.x = tx; gainT.y = cy + cardH * 0.40;
     panelContentArea.addChild(gainT);
     let riskStr = '代价 压力+' + it.pres + (it.kind === 'session' ? (' · 训练需' + it.duraMin + 'min') : '');
     if (it.need) { for (const k in it.need) { if (A[k] < it.need[k]) riskStr = '🔒 需' + (ATTR_CN[k] || k) + '≥' + it.need[k]; } }
     if (maxed) riskStr = '已练到头 · 买过 ' + trainBoughtCount(it.key) + '/' + it.cap + ' 次';
-    const riskT = makeText(riskStr, { size: 11, color: maxed ? '#8a8278' : '#a05a2a' });
-    riskT.x = tx; riskT.y = cy + cardH * 0.66;
+    const riskT = makeText(riskStr, { size: 12, color: maxed ? '#8a8278' : '#a05a2a' });
+    riskT.x = tx; riskT.y = cy + cardH * 0.64;
     panelContentArea.addChild(riskT);
+    // §19.15:右侧「使用」按钮 —— 让「能点」这件事一眼可见(整卡仍是热区,这里只是视觉 + 独立命中区)
+    const bH = Math.min(34, cardH - 18), bY = cy + (cardH - bH) / 2, bX = listX + listW - btnW - 8;
+    const btnG = new PIXI.Graphics();
+    const bCol = maxed || !usable ? 0xc4b8a8 : 0xd4a574;
+    btnG.lineStyle(2, bCol, 0.95);
+    btnG.beginFill(maxed || !usable ? 0xdcd8ce : 0xf5d9a8, 0.98);
+    btnG.drawRoundedRect(bX, bY, btnW, bH, 8);
+    btnG.endFill();
+    btnG.eventMode = 'static';
+    btnG.cursor = maxed || !usable ? 'default' : 'pointer';
+    btnG.hitArea = new PIXI.Rectangle(bX, bY, btnW, bH);
+    btnG.on('pointerdown', (e) => { e.stopPropagation(); if (useTrainItem(it)) layoutScreenPanel(); });
+    panelContentArea.addChild(btnG);
+    const bTxt = makeText(inSession ? '进行中' : (maxed ? '已满' : '使用'),
+      { size: 14, color: maxed || !usable ? '#8a8278' : '#5a3a12', weight: 'bold', anchor: 0.5 });
+    bTxt.x = bX + btnW / 2; bTxt.y = bY + bH / 2;
+    panelContentArea.addChild(bTxt);
   }
 
   // ===== §17.6 第二步:考试中的「限时提示」渲染(点选加分)=====
@@ -7296,7 +7318,8 @@ function layoutTuneTrainBtn() {
   g.drawRoundedRect(4, 12, 3, bh - 24, 1.5); g.endFill(); // 左侧细金条点缀
   const label = makeText('强化训练', { size: 16, color: can ? '#f0dcae' : '#8a8073', weight: 'bold' });
   label.x = 16; label.y = 9;
-  const cost = makeText('进入 ' + GAME_CFG.AP_COST + '算力 · ' + formatNum(gameStartTokenCost()) + ' token', { size: 11, color: can ? '#c9b892' : '#7d7466' });
+  // §19.15(星光「写清楚进入消耗」):原来「进入 2算力 · 12.0K token」看不出是要扣掉的,补「消耗」+ 「开局」。
+  const cost = makeText('消耗 ' + GAME_CFG.AP_COST + ' 算力 + ' + formatNum(gameStartTokenCost()) + ' token 开局', { size: 12, color: can ? '#c9b892' : '#7d7466' });
   cost.x = 16; cost.y = 33;
   btn.addChild(g, label, cost);
   btn.x = bx; btn.y = by;
@@ -7386,7 +7409,7 @@ function gameTallyLabel(k) {
 // 2026-10-06 由「三行/竖排」压成单行 —— 横屏 375px 高,顶部没有第二行的位置(见 buildTuneGameLayer 注释)。
 function trainResLine() {
   return '算力 ' + (state.relay.train.ap | 0) + '/' + TRAIN_CFG.AP_MAX +
-    ' · token ' + formatNum(state.tokens) + ' · 每步 -' + formatNum(gameMoveTokenCost());
+    ' · token ' + formatNum(state.tokens) + ' · 每步消耗 ' + formatNum(gameMoveTokenCost());
 }
 function movesColor(n) { return n <= 3 ? '#ff6a4a' : (n <= 8 ? '#ffb44a' : '#ffe9c4'); }   // §19.13 步数紧张度配色
 // §19.13:维度数值的「放大→回落」脉冲。纯视觉:只改 scale/alpha,不碰 tally 与属性值。

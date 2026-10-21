@@ -922,6 +922,14 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
     srcJ.includes('const cols = (gameState.mode && gameState.mode.colors) || [];'));
   ok('小屏弹窗字号增益 1.15 + 三内容弹窗上限放大',
     (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
+  // §19.15 训练页按钮放大 + 消耗写明(2026-10-21 星光:「按钮可以大一点」「写清楚进入消耗」)
+  ok('道具卡放大(高 48~76 / 字号 16-13-12 / 图标 44)',
+    srcJ.includes('Math.max(48, Math.min(76,') && srcJ.includes('Math.min(44, cardH - 12)') && srcJ.includes("{ size: 16, color: maxed ? '#8a8278' : '#3a2f22'"));
+  ok('卡片右侧有独立「使用」按钮(视觉+热区)',
+    srcJ.includes("inSession ? '进行中' : (maxed ? '已满' : '使用')") && srcJ.includes('btnG.hitArea = new PIXI.Rectangle(bX, bY, btnW, bH)'));
+  ok('道具消耗写明「消耗 $X + Y 算力」', srcJ.includes("('消耗 ' + trainPriceText(trainItemPrice(it.key)) + ' + ' + it.ap + ' 算力')"));
+  ok('开局消耗写明「消耗 N 算力 + M token 开局」', srcJ.includes("'消耗 ' + GAME_CFG.AP_COST + ' 算力 + '") && srcJ.includes("' token 开局'"));
+  ok('每步消耗写明「每步消耗 N」', srcJ.includes("' · 每步消耗 ' + formatNum(gameMoveTokenCost())"));
 }
 
 // ── [20] 相似度判定:最近邻相称性 / 有效相似不饱和 / 相称价随 cap 单调 ─────────
