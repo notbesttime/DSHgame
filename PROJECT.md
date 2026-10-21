@@ -6,13 +6,13 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-21 实测 8702 行 / 429KB,含少量 CSS/HTML)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-21 实测 8712 行 / 430KB,含少量 CSS/HTML)
 ├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
-├── check_all.py           ★ 一条龙自检:构建 → 语法 → 283 项断言 → 30 天仿真 → dist(失败即停)
+├── check_all.py           ★ 一条龙自检:构建 → 语法 → 286 项断言 → 30 天仿真 → dist(失败即停)
 ├── make_sfx.py            ★ 四个操作音效的程序化合成器(点击/购买/挥鞭/消除;改音色重跑)
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
@@ -65,7 +65,7 @@ DSHgame/
 ## 常用命令
 
 ```bash
-python check_all.py        # ★ 一条龙自检:构建→语法→283项断言(42+20+221)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
+python check_all.py        # ★ 一条龙自检:构建→语法→286项断言(42+20+224)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
 python sim/subsidy_scan.py --days 30,90,180  # ★ 补贴定价剂量曲线(RATE×窗口×3种子;§8.2)
 python sync_exam_text.py   # ★ 考试文案同步:`--check` 只报告,默认写入模板(改《考试文案池.md》后跑)
 python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
@@ -197,12 +197,12 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
   那条「跑分线」**是同一条线**,它纹丝不动是必然的、不是"对照成立"的证据。
   真正成组的对照只有 `LIST_POLICY=sim` 这一组,D30~D180 的完整数据见本节上方表格。
 
-### 自检体系(2026-10-12 搭好,2026-10-20 扩;全链 283 项 = `python check_all.py` 的 42+20+221)
+### 自检体系(2026-10-12 搭好,2026-10-20 扩;全链 286 项 = `python check_all.py` 的 42+20+224)
 
 | 层 | 手段 | 抓什么 |
 |---|---|---|
 | 构建 | `node check_syntax.js` | 语法 / `ASSETS` key 拼错 / 素材缺失 |
-| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(221,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅[17]/发布确认[18]/UI优化[19]/相似度[20]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
+| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(224,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅[17]/发布确认[18]/UI优化[19]/相似度[20]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
 | 扫描 | `sim/tune_users_scan.js`、`sim/tune_gouge_scan.js` | 系数取值 + 「两旋钮一起扫」的交叉对照 |
 | 端到端 | `sim/startup_loop.js`(日表 + 汇总 + 平账) | 闭环走没走通、平没平账、瓶颈在哪条腿 |
 | 界面 | `local-ui-verify`(Edge + CDP,`uidiag.js`) | 真实产物渲染 / JS 异常 / **canvas 文案宽度** |
@@ -688,6 +688,18 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
 ## 仓库状态与提交
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
+
+### 2026-10-21 §19.14b 结算卡死真因:ticker 裸读 gameState(二次反馈「还是会卡住」)
+
+- §19.14 判断错层(以为是 pointerdown 里摧毁事件目标),延帧重建**没修好**。
+- **真因**:§19.13 加的 `updateTallyPulse` 由**主 ticker 每帧**调用,里面裸读 `gameState.mode.colors[i]`;
+  `settleGame()` 置 null 后下一帧抛 TypeError ⇒ **PIXI ticker 整条终止** ⇒ 画面冻结+点击全无响应(永久假死)。
+- 为什么兜底的 `!tuneGameTallyTexts.length` 挡不住:`layoutTuneScene` 延帧才清数组,这期间它是旧的非空数组。
+- 修:`if (!gameState || !tuneGameTallyTexts || ...) return;` + `const cols = (gameState.mode && gameState.mode.colors) || [];`;
+  同类加固 `gameRefreshHud()` 开头补 `if (!gameState) return;`(会被坠落 setTimeout 调到)。
+- 通则:**ticker/rAF/setTimeout 里碰全局状态一律按可空处理**(抛异常=整条循环挂,不是画错一帧);
+  **判空要看真正被解引用的那个变量**,不是旁边那个。
+- 断言 [19] +3;变异 M9/M10 全抓;全链 42+20+**224**=**286**。
 
 ### 2026-10-21 §19.14 结算卡死修复 + 方块重力坠落
 

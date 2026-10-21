@@ -7392,10 +7392,17 @@ function movesColor(n) { return n <= 3 ? '#ff6a4a' : (n <= 8 ? '#ffb44a' : '#ffe
 // §19.13:维度数值的「放大→回落」脉冲。纯视觉:只改 scale/alpha,不碰 tally 与属性值。
 // 用主 ticker 驱动(不新开 rAF),关场景/无文本时直接 return。
 function updateTallyPulse() {
-  if (!tuneGameTallyTexts || !tuneGameTallyTexts.length) return;
+  // ⚠️ 必须有 `!gameState` 判空(2026-10-21 卡死真因):
+  //   结算跑 settleGame() 会把 gameState 置 null,而本函数由**主 ticker 每帧**调用;
+  //   旧版这里直接读 gameState.mode.colors[i] ⇒ 一帧内抛 TypeError ⇒ **PIXI ticker 整条挂掉**
+  //   (画面冻结 + 点击全部无响应 = 玩家看到的「卡死」,而且是永久性的,连重建都等不到)。
+  //   注意:layoutTuneScene 重建前 tuneGameTallyTexts 仍是旧数组,长度非 0,靠它挡不住。
+  if (!gameState || !tuneGameTallyTexts || !tuneGameTallyTexts.length) return;
   const now = performance.now();
+  const cols = (gameState.mode && gameState.mode.colors) || [];
   for (let i = 0; i < tuneGameTallyTexts.length; i++) {
-    const k = gameState.mode.colors[i];
+    const k = cols[i];
+    if (k === undefined) continue;
     const p = tallyPulse[k];
     const tl = tuneGameTallyTexts[i];
     if (!p || !tl || tl.destroyed) continue;
@@ -7407,7 +7414,10 @@ function updateTallyPulse() {
   }
 }
 function gameRefreshHud() {
-  if (tuneGameMovesText) {
+  // §19.14b:同样要判空 —— 结算后 gameState 为 null,而这些文本引用可能还没被重建替换掉。
+  //   任何「可能被延时/ticker 调到」的函数,都按可能为 null 处理。
+  if (!gameState) return;
+  if (tuneGameMovesText && !tuneGameMovesText.destroyed) {
     tuneGameMovesText.text = '剩余 ' + gameState.moves + ' 步';
     tuneGameMovesText.style.fill = movesColor(gameState.moves);
   }

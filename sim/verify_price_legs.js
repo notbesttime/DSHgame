@@ -913,6 +913,13 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('坠落按 fromR→toR 补间,新生成从棋盘上方掉入',
     srcJ.includes('const startP = fromR >= 0 ? tuneTilePos(fromR, c)') && srcJ.includes('gtween(tile, { x: toP.x + cell / 2, y: toP.y + cell / 2 }, DUR)'));
   ok('坠落前取消该格旧 tween(防互扯)', srcJ.includes('function cancelTweensOf(target)') && srcJ.includes('cancelTweensOf(tile);'));
+  // §19.14b 卡死真因:ticker 每帧调的 updateTallyPulse 裸读 gameState ⇒ 结算后抛 TypeError ⇒ PIXI ticker 挂掉
+  ok('ticker 路径函数对 gameState 判空(结算后不炸 ticker)',
+    srcJ.includes('if (!gameState || !tuneGameTallyTexts || !tuneGameTallyTexts.length) return;'));
+  ok('gameRefreshHud 判空(延时/ticker 调到时不炸)',
+    /function gameRefreshHud\(\) \{[\s\S]{0,320}?if \(!gameState\) return;/.test(srcJ));
+  ok('updateTallyPulse 不裸读 gameState.mode',
+    srcJ.includes('const cols = (gameState.mode && gameState.mode.colors) || [];'));
   ok('小屏弹窗字号增益 1.15 + 三内容弹窗上限放大',
     (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
 }
