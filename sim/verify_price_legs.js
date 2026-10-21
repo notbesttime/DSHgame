@@ -938,7 +938,13 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('训练推高拟合度(useTrainItem 调 fitDrift)', srcJ.includes('if (item.fitDrift) fitDrift(item.fitDrift);'));
   ok('空闲回落只收超出最优点的部分(欠拟合不会自动变好)',
     srcJ.includes('if (a.fit <= CAP_FIT_OPT) return 0;') && srcJ.includes('Math.min(amount, a.fit - CAP_FIT_OPT)'));
-  ok('考试结算额外回落 4 点(考试=泛化检验)', srcJ.includes('fitRelaxTowardOpt(TRAIN_CFG.FIT_EXAM_RELIEF)'));
+  // §22-A4(星光定):惩罚 0.35→0.18;考试改为**按偏离度成比例**双向回拉
+  ok('拟合惩罚降到 0.18(欠拟合开局不再致命)', srcJ.includes('const CAP_FIT_PENALTY = 0.18;'));
+  ok('考试按比例双向回拉(越远离 70 给得越多)',
+    srcJ.includes('function fitPullTowardOpt(pull)') && srcJ.includes('return fitDrift(-dev * Math.max(0, Math.min(1, pull)));'));
+  ok('考试回拉单调:80 减后(76.5)仍比 75 减后(73.25)离 70 更远',
+    (() => { const sbF = makeSim(20261021); const RF = sbF.state.relay; RF.ability.fit = 80; sbF.fitPullTowardOpt(0.35); const a80 = RF.ability.fit;
+      RF.ability.fit = 75; sbF.fitPullTowardOpt(0.35); const a75 = RF.ability.fit; return a80 > a75 && Math.abs(a80 - 76.5) < 0.01; })());
   ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
     srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));
   // §22b 购买概览显示拟合度变化(星光:「购买的时候概览增长拟合度」)

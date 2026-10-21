@@ -1105,7 +1105,10 @@ const CAP_MM_W_MID = 0.04;      // 多模态 40–60(文图/文图视):最小
 const CAP_MM_W_HIGH = 0.13;     // 多模态 >60(文图视PDF):比 LOW 略高一点
 const CAP_KNOW_RANGE = 0.25;   // 知识乘区 ±25% → 0.75~1.25
 const CAP_FIT_OPT = 70;        // 拟合最优点
-const CAP_FIT_PENALTY = 0.35;  // 两端最大扣 35%
+// §22-A4(2026-10-21 星光定):两端最大扣 **35% → 18%**。
+//   理由:诊断证明早期玩家 30 天买不起任何训练道具(见 §22-A),fit=30 的 28% 降幅会锁死经济;
+//   削到 18% 后 fit=30 只掉约 14%,「欠拟合有代价但不致命」,同时仍能让 70 与两端有可感知差距。
+const CAP_FIT_PENALTY = 0.18;  // 两端最大扣 18%(原 0.35)
 const CAP_FIT_EXP = 1.2;
 const CAP_NORM = 1.25;         // 归一化:满配正好 100
 
@@ -1551,7 +1554,11 @@ const TRAIN_CFG = {
   // 设计依据见《中转站设计.md》§9/§585:「训练方法给 Δ属性向量 + Δ拟合,玩家自己决定何时收手」。
   // 拟合度是**策略刻度**不是永久加成:练单一维度推高它(过拟合→伪装流),均衡练/打考试/空闲把它拉回 70。
   FIT_DECAY_PER_GAME_H: 1.2,    // 空闲时每小时向 CAP_FIT_OPT 回落 1.2 点(只回落超出部分)
-  FIT_EXAM_RELIEF: 4,           // 每场考试结算额外回落(考试=泛化检验,现实里就是在防过拟合)
+  // §22-A4 考试回拉(星光定):向最优点收敛,**离 70 越远拉得越多**,且保证「80 减少后仍比 75 减少后离 70 更远」。
+  //   用「按比例收缩偏离量」实现:`newFit = 70 + (fit-70) × (1 - FIT_EXAM_PULL)` ——
+  //   偏离 10 → 收 3.5、偏离 5 → 收 1.75(远处拉得多),且 76.5 > 73.25(单调不会拉过头)。
+  //   对比固定步长(-4)的好处:欠拟合 30 时能一次拉回 14 点(不是永远 4 点),过拟合 95 时也有力。
+  FIT_EXAM_PULL: 0.35,          // 每场考试把「偏离最优点的量」收缩 35%
   // 道具涨价(2026-10-05 定稿):同一件反复买会越来越贵 —— 把「随手刷的日常品」压回「偶尔买的达标工具」。
   //   第 n 次单价 = cost × (1 + PRICE_ESC × (n-1));n 取「涨价计数」priceCount(会衰减)。
   //   硬上限另看 bought(只增不减):衰减只让价格回落,不让买满的又能再买。
@@ -2910,6 +2917,15 @@ function fitDrift(delta) {
   a.fit = Math.max(0, Math.min(100, a.fit + delta));
   return a.fit - before;
 }
+// §22-A4 考试回拉:把「偏离最优点的量」按比例收缩 —— 双向(欠拟合往上涨、过拟合往下降),
+//   且**离 70 越远给得越多**(按比例):偏离 40 → 收 14;偏离 25 → 收 8.75;偏离 10 → 收 3.5。
+//   单调性:80 → 70+10×0.65=76.5,75 → 70+5×0.65=73.25,76.5 > 73.25 ✓(80 减后仍比 75 减后离 70 更远)。
+function fitPullTowardOpt(pull) {
+  const a = state.relay.ability;
+  const dev = a.fit - CAP_FIT_OPT;
+  if (Math.abs(dev) < 0.01) return 0;
+  return fitDrift(-dev * Math.max(0, Math.min(1, pull)));
+}
 function fitRelaxTowardOpt(amount) {
   const a = state.relay.ability;
   if (a.fit <= CAP_FIT_OPT) return 0;
@@ -3513,8 +3529,9 @@ function settleExam() {
   const passed = score >= passLine;
   const retakes = T.examRetakes[idx] || 0;
   T.examScores[idx] = Math.round(score);
-  // §22:考试 = 泛化检验 ⇒ 每场额外把拟合度拉回最优点(现实里做 eval 就是在发现过拟合)
-  fitRelaxTowardOpt(TRAIN_CFG.FIT_EXAM_RELIEF);
+  // §22-A4(星光定):考试 = 泛化检验 ⇒ 按**偏离度成比例**把拟合度拉向最优点:
+  //   低于 70 会往上涨、高于 70 会往下降,且离 70 越远收缩得越多(见 fitPullTowardOpt)。
+  fitPullTowardOpt(TRAIN_CFG.FIT_EXAM_PULL);
   T.examLastGrade[idx] = score;
   // 等级映射(模糊信号第 1 层):按「得分 / 隐藏阈值」的比值分档,不公开分界
   const rr = score / passLine;
