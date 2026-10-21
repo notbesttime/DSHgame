@@ -118,6 +118,11 @@ function tween(target, delta, duration, onComplete) {
   tweens.push(tw);
   return tw;
 }
+// §19.14:同一对象上挂两条同属性 tween 会互相撕扯(都把「当前值」当起点,又各按自己的 delta 写)。
+// 坠落动画要频繁重设位置 ⇒ 重设前先把该对象上的旧 tween 清掉。
+function cancelTweensOf(target) {
+  for (let i = tweens.length - 1; i >= 0; i--) if (tweens[i].target === target) tweens.splice(i, 1);
+}
 function updateTweens(dt) {
   for (let i = tweens.length - 1; i >= 0; i--) {
     const tw = tweens[i];
@@ -3638,16 +3643,23 @@ function findGroup(board, r0, c0) {
   return out;
 }
 // 消除 + 重力下落 + 顶部补新
+// §19.14(2026-10-21):除了改棋盘,还返回每列落位映射,让视觉层做「上→下坠落」而不是整块重绘。
+// moves: [{ c, toR, fromR }],fromR = -1 表示顶部新生成的格子(从棋盘上方掉进来)。
 function clearAndDrop(board, cells) {
   for (const [r, c] of cells) board[r][c] = -1;
+  const moves = [];
   for (let c = 0; c < GAME_CFG.COLS; c++) {
     let write = GAME_CFG.ROWS - 1;
     for (let r = GAME_CFG.ROWS - 1; r >= 0; r--) {
-      if (board[r][c] >= 0) { board[write][c] = board[r][c]; if (write !== r) board[r][c] = -1; write--; }
+      if (board[r][c] >= 0) {
+        board[write][c] = board[r][c];
+        if (write !== r) { board[r][c] = -1; moves.push({ c, toR: write, fromR: r }); }
+        write--;
+      }
     }
-    for (let r = write; r >= 0; r--) board[r][c] = randColor();
+    for (let r = write; r >= 0; r--) { board[r][c] = randColor(); moves.push({ c, toR: r, fromR: -1 }); }
   }
-  return board;
+  return { board, moves };
 }
 // 结算:每维按 (100-当前值) × min(1,点数/基准) × 权重 × trainGainMul() 涨
 function settleGame() {
@@ -6911,6 +6923,8 @@ let tuneSelectedItem = null;
 let tuneTrainBtn = null;
 let tuneGameLayer = null;
 let tuneGameShakeBase = { x: 0, y: 0 };   // §19.13 抖动基准坐标
+let tuneGameSettling = false;             // §19.14 结算中(防重入 + 延后摧毁)
+let tuneGameRebuildQueued = false;        // §19.14 重建排队(同帧多次重建合并成一次)
 // 训练页活动引用(电脑面板「训练」页原地刷新用;抽屉不碰)
 let tunePropLive = null;
 // 疗程闭关:人物自动落座课桌 + 场景内进度提示
@@ -7449,15 +7463,44 @@ function gameClearAt(r, c) {
   const before = board.map((row) => row.slice());
   const clearedSet = {};
   for (const [rr, cc] of cells) { clearedSet[rr + ',' + cc] = 1; gamePopTile(rr, cc); gameBurst(rr, cc); }
-  clearAndDrop(board, cells);
+  const dropMoves = clearAndDrop(board, cells).moves;
   gameRefreshHud();
+  // §19.14:被消的格子先全部隐藏(等坠落接管),其余格子按落位映射做「上→下」坠落动画。
   setTimeout(() => {
+    const cell = tuneGameGeo.cell;
+    // 1) 清场:被消除的格子隐藏;其它格子的**最终色**先不写(下面按 moves 摆位)
     for (let rr = 0; rr < GAME_CFG.ROWS; rr++) for (let cc = 0; cc < GAME_CFG.COLS; cc++) {
-      // 变了 或 被消过 的格子都要重画(否则消后补到同色的格子会停在"弹飞+透明"的空洞态)
-      if (before[rr][cc] !== board[rr][cc] || clearedSet[rr + ',' + cc]) gameTileSet(rr, cc, board[rr][cc], true);
+      if (clearedSet[rr + ',' + cc]) { const tl = tuneGameTiles[rr][cc]; tl.visible = false; tl.alpha = 1; tl.scale.set(1); }
     }
-    tuneGameAnimating = false;
-    if (gameState && gameState.moves <= 0) { gameState.over = true; rebuildTuneGameLayer(); }
+    // 2) 先按「源位置」把方块摆好(下落前的样子):fromR >= 0 用源行;fromR = -1(新生成)从棋盘上方掉入
+    const DUR = 0.34;   // 坠落时长(秒),比消除的 0.18 长一点,能看清
+    const seen = {};
+    for (const mv of dropMoves) {
+      const { c, toR, fromR } = mv;
+      const tile = tuneGameTiles[toR][c];
+      if (!tile) continue;
+      seen[toR + ',' + c] = 1;
+      tile.visible = true;
+      cancelTweensOf(tile);   // 清掉弹飞/旧坠落残留,避免与本次 gtween 互扯
+      gameTileDraw(tile, board[toR][c]);
+      tile.pivot.set((cell - 4) / 2, (cell - 4) / 2);
+      const toP = tuneTilePos(toR, c);
+      const startP = fromR >= 0 ? tuneTilePos(fromR, c)
+        : { x: toP.x, y: tuneTilePos(0, c).y - cell * (toR + 1.2) };   // 屏幕上方逐层错开
+      tile.position.set(startP.x + cell / 2, startP.y + cell / 2);
+      tile.scale.set(1); tile.alpha = 1;
+      gtween(tile, { x: toP.x + cell / 2, y: toP.y + cell / 2 }, DUR);
+    }
+    // 3) 没进 moves 的格子(原地不动的)兜底重画,避免残留弹飞态
+    for (let rr = 0; rr < GAME_CFG.ROWS; rr++) for (let cc = 0; cc < GAME_CFG.COLS; cc++) {
+      if (seen[rr + ',' + cc] || clearedSet[rr + ',' + cc]) continue;
+      if (before[rr][cc] === board[rr][cc]) { const tl = tuneGameTiles[rr][cc]; tl.visible = true; tl.alpha = 1; tl.scale.set(1); }
+    }
+    // 4) 坠落结束再解锁输入(期间点击无效,避免棋盘与视觉错位)
+    setTimeout(() => {
+      tuneGameAnimating = false;
+      if (gameState && gameState.moves <= 0) { gameState.over = true; rebuildTuneGameLayer(); }
+    }, DUR * 1000 + 40);
   }, 180);
 }
 
@@ -7541,7 +7584,17 @@ function buildTuneGameLayer() {
   sg.lineStyle(2, 0xd4a574, 0.95); sg.beginFill(gameState.over ? 0x3a9a6a : 0xc4853a, 0.95);
   sg.drawRoundedRect(sbx, sby, sbw, sbh, 10); sg.endFill();
   sg.eventMode = 'static'; sg.cursor = 'pointer'; sg.hitArea = new PIXI.Rectangle(sbx, sby, sbw, sbh);
-  sg.on('pointerdown', (e) => { e.stopPropagation(); settleGame(); layoutTuneScene(); });
+  // §19.14(2026-10-21 星光「点击结算并退出会卡死」):**不能在 pointerdown 里摧毁自己**。
+  //   原来直接 settleGame() + layoutTuneScene() ⇒ 后者把 tuneGameLayer 连同正在派发事件的 sg 一起 destroy,
+  //   PIXI 在事件冒泡途中丢了目标,表现为整块 UI 变成死区(方块/结算都不再响应 = 卡死)。
+  //   改为:先锁输入(防重入) → 结算 → **下一帧**再重建(此时事件已派发完毕,销毁是安全的)。
+  sg.on('pointerdown', (e) => {
+    e.stopPropagation();
+    if (tuneGameSettling) return;
+    tuneGameSettling = true;
+    settleGame();
+    requestAnimationFrame(() => { tuneGameSettling = false; layoutTuneScene(); });
+  });
   layer.addChild(sg);
   const sl = makeText(gameState.over ? '结算' : '结算并退出', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
   sl.x = sbx + sbw / 2; sl.y = sby + sbh / 2; layer.addChild(sl);
@@ -7553,6 +7606,17 @@ function buildTuneGameLayer() {
   if (whipCursor) whipCursor.visible = false;
 }
 function rebuildTuneGameLayer() {
+  // §19.14:摧毁调色板/棋盘会连带销毁事件目标。若当前帧正在派发事件(例如步数用完那一刻的重建),
+  //   直接 destroy 可能让 PIXI 冒泡途中失去 target ⇒ 后续点击全失效。故延到下一帧。
+  const doRebuild = () => {
+    if (tuneGameLayer) { if (tuneGameLayer.parent) tuneScene.removeChild(tuneGameLayer); if (!tuneGameLayer.destroyed) tuneGameLayer.destroy({ children: true }); tuneGameLayer = null; }
+    buildTuneGameLayer();
+  };
+  if (tuneGameRebuildQueued) return;
+  tuneGameRebuildQueued = true;
+  requestAnimationFrame(() => { tuneGameRebuildQueued = false; doRebuild(); });
+}
+function rebuildTuneGameLayerNow() {
   if (tuneGameLayer) { tuneScene.removeChild(tuneGameLayer); if (!tuneGameLayer.destroyed) tuneGameLayer.destroy({ children: true }); tuneGameLayer = null; }
   tuneGameTiles = null; tuneGameFx = null; tuneGameMovesText = null; tuneGameResText = null; tuneGameTallyTexts = null;
   if (gameState) buildTuneGameLayer(); else layoutTuneScene();

@@ -902,7 +902,17 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('脉冲由主 ticker 驱动(不新开 rAF)', srcJ.includes('updateTallyPulse();') && srcJ.includes('function updateTallyPulse()'));
   ok('剩余步数 18→24px 且按紧张度配色', srcJ.includes("'剩余 ' + gameState.moves + ' 步', { size: 24") && srcJ.includes('function movesColor(n)'));
   ok('没步数/点孤块 → 抖动 + 拒绝音(不再静默 return)', srcJ.includes('function gameReject(reason)') && srcJ.includes("playSfx('reject')") && srcJ.includes("gameReject('moves')") && srcJ.includes("gameReject('group')"));
-  ok('拒绝音已注册到 SFX 与构建资源表', srcJ.includes("reject: 'sfx_reject'")),
+  ok('拒绝音已注册到 SFX 与构建资源表', srcJ.includes("reject: 'sfx_reject'"));
+  // §19.14 结算卡死 + 方块坠落(2026-10-21 星光:点结算会卡死 / 希望上方方块自由落体掉下填充)
+  ok('结算不在 pointerdown 里直接摧毁自己(防死区)',
+    srcJ.includes('if (tuneGameSettling) return;') && srcJ.includes('requestAnimationFrame(() => { tuneGameSettling = false; layoutTuneScene(); })'));
+  ok('重建统一延到下一帧(同帧多次合并)',
+    srcJ.includes('let tuneGameRebuildQueued = false;') && srcJ.includes('requestAnimationFrame(() => { tuneGameRebuildQueued = false; doRebuild(); })'));
+  ok('clearAndDrop 返回落位映射(moves)',
+    srcJ.includes('return { board, moves };') && srcJ.includes('moves.push({ c, toR: r, fromR: -1 })'));
+  ok('坠落按 fromR→toR 补间,新生成从棋盘上方掉入',
+    srcJ.includes('const startP = fromR >= 0 ? tuneTilePos(fromR, c)') && srcJ.includes('gtween(tile, { x: toP.x + cell / 2, y: toP.y + cell / 2 }, DUR)'));
+  ok('坠落前取消该格旧 tween(防互扯)', srcJ.includes('function cancelTweensOf(target)') && srcJ.includes('cancelTweensOf(tile);'));
   ok('小屏弹窗字号增益 1.15 + 三内容弹窗上限放大',
     (srcJ.match(/pg\.narrow \? 1\.15 : 1/g) || []).length >= 3 && srcJ.includes("0.9, 900)") && srcJ.includes("0.8, 720)"));
 }

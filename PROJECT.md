@@ -6,13 +6,13 @@ PixiJS v7.4.0 放置点击类网页游戏:点击赚取 token → 购买 GPU/散�
 
 ```
 DSHgame/
-├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-21 实测 8638 行 / 425KB,含少量 CSS/HTML)
+├── index_template.html    ★ 游戏源码(全部游戏逻辑,2026-10-21 实测 8702 行 / 429KB,含少量 CSS/HTML)
 ├── build.py               ★ 构建脚本:默认单文件 base64 内联 → index.html;`--dist` → dist/(哈希资源拆分)
 ├── index.html               构建产物(勿手改,重新生成)
 ├── dist/                    构建产物(勿手改,`python build.py --dist` 生成;网页托管用)
 ├── server.js              ★ 本地静态服务器(:8765,gzip + ETag 304 + 路径防护 + 目录补 index.html)
 ├── check_syntax.js        ★ 构建自检(语法 + ASSETS key + 素材文件存在性)
-├── check_all.py           ★ 一条龙自检:构建 → 语法 → 278 项断言 → 30 天仿真 → dist(失败即停)
+├── check_all.py           ★ 一条龙自检:构建 → 语法 → 283 项断言 → 30 天仿真 → dist(失败即停)
 ├── make_sfx.py            ★ 四个操作音效的程序化合成器(点击/购买/挥鞭/消除;改音色重跑)
 ├── PROJECT.md               本文件:工程现状、构建方式、踩过的坑
 ├── 中转站设计.md            中转站"养模型"玩法的设计草案(属性/公式/真实模型库/待商讨项),
@@ -65,7 +65,7 @@ DSHgame/
 ## 常用命令
 
 ```bash
-python check_all.py        # ★ 一条龙自检:构建→语法→278项断言(42+20+216)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
+python check_all.py        # ★ 一条龙自检:构建→语法→283项断言(42+20+221)→30天仿真→dist(失败即停;--skip-sim/--skip-dist 跳步)
 python sim/subsidy_scan.py --days 30,90,180  # ★ 补贴定价剂量曲线(RATE×窗口×3种子;§8.2)
 python sync_exam_text.py   # ★ 考试文案同步:`--check` 只报告,默认写入模板(改《考试文案池.md》后跑)
 python build.py            # 单文件模式:一切 base64 内联 → index.html(本体/离线分发用)
@@ -197,12 +197,12 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
   那条「跑分线」**是同一条线**,它纹丝不动是必然的、不是"对照成立"的证据。
   真正成组的对照只有 `LIST_POLICY=sim` 这一组,D30~D180 的完整数据见本节上方表格。
 
-### 自检体系(2026-10-12 搭好,2026-10-20 扩;全链 278 项 = `python check_all.py` 的 42+20+216)
+### 自检体系(2026-10-12 搭好,2026-10-20 扩;全链 283 项 = `python check_all.py` 的 42+20+221)
 
 | 层 | 手段 | 抓什么 |
 |---|---|---|
 | 构建 | `node check_syntax.js` | 语法 / `ASSETS` key 拼错 / 素材缺失 |
-| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(216,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅[17]/发布确认[18]/UI优化[19]/相似度[20]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
+| 单元 | `sim/verify_users.js`(42)、`sim/verify_gouge.js`(20)、`sim/verify_price_legs.js`(221,含考试[12]/公关[13]/文案池[14]/期待值[15]/说明弹层[16]/预警横幅[17]/发布确认[18]/UI优化[19]/相似度[20]) | **静默失效的闸门与死项** —— 不报错、不变慢,只会悄悄改平衡 |
 | 扫描 | `sim/tune_users_scan.js`、`sim/tune_gouge_scan.js` | 系数取值 + 「两旋钮一起扫」的交叉对照 |
 | 端到端 | `sim/startup_loop.js`(日表 + 汇总 + 平账) | 闭环走没走通、平没平账、瓶颈在哪条腿 |
 | 界面 | `local-ui-verify`(Edge + CDP,`uidiag.js`) | 真实产物渲染 / JS 异常 / **canvas 文案宽度** |
@@ -688,6 +688,17 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
 ## 仓库状态与提交
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
+
+### 2026-10-21 §19.14 结算卡死修复 + 方块重力坠落
+
+- **结算卡死根因**:`sg.on('pointerdown')` 里调 `settleGame()+layoutTuneScene()`,后者 destroy 掉
+  `tuneGameLayer`(含正在派发事件的 `sg` 自身)⇒ PIXI 冒泡途中失去目标 ⇒ 后续点击全落空(方块/结算都静默 return)= 死区。
+- **修法**:`tuneGameSettling` 锁 + **延到下一帧重建**;`rebuildTuneGameLayer` 同样延帧(`tuneGameRebuildQueued` 合并);
+  同步版另存 `rebuildTuneGameLayerNow()`。通则:**事件处理器里别摧毁自身**。
+- **重力坠落**:`clearAndDrop` 返回 `{board, moves:[{c,toR,fromR}]}`(`fromR=-1` = 顶部新生成);
+  视觉层按 moves 逐格 `gtween` 从源行补到目标行(0.34s),新块从棋盘上方错开高度掉入;坠落期锁输入。
+- 新增 `cancelTweensOf()`:同对象两条同属性 tween 会互扯(都以当前值为起点),摆位前先清。
+- 断言 [19] +5(结算不自杀/重建延帧/moves 映射/坠落补间/旧 tween 清理),全链 42+20+**221**=**283**。
 
 ### 2026-10-21 §21.3 相似度三次收紧 + 调教小游戏三项反馈(星光:「严格一点吧」+ 维度特效/步数/拒绝反馈)
 
