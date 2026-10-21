@@ -484,6 +484,9 @@ const SUMMARY_ONLY = !!process.env.SUMMARY_ONLY;
 // "摸到最优起步解"）；'sim' = 挑最像的（牺牲单价换信誉）。
 // ⚠️ 这条策略会决定信誉走向：相似度 <80 时 relayRepSettle 是「主跌」分支 → 信誉归零 → base 恒 2。
 const LIST_POLICY = process.env.LIST_POLICY || 'price';
+// §22-A 诊断结论(2026-10-21):TRAIN_PRIORITY 已移除 —— 实测「优先训练」把结果做得更差($1.16→$0.50)。
+//   真因不是决策优先级,而是**刀乐量级断层**:D30 累计刀乐 ≈ $1.16,而最便宜训练道具 $3 ⇒ 30 天买不起一件。
+//   ⇒ 拟合度在现经济下**没有任何可达的提升途径**,fit 初值 30 等于永久欠拟合。见设计 §22-A。
 
 // 调教小游戏（近似模型，见文件头「已知近似」）
 function playMiniGame(sb, bufferTok) {
@@ -570,6 +573,8 @@ function run(opts) {
       // 3) 瓶颈决策:卡产能 → tokens 买机器;卡客流 → 买训练道具 / 打调教
       const prod = prodNow(), dem = demandPerH() / 60;
       st.sellCap += demandPerH();   // 本游戏时可承载的卖出量(用于算「变现容量」)
+      // §22-A:优先保拟合度时,只要能力没到最优就先训练(把「欠拟合」当产能缺口同等对待)
+
       if (prod < dem * 0.999) {
         const p30 = sb.rtx3080Price(), pa = sb.a100Price();
         if (sb.state.tokens >= p30 && (p30 / 5 <= pa / 50 || sb.state.tokens < pa)) {
