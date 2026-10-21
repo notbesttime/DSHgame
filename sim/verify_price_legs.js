@@ -941,6 +941,13 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
   ok('考试结算额外回落 4 点(考试=泛化检验)', srcJ.includes('fitRelaxTowardOpt(TRAIN_CFG.FIT_EXAM_RELIEF)'));
   ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
     srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));
+  // §22b 购买概览显示拟合度变化(星光:「购买的时候概览增长拟合度」)
+  ok('道具卡概览行显示「拟合 X→Y」',
+    srcJ.includes("const fitPrevTxt = '  ·  拟合 ' + fitNow.toFixed(0) + '→' + fitNext.toFixed(0);"));
+  ok('越过最优 70 时代价行标「拟合将过优(掉能力)」并转紫',
+    srcJ.includes("'  ·  拟合将过优(掉能力)'") && srcJ.includes("fitNext > 70 && !maxed ? '#8a4ab8'"));
+  ok('概览行/代价行超宽自动缩(单行不换行)',
+    srcJ.includes('if (gainT.width > gainMaxW && gainT.width > 0) gainT.scale.set(gainMaxW / gainT.width);'));
 }
 
 // ── [20] 相似度判定:最近邻相称性 / 有效相似不饱和 / 相称价随 cap 单调 ─────────

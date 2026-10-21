@@ -4701,14 +4701,28 @@ function drawTrainPage(x, y, w, h) {
       const dynamicGain = (100 - A[k]) * it.rate[k] * trainGainMul();
       return (ATTR_CN[k] || k) + '+' + dynamicGain.toFixed(1);
     }).join(' ');
-    const gainT = makeText(maxed ? '再买也不涨了' : ('得到 ' + gain), { size: 12, color: maxed ? '#8a8278' : '#2a7a3a' });
+    // §22:概览行要带上**拟合度变化**(星光:「购买的时候概览增长拟合度」)——
+    //   玩家在买之前就要看见「练这一下会把拟合从 42 推到 49」,才知道自己在往过拟合走。
+    //   超过最优 70 时额外标「过拟合」提示(那一步开始掉能力,但隐蔽度上升 → 伪装流)。
+    const fitNow = A.fit;
+    const fitNext = Math.max(0, Math.min(100, fitNow + (it.fitDrift || 0)));
+    const fitPrevTxt = '  ·  拟合 ' + fitNow.toFixed(0) + '→' + fitNext.toFixed(0);
+    const gainT = makeText(maxed ? '再买也不涨了' : ('得到 ' + gain + fitPrevTxt),
+      { size: 12, color: maxed ? '#8a8278' : '#2a7a3a' });
     gainT.x = tx; gainT.y = cy + cardH * 0.40;
+    // 概览行变长(属性 + 拟合变化),窄屏/多属性道具会顶出卡片 ⇒ 超宽就按比例缩字号(不换行,单行制)
+    const gainMaxW = listX + listW - 10 - tx;
+    if (gainT.width > gainMaxW && gainT.width > 0) gainT.scale.set(gainMaxW / gainT.width);
     panelContentArea.addChild(gainT);
     let riskStr = '代价 压力+' + it.pres + (it.kind === 'session' ? (' · 训练需' + it.duraMin + 'min') : '');
     if (it.need) { for (const k in it.need) { if (A[k] < it.need[k]) riskStr = '🔒 需' + (ATTR_CN[k] || k) + '≥' + it.need[k]; } }
     if (maxed) riskStr = '已练到头 · 买过 ' + trainBoughtCount(it.key) + '/' + it.cap + ' 次';
-    const riskT = makeText(riskStr, { size: 12, color: maxed ? '#8a8278' : '#a05a2a' });
+    // §22:拟合度后果提示 —— 越过最优(70)会在代价行尾部标红字,提醒「这一下开始掉能力了」
+    if (!maxed && it.fitDrift && fitNext > 70) riskStr += '  ·  拟合将过优(掉能力)';
+    const riskT = makeText(riskStr, { size: 12, color: maxed ? '#8a8278' : (fitNext > 70 && !maxed ? '#8a4ab8' : '#a05a2a') });
     riskT.x = tx; riskT.y = cy + cardH * 0.64;
+    const riskMaxW = listX + listW - 10 - tx;
+    if (riskT.width > riskMaxW && riskT.width > 0) riskT.scale.set(riskMaxW / riskT.width);
     panelContentArea.addChild(riskT);
     // §19.15:右侧「使用」按钮 —— 让「能点」这件事一眼可见(整卡仍是热区,这里只是视觉 + 独立命中区)
     const bH = Math.min(34, cardH - 18), bY = cy + (cardH - bH) / 2, bX = listX + listW - btnW - 8;
