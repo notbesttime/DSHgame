@@ -540,12 +540,16 @@ console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重�
   const s6 = T6.examSession;
   ok('开考建立会话且 endH > startH', !!s6 && s6.endH > s6.startH, s6 ? (s6.startH + '→' + s6.endH) : 'null');
   const sc0 = s6.score;
-  for (let i = 0; i < 60; i++) { R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60); if (!T6.examSession) break; }
+  // §24b(2026-10-22 星光把 durationH 从 4~48 压到 1.0~3.2):原来硬编码跑 60 tick(=1 游戏时),
+  //   时长一变就「刚跑完就结算」⇒ ⑤⑨ 双双误报。改为**从会话自身反推**并只跑到一半,结算留给 ⑨。
+  const halfTicks = Math.max(8, Math.ceil((s6.endH - s6.startH) * 60 * 0.5));
+  for (let i = 0; i < halfTicks; i++) { R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60); if (!T6.examSession) break; }
   ok('考试期间分数随时间上涨(过程化,不是瞬间出结果)',
-    !T6.examSession ? true : T6.examSession.score > sc0, String(sc0.toFixed(2)));
+    !T6.examSession ? true : T6.examSession.score > sc0, sc0.toFixed(2) + ' → ' + (T6.examSession ? T6.examSession.score.toFixed(2) : 'settled'));
   // ⑤ 提示:考试中能生成限时提示
   const s7 = T6.examSession;
-  ok('考试中生成限时提示', !!s7 && (s7.hints || []).length > 0, s7 ? String((s7.hints||[]).length) : 'settled');
+  ok('考试中生成限时提示', !!s7 && (s7.hints || []).length > 0,
+    s7 ? String((s7.hints || []).length) : '会话已提前结算(halfTicks=' + halfTicks + ')');
   if (s7 && s7.hints && s7.hints.length) {
     const h = s7.hints[0];
     const area = { x: 0, y: 0, w: 1000, h: 600 };

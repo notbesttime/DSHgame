@@ -1566,6 +1566,8 @@ const TRAIN_CFG = {
   PRICE_DECAY_H: 240,           // 每 240 游戏时(=10 游戏天)做一次衰减
   PRICE_DECAY: 0.8,             // 涨价计数 ×0.8(只算游戏时;暂停/离线不衰减)
   // ===== 考试阶梯(§17.6,2026-10-16 拍板:主线 60 游戏天)=====
+// durationH 单位 = 游戏时,**1 游戏时 = 60 现实秒**(1 现实秒 = 1 游戏分钟)。  // §24b
+//   2026-10-22 星光:「考试时间也太长了,玩家等不了那么久无法操作的」⇒ 4~48 压到 1.0~3.2(= 60~192 现实秒)。
   // refCap  = 该节点的能力标定基准(按「正常练到该天」的能力,满配 100 钳顶);
   // passGrade = **隐藏阈值**(§17.6:不告诉玩家)。0.95~1.05 逐场收紧 ⇒ 上一场刚好过的人下一场要继续练。
   // tokenM  = 通过奖励的 token 基数(M);
@@ -1575,14 +1577,14 @@ const TRAIN_CFG = {
   // ⚠️ 考试 token 是 sim 供给大头 ⇒ 阶梯一改,四窗口基线必须重跑(§17.6)。
   EXAMS: [
     // passGrade = 隐藏阈值(得分/100 ≥ 此值即通过)。首考宽松(新手能起步),逐场收紧。
-    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.10, durationH: 4 },
-    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.20, durationH: 6 },
-    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.30, durationH: 8 },
-    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.40, durationH: 12 },
-    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 16 },
-    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 24 },
-    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 32 },
-    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 0.35, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 48, graduate: true },
+    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.10, durationH: 1.0 },
+    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.20, durationH: 1.2 },
+    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.30, durationH: 1.5 },
+    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.40, durationH: 1.8 },
+    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 2.0 },
+    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 2.4 },
+    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 2.7 },
+    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 0.35, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 3.2, graduate: true },
   ],
   // 重考(§17.6 拍板):7 游戏天后重考;通过奖励 ×0.7^(k-1) 递减(不归零)
   RETAKE_DELAY_DAYS: 7,
@@ -3065,7 +3067,7 @@ function startExam(idx) {
   // §17.6 第二步(作文比赛式):hints = 浮现的限时提示;点击给「本次分数 +N」与「属性 +δ」。
   // 分数只进本次考试(不进存档/不影响局外);属性是唯一带出局外的收益,且每场有总量上限防刷。
   T.examSession = { idx, startH: totalH, endH: totalH + (ex.durationH || 6), score: 0,
-                    clicks: 0, attrGain: 0, hints: [], hintSeq: 0, nextHintH: totalH + 0.3 };
+                    clicks: 0, attrGain: 0, hints: [], hintSeq: 0, nextHintH: totalH + 0.07 }   // §24b:首张卡 ≈4 秒(原 18 秒,考试总长才 60~192 秒);
   // §24:开考即进入考试场景(隐藏其它 UI),并给第一句内心戏
   T.examSession.thinkLine = '进考场了……先看题。';
   T.examSession.thinkUntilH = totalH + 3;
@@ -3099,7 +3101,8 @@ function examTick(totalH, gameHours) {
     if (!(totalH < (s.thinkUntilH || 0))) {
       // 签名是 examThinkLine(R, passed):内部用自增游标轮播,零随机(§17.9 铁律)
       s.thinkLine = examThinkLine(R, (s.score || 0) >= 60);
-      s.thinkUntilH = totalH + 2.5;
+      // §24b(星光:「不应该一直显示,应该说话的时候才显示」):说 ~6 游戏分(≈6 秒)后闭嘴,歇一会再想下一句
+      s.thinkUntilH = totalH + 0.1 + ((s.clicks || 0) % 3) * 0.03;
     }
     if (typeof layoutExamScene === 'function') layoutExamScene();
   }
@@ -3344,8 +3347,11 @@ function drawPublishConfirmBox(px, py, pw, ph) {
 //  · 不操作也能拿基础分(属性决定),挂机不会落榜 —— 但高分与额外属性要靠点选;
 //  · 档位越高:提示越密、存活越短、单条收益越高(importance 驱动)。
 const EXAM_HINT_CFG = {
-  INTERVAL_H: [0.45, 0.25],   // 生成间隔(游戏时):importance=0 → 0.45,=1 → 0.25
-  TTL_H: [1.1, 0.45],         // 存活时长(游戏时):importance 越高越短(越紧张)
+  // §24b(2026-10-22 星光「弹出的素材不会慢慢消失…也无法点击」):单位是游戏时,1 游戏时 = 60 现实秒。
+  //   旧值 0.45~0.25 = **每 27~15 秒才冒一张**、存活 66~27 秒 = 三分之一场考试都挂在那儿,
+  //   既没有《中国式家长》那种「灵光一闪要赶紧抓」的手速感,也显得卡「不消失」。
+  INTERVAL_H: [0.13, 0.075],  // 生成间隔:importance 0→0.13(≈8 秒) / 1→0.075(≈4.5 秒)
+  TTL_H: [0.22, 0.12],        // 存活时长:0→0.22(≈13 秒) / 1→0.12(≈7 秒),后 40% 淡出
   SCORE: [2, 6],              // 单条分数收益:按 importance 插值
   ATTR: [0.04, 0.18],         // 单条属性收益(点)
   ATTR_CAP_PER_EXAM: 6.0,     // 每场考试属性总上限(防刷):6 点 ≈ 一次大道具的量级
@@ -4867,7 +4873,8 @@ function drawTrainPage(x, y, w, h) {
   // 只画卡片本身;命中判定在 examHintClick(用同一套 area/x/y,坐标口径一致)。
   // §24:考试已在独立场景显示(openExamScene),面板内不再重复画卡片/提示
   const es = T.examSession;
-  if (es && es.hints && es.hints.length && !examSceneOpen && false) {
+  // §24b:场景没开时(例如存档重载时正卡在考试中)退回面板内渲染,不能彻底不画
+  if (es && es.hints && es.hints.length && !(typeof examSceneOpen !== 'undefined' && examSceneOpen)) {
     const totalH = (state.relay.news && state.relay.news.totalH) || 0;
     const area = { x: x, y: y, w: w, h: h };
     for (const hd of es.hints) {
@@ -7149,7 +7156,9 @@ let tuneSceneOpen = false;
 //   · 灵感卡放大 2× 铺在卷面上。
 const examScene = new PIXI.Container();
 examScene.visible = false;
-app.stage.addChildAt(examScene, app.stage.getChildIndex(layers.topbar));
+// ⚠️ 层级 = stage 最上层。原先 addChildAt(topbar 位置) 会让 topbar / 底部标签 / 榜单面板
+//   全部盖在考场上方并继续接收点击(2026-10-22 星光截图:上下 UI 仍在、点卡片没反应)。
+app.stage.addChild(examScene);
 let examSceneOpen = false;
 const examBgSprite = PIXI.Sprite.from(ASSETS.exam_bg);
 examScene.addChild(examBgSprite);
@@ -7171,6 +7180,13 @@ function openExamScene() {
   setProductionLayersVisible(false);
   if (relaySceneOpen) { relaySceneOpen = false; relayScene.visible = false; }
   if (tuneSceneOpen) { tuneSceneOpen = false; tuneScene.visible = false; }
+  // §24b(2026-10-22 星光:「上方和下方的 ui 不要出现,点击不应该有效果」「我选择考试后当前的面板也应该关闭」)
+  //   考场是封闭环境:榜单面板要关、topbar(钱/时间/设置按钮)与底部标签全隐。
+  if (typeof screenPanelOpen !== 'undefined' && screenPanelOpen && typeof closeScreenPanel === 'function') closeScreenPanel();
+  layers.topbar.visible = false;
+  for (const tb of TABS) tb.container.visible = false;
+  // 生产板块那个 speechBubble 也隐掉:它与考场气泡内容相同,看着像「两个聊天框叠一起」
+  if (typeof speechBubble !== 'undefined' && speechBubble) speechBubble.visible = false;
   setBGM('bgm_tune');   // 考场沿用调教那首(都是室内安静场景)
   layoutExamScene();
 }
@@ -7190,7 +7206,16 @@ function layoutExamScene() {
   examShade.beginFill(0x0a0806, 0.34);
   examShade.drawRect(0, 0, w, h);
   examShade.endFill();
+  // §24b:背景/压暗层吃掉点击 —— 考场期间点空白处不该有反应,更不该漏到下层的榜单面板或标签
+  examBgSprite.eventMode = 'static';
+  examBgSprite.hitArea = new PIXI.Rectangle(0, 0, w, h);
+  examShade.eventMode = 'static';
+  examShade.hitArea = new PIXI.Rectangle(0, 0, w, h);
 
+  // ⚠️ 必须先清空容器再重建(2026-10-22 截图三连问题的总根因):
+  //   这行在上一轮清理误插代码时被删掉了 ⇒ 每 0.25s 往 examLayer 里再叠一整层,
+  //   旧的卡片/气泡/命中层永不销毁 ⇒ ①两个气泡看着重叠 ②过期卡片不消失 ③点到残留命中层 ⇒ 真卡片点不动。
+  examLayer.removeChildren();
   examHintSprites = [];
   examThinkBubble = null;
   const es = state.relay.train.examSession;
@@ -7199,7 +7224,8 @@ function layoutExamScene() {
   const totalH = (state.relay.news && state.relay.news.totalH) || 0;
 
   // ── 左上角:剩余时间进度条(唯一保留的 HUD)──
-  const barW = Math.min(320, w * 0.30), barH = 16, barX = 20, barY = 20;
+  // §24b:barY 从 20 抬到 82 —— 左上角 62px 是设置按钮的活动区,不能压
+  const barW = Math.min(320, w * 0.30), barH = 16, barX = 20, barY = 82;
   const box = new PIXI.Graphics();
   box.beginFill(0x1a1208, 0.72);
   box.drawRoundedRect(barX - 8, barY - 8, barW + 16, barH + 40, 10);
@@ -7235,19 +7261,23 @@ function layoutExamScene() {
     const left = Math.max(0, hd.untilH - totalH2);
     const ttl0 = Math.max(0.001, examHintLerp(EXAM_HINT_CFG.TTL_H, ex.importance || 0.2));
     const urgency = 1 - Math.min(1, left / ttl0);
+    // §24b:后 40% 生命线性淡出(alpha 0.95→0.12),命中层同步收缩 ⇒ 视觉上「闪一下就没了」,
+    //   而不是像旧版那样一张卡挂满半分钟(旧 TTL 66~27 秒,看着就是「不会消失」)。
+    const fade = left / ttl0 < 0.4 ? Math.max(0.12, (left / ttl0) / 0.4) : 1;
     const bg = new PIXI.Graphics();
-    bg.beginFill(0xfff4d6, 0.96 - urgency * 0.08);
-    bg.lineStyle(2.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95);
+    bg.beginFill(0xfff4d6, 0.95 * fade);
+    bg.lineStyle(2.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95 * fade);
     bg.drawRoundedRect(r.x, r.y, r.w, r.h, 12);
     bg.endFill();
     examLayer.addChild(bg);
     const tx = makeText((hd.prefix || '') + ' ' + (hd.text || ''), { size: 22, color: '#6a4a1a', weight: 'bold' });
+    tx.alpha = fade;
     tx.x = r.x + 14; tx.y = r.y + 14;
     if (tx.width > r.w - 28) tx.scale.set((r.w - 28) / tx.width);
     examLayer.addChild(tx);
     // 剩余时间细条(2× 高)
     const tb = new PIXI.Graphics();
-    tb.beginFill(0xd0442a, 0.8);
+    tb.beginFill(0xd0442a, 0.8 * fade);
     tb.drawRect(r.x + 6, r.y + r.h - 8, Math.max(0, (r.w - 12) * (left / ttl0)), 4);
     tb.endFill();
     examLayer.addChild(tb);
@@ -7268,9 +7298,11 @@ function layoutExamScene() {
   }
 
   // ── 右下角:模型 + 思考气泡(星光:「像生产板块一样把模型放在右下角,图2 作为气泡框」)──
-  const modelScale = Math.min(1.0, h / 900);
-  const mw = 190 * modelScale, mh = 260 * modelScale;
-  const mx = w - mw - 24, my = h - mh - 12;
+  // §24b(星光:「右下角人物太小,可以修改大小,和生产板块的贴齐」):用 layoutCharacters 同一套公式
+  //   targetH = min(340, h*0.4)、纹理基准 400 —— 两处各写一份就会「看着不一样大」,这里刻意同源。
+  const charH = Math.min(340, h * 0.4), charScale = charH / 400;
+  const mw = 400 * charScale, mh = 400 * charScale;
+  const mx = w - mw - 10, my = h - mh - 10;
   // 模型占位:用 char1(张口的立绘)示意「正在思考」(真正的人物层可后续接 tuneWalker)
   const modelSprite = PIXI.Sprite.from(ASSETS.char1);
   if (modelSprite.texture && modelSprite.texture.width > 1) {
@@ -7280,7 +7312,7 @@ function layoutExamScene() {
   modelSprite.y = my + (mh - (modelSprite.height || mh));
   examLayer.addChild(modelSprite);
   // 思考气泡(挂模型左上;气泡尾巴在下方,所以气泡底边贴着模型头顶)
-  const bubbleW = Math.min(300, w * 0.30), bubbleH = bubbleW * 0.92;
+  const bubbleW = Math.min(360, mw * 1.5, w * 0.34), bubbleH = bubbleW * 0.92;
   const bx = mx - bubbleW * 0.72, by = my - bubbleH * 0.62;
   const bub = PIXI.Sprite.from(ASSETS.think_bubble);
   if (bub.texture && bub.texture.width > 1) {
@@ -7333,6 +7365,9 @@ function closeExamScene() {
   examHintSprites = [];
   examThinkBubble = null;
   setProductionLayersVisible(true);
+  layers.topbar.visible = true;   // §24b:恢复顶部信息条与设置按钮
+  for (const tb of TABS) tb.container.visible = true;
+  layoutNavTabs();                // 底部标签按当前场景重排(只排 visible 的)
   setBGM('bgm_basement');
 }
 const tuneBgSprite = PIXI.Sprite.from(ASSETS.tune_bg);
