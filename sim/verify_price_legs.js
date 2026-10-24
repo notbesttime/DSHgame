@@ -957,6 +957,42 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
     srcJ.includes('startExam(i);') && srcJ.includes(" 开考(调试)'"));
   ok('/test 列出全部 8 场考试(含及格线与时长)',
     srcJ.includes("TRAIN_CFG.EXAMS.forEach((ex, i) => {") && srcJ.includes("' · ' + ex.durationH + '游戏时 · 及格线 '"));
+
+  // ── §24/§24b/§24c 考试独立场景(2026-10-21~24;上一轮提交漏带断言,本轮补齐)──
+  ok('考试独立场景已建(背景+压暗+UI层)',
+    srcJ.includes('const examScene = new PIXI.Container();') && srcJ.includes('ASSETS.exam_bg'));
+  ok('开考进场景 / 结算退场景(挂 startExam 与 settleExam)',
+    srcJ.includes('openExamScene()') && srcJ.includes('closeExamScene()'));
+  ok('考场层级 = stage 最上层(否则 topbar/标签/面板盖在考场上)',
+    /app[.]stage[.]addChild[(]examScene[)]/.test(srcJ));
+  ok('开场景关闭面板并隐藏 topbar/TABS/生产气泡',
+    srcJ.includes('layers.topbar.visible = false;') && srcJ.includes('for (const tb of TABS) tb.container.visible = false;'));
+  ok('背景与压暗层吃掉点击(全屏 hitArea)',
+    srcJ.includes('examBgSprite.hitArea = new PIXI.Rectangle(0, 0, w, h);') && srcJ.includes('examShade.hitArea'));
+  ok('进度条避让左上角设置按钮区(barY=82)',
+    srcJ.includes('barX = 20, barY = 82'));
+  ok('灵感卡放大 2倍(104~240 x 52)',
+    srcJ.includes('Math.max(104, Math.min(240') && srcJ.includes('const ch = 52;'));
+  ok('命中与绘制同源 examHintRect(点大卡不点空)',
+    srcJ.includes('function examHintRect(') && srcJ.includes('examHintRect(h, area.w, area.h)'));
+  ok('右下角模型与生产板块同尺寸公式(不再两处各写一份)',
+    srcJ.includes('const charH = Math.min(340, h * 0.4), charScale = charH / 400;'));
+  ok('思考气泡(think_bubble + 内心戏文本)',
+    srcJ.includes('ASSETS.think_bubble') && srcJ.includes('examThinkBubble'));
+  ok('思考句以省略号收尾(不是句号)',
+    srcJ.includes("+ '……'"));
+  ok('场景跟随有 4Hz 节流(不每帧重建)',
+    srcJ.includes('function updateExamScene()') && srcJ.includes('if (examSceneAccum < 0.25) return;'));
+  ok('考试时长压到 1.0~3.2 游戏时(60~192 现实秒)',
+    (srcJ.match(/durationH: (?:1[.]0|1[.]2|1[.]5|1[.]8|2[.]0|2[.]4|2[.]7|3[.]2)[ },]/g) || []).length === 8);
+  ok('灵感卡节奏:间隔 8~4.5 秒 / 存活 13~7 秒(后 40% 淡出)',
+    srcJ.includes('INTERVAL_H: [0.13, 0.075],') && srcJ.includes('TTL_H: [0.22, 0.12],'));
+  ok('首张卡 4 秒(原 18 秒)',
+    srcJ.includes('nextHintH: totalH + 0.07'));
+  ok('§24c 启动时发现进行中的考试自动拉回考场(判 endH 未到才拉)',
+    srcJ.includes('if (hasSave && state.relay.train.examSession) {')
+    && srcJ.includes('if (es0.endH > totalH0) {')
+    && srcJ.includes('回到考场 · '));
       RF.ability.fit = 75; sbF.fitPullTowardOpt(0.35); const a75 = RF.ability.fit; return a80 > a75 && Math.abs(a80 - 76.5) < 0.01; })());
   ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
     srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));

@@ -9126,6 +9126,23 @@ if (hasSave) {
   updateRelayTabVisibility();
 }
 
+// §24c(2026-10-24 星光:上次考试没结束就退出游戏,再进来是别的画面,考试还在继续却不拉回考场,
+//     打开面板还会出现词条/素材 = bug):examSession 是**持久化**的,但 examSceneOpen 只活在内存里,
+//   重载后恒为 false ⇒ 场景不拉回,只剩面板兜底渲染(词条/素材)零星提示。修法:启动时发现「进行中的考试」
+//   (endH > 当前 totalH,即还没到结算点)就自动拉回考场;若已过期则不动,交给 examTick 正常结算。
+if (hasSave && state.relay.train.examSession) {
+  const es0 = state.relay.train.examSession;
+  const totalH0 = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+  if (es0.endH > totalH0) {
+    openExamScene();
+    // 提示玩家「你回到了没考完的试场」,而不是无声切换
+    if (typeof spawnFloatText === 'function') {
+      const ex0 = TRAIN_CFG.EXAMS[es0.idx] || {};
+      spawnFloatText('回到考场 · ' + (ex0.name || '考试') + ' 进行中', app.screen.width / 2, app.screen.height * 0.30);
+    }
+  }
+}
+
 // 背景音乐:只预载当前场景那一轨(其余懒加载);浏览器自动播放策略要求首次用户手势后才起
 initBGM();
 (function armBGM() {
