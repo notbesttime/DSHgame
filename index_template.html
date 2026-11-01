@@ -81,7 +81,12 @@
 // 渲染分辨率唯一来源:canvas 后备缓冲与文字栅格化都用它,避免两处各写一份而不同步。
 // 上限 2 是性能与清晰度的折中(填充率按平方增长):dpr=3 的手机也用 2。
 // 注:autoDensity 下 app.screen 仍是 CSS 像素,所有百分比布局不受影响。
-const RENDER_RESOLUTION = Math.min(window.devicePixelRatio || 1, 2);
+// §26(2026-10-26,星光「小游戏内存占用快 600MB」):上限从 2 收到 **1.25**。
+//   理由:填充率按分辨率平方增长 —— dpr 1.5 的笔记本上,1.25 比 1.5 少画 31% 像素、比 2 少 61%,
+//   而实测截图对比(P0 1.5 / P1 1.0 / Q1 1.25)肉眼看不出差别。
+//   ⚠️ 文字清晰度不受影响:makeText 里 t.resolution 走同一常量,1.25 栅格化在笔记本屏上仍然锐利;
+//     真觉得糊可以单独调这个数(只影响后备缓冲,不改任何布局 —— autoDensity 下 app.screen 仍是 CSS 像素)。
+const RENDER_RESOLUTION = Math.min(window.devicePixelRatio || 1, 1.25);
 
 function rand(min, max) { return Math.random() * (max - min) + min; }
 
@@ -98,6 +103,39 @@ function makeText(text, opts) {
   t.resolution = RENDER_RESOLUTION;
   if (opts.anchor !== undefined) t.anchor.set(opts.anchor);
   return t;
+}
+
+// §26(2026-10-26):大背景图**按屏降采样**再上 GPU。
+//   四张 1920×1080 的底图各占 7.9MB 显存(合计 31.6MB,占全部贴图 59%),
+//   但它们只是 cover 铺满的背景,真实需要的是「屏宽×dpr」那一档。
+//   这里在加载后把 baseTexture 重画到缩小 canvas:1920 宽 → 最多 1280(桌面)/ 960(窄屏),
+//   显存直接砍到 1/2.25 ~ 1/4,肉眼在 cover 缩放下看不出来。
+//   ⚠️ 必须用 PIXI.BaseTexture.from(canvas) 重建并 destroy 旧的,只改 texture 的 frame 不省显存。
+function bgSprite(key, opts) {
+  const o = opts || {};
+  // 目标宽度 = **逻辑宽 × 1.0**(cover 铺满时一个屏幕宽就是一个屏幕宽),再留 15% 余量给窗口拉大。
+  //   ⚠️ 这里刻意**不乘 dpr**:背景是 cover 拉伸的柔和照片,1920 底图降到 1447 在 dpr 1.5 下
+  //   依然看不出差别(实测截图 Q1 对比),但显存从 7.9MB 掉到 4.5MB/张。
+  //   (上一版误乘了 RENDER_RESOLUTION 又加 10%,maxW 算成 2076 > 1920 ⇒ 永远不会触发降采样。)
+  const logicalW = Math.max(320, window.innerWidth || 1280);
+  const maxW = o.maxW || Math.ceil(logicalW * 1.15);
+  const src = PIXI.Texture.from(ASSETS[key]);
+  const bt = src.baseTexture;
+  const texW = bt.width || 1, texH = bt.height || 1;
+  if (texW <= maxW * 1.05) return new PIXI.Sprite(src);      // 本来就不大 ⇒ 直接用
+  const scale = maxW / texW;
+  const cw = Math.round(texW * scale), ch = Math.round(texH * scale);
+  const cv = document.createElement('canvas');
+  cv.width = cw; cv.height = ch;
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  try {
+    ctx.drawImage(bt.resource.source, 0, 0, cw, ch);
+  } catch (e) {
+    return new PIXI.Sprite(src);                            // 画不了就退回原图(不能白屏)
+  }
+  const small = PIXI.BaseTexture.from(cv, { resolution: 1, scaleMode: PIXI.SCALE_MODES.LINEAR });
+  return new PIXI.Sprite(new PIXI.Texture(small));
 }
 
 function roundRect(g, x, y, w, h, r, color, alpha) {
@@ -172,8 +210,8 @@ const layers = {
 app.stage.addChild(layers.bg, layers.clickArea, layers.characters, layers.scene, layers.ui, layers.topbar, layers.fx, layers.settings, layers.panel, layers.nav);
 
 // ==================== 背景层（灯效） ====================
-const bgLight = PIXI.Sprite.from(ASSETS.bg_light);
-const bgDark = PIXI.Sprite.from(ASSETS.bg_dark);
+const bgLight = bgSprite('bg_light');
+const bgDark = bgSprite('bg_dark');
 bgDark.visible = false; // 用 visible 而非 alpha=0,关灯层不参与渲染批次
 layers.bg.addChild(bgLight, bgDark);
 
@@ -302,14 +340,21 @@ function releaseFloatText(t) {
   else t.destroy();
 }
 
-function spawnFloatText(text, x, y) {
+// §25(2026-10-25 星光「现在的字体和生产弹出的字样颜色高度一致,并且还是有自然重力的,这显然不对,
+//   看不清也消失的太快了」):开放 opts ⇒ 考场这类"纸面"场景用深墨色 + 更大字号 + 更久停留,
+//   且不走上飘(上飘+淡出在生产里是"钱在涨"的语汇,放考试里既看不清也和分数无关)。
+function spawnFloatText(text, x, y, opts) {
   if (floatLiveCount >= FLOAT_LIVE_MAX) return;
   floatLiveCount++;
-  const t = acquireFloatText(22, '#ffd98a');
+  const o = opts || {};
+  const t = acquireFloatText(o.size || 22, o.color || '#ffd98a');
   t.text = text;
   t.x = x; t.y = y;
   floatTexts.addChild(t);
-  tween(t, { y: y - 60, alpha: 0 }, 0.9, () => { releaseFloatText(t); });
+  const rise = (o.rise === undefined) ? 60 : o.rise;
+  const dur = o.dur || 0.9;
+  if (rise) tween(t, { y: y - rise, alpha: 0 }, dur, () => { releaseFloatText(t); });
+  else tween(t, { alpha: 0 }, dur, () => { releaseFloatText(t); });
 }
 
 function spawnCritText(text, x, y) {
@@ -443,16 +488,19 @@ function endCaseDrag() {
   casePhysics.isActive = true;
 }
 
-function updateCasePhysics() {
+function updateCasePhysics(dt) {
   if (!casePhysics.isActive || casePhysics.isDragging) return;
   if (!pcCase.visible) return;
 
+  // §30/§33:原来是每帧累加 ⇒ 帧率低时机箱下落/反弹都变慢。改成按时间,基准与人物统一(ANIM_BASE_FPS)。
+  const k = Math.max(0.1, Math.min(8, (typeof dt === 'number' ? dt : 1 / ANIM_BASE_FPS) * ANIM_BASE_FPS));
+
   // 重力
-  casePhysics.vy += casePhysics.gravity;
+  casePhysics.vy += casePhysics.gravity * k;
 
   // 更新位置
-  pcCase.x += casePhysics.vx;
-  pcCase.y += casePhysics.vy;
+  pcCase.x += casePhysics.vx * k;
+  pcCase.y += casePhysics.vy * k;
 
   const cw = getCaseDisplayWidth();
   const ch = getCaseDisplayHeight();
@@ -518,6 +566,17 @@ function layoutCase() {
   if (pcCase.texture !== newTexture) {
     pcCase.texture = newTexture;
   }
+  // ⚠️ 2026-11-01 修「机箱不见了」真因:换贴图(≥9 张 3080 切升级机箱)的那一瞬间,
+  //   新 texture 还没解码完,width/height 只有 1 ⇒ 下面 scale = targetW/1 = 134.4,
+  //   机箱被放大到 6 万多像素宽,直接飞出屏幕;而且之后没有任何一次 layout 会再纠正它。
+  //   对策:①贴图没就绪就**不动 scale**(保持上一次的正确值),等它就绪后再重排一次;②尺寸兜底。
+  if (!newTexture || !newTexture.width || newTexture.width <= 1 || newTexture.height <= 1) {
+    if (newTexture && !newTexture.__relayoutBound) {
+      newTexture.__relayoutBound = true;
+      newTexture.on('update', () => { try { layoutCase(); } catch (e) {} });
+    }
+    return;   // 等贴图就绪再来
+  }
   const maxCaseH = app.screen.height * 0.42;
   const maxWByHeight = maxCaseH * pcCase.texture.width / pcCase.texture.height;
   const targetW = Math.min(app.screen.width * 0.38, 420, maxWByHeight);
@@ -528,11 +587,20 @@ function layoutCase() {
   const defaultX = app.screen.width * 0.28;
   const defaultY = app.screen.height - caseH - bottomMargin - 65;
   const hasFirstGpu = state.machines.rtx3080.count > 0;
-  // 只在机箱首次显示时设置默认位置，之后永远不主动改变x/y
+  // 只在机箱首次显示时设置默认位置，之后不主动改 x/y(尊重玩家拖动/抛掷)
   if (hasFirstGpu && !caseInitialized) {
     pcCase.x = defaultX;
     pcCase.y = defaultY;
     caseInitialized = true;
+  }
+  // ⚠️ 2026-11-01 修「生产的机箱不见了」:窗口变小(比如 F11 退出全屏)后,地面 groundY 会重算,
+  //   但 pcCase.y 停在旧位置 ⇒ 落到新屏幕下沿之外,而 updateCasePhysics 只在 isActive 时跑,
+  //   静止的机箱永远不会自己回来。这里每次都把它夹回可视区(只夹越界,不动正常摆放)。
+  if (hasFirstGpu) {
+    const cwNow = pcCase.texture.width * pcCase.scale.x;
+    pcCase.x = Math.max(0, Math.min(Math.max(0, app.screen.width - cwNow), pcCase.x));
+    if (pcCase.y > defaultY) { pcCase.y = defaultY; casePhysics.vy = 0; }   // 掉到地面以下 → 拉回地面
+    if (pcCase.y < 0) { pcCase.y = 0; casePhysics.vy = 0; }
   }
   const ps = targetW * 0.82 / casePlaceholder.texture.width;
   casePlaceholder.scale.set(ps);
@@ -693,7 +761,7 @@ function createBuyItem(container, y, iconDraw, name, desc, priceFn, buyColor, on
     const price = priceFn();
     if (state.tokens >= price) {
       state.tokens -= price;
-      playSfx('buy'); // 所有购买共用一个扣款点(机器/散热/脚本/服务器)
+      // §35(2026-11-01 星光:生产购买物品的音效取消掉)—— 这里原来 playSfx('buy'),已移除。
       onBuy();
       refreshBuyItem(item, true);
       updateAllBuyButtons();
@@ -1038,7 +1106,7 @@ app.stage.addChildAt(relayScene, app.stage.getChildIndex(layers.topbar));
 app.stage.addChildAt(layers.panel, app.stage.getChildIndex(layers.topbar));
 
 // 中转站背景
-const relayBg = PIXI.Sprite.from(ASSETS.transfer_bg);
+const relayBg = bgSprite('transfer_bg');
 relayScene.addChild(relayBg);
 
 // 电脑屏幕草绿色描边(人物坐下后显示,在背景之上、人物/椅子之下,不遮挡)
@@ -1577,14 +1645,15 @@ const TRAIN_CFG = {
   // ⚠️ 考试 token 是 sim 供给大头 ⇒ 阶梯一改,四窗口基线必须重跑(§17.6)。
   EXAMS: [
     // passGrade = 隐藏阈值(得分/100 ≥ 此值即通过)。首考宽松(新手能起步),逐场收紧。
-    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.10, durationH: 1.0 },
-    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.20, durationH: 1.2 },
-    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.30, durationH: 1.5 },
-    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.40, durationH: 1.8 },
-    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 2.0 },
-    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 2.4 },
-    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 2.7 },
-    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 0.35, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 3.2, graduate: true },
+    // §25(2026-10-25 星光「考试时间也可以再短一点」):1 游戏时 = 60 现实秒 ⇒ 全场压到 36~120 秒。
+    { name: '随堂小测', atDay: 1,  tokenM: 0.4, refCap: 8,  passGrade: 0.40, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.10, durationH: 0.60 },
+    { name: '月考',     atDay: 3,  tokenM: 1.6, refCap: 20, passGrade: 0.20, rep: 0,  usersPct: 0, usersDays: 2,  importance: 0.20, durationH: 0.75 },
+    { name: '期中测评', atDay: 7,  tokenM: 3.5, refCap: 36, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.30, durationH: 0.90 },
+    { name: '期末测评', atDay: 14, tokenM: 8,   refCap: 55, passGrade: 0.18, rep: 0,  usersPct: 0, usersDays: 3,  importance: 0.40, durationH: 1.10 },
+    { name: '市级测评', atDay: 25, tokenM: 14,  refCap: 70, passGrade: 0.20, rep: 3.5,  usersPct: 0.15, usersDays: 4,  importance: 0.55, durationH: 1.30 },
+    { name: '省级测评', atDay: 40, tokenM: 20,  refCap: 83, passGrade: 0.25, rep: 4.5,  usersPct: 0.18, usersDays: 5,  importance: 0.70, durationH: 1.50 },
+    { name: '全国联考', atDay: 52, tokenM: 28,  refCap: 93, passGrade: 0.30, rep: 6.0,  usersPct: 0.22, usersDays: 6,  importance: 0.85, durationH: 1.70 },
+    { name: '毕业大考', atDay: 60, tokenM: 40,  refCap: 100, passGrade: 0.35, rep: 10.0, usersPct: 0.30, usersDays: 10, importance: 1.00, durationH: 2.00, graduate: true },
   ],
   // 重考(§17.6 拍板):7 游戏天后重考;通过奖励 ×0.7^(k-1) 递减(不归零)
   RETAKE_DELAY_DAYS: 7,
@@ -2580,7 +2649,8 @@ function updatePrWarnBanner() {
   const t2 = makeText(s.line2, { size: 11, color: '#ff9a5a' });
   t2.x = 10; t2.y = 26; prWarnBanner.addChild(t2);
   prWarnBanner.x = app.screen.width - bw - 12;   // 右上角(topbar 居中 52 高之下,不碰任何既有 UI)
-  prWarnBanner.y = 74;
+  // §25:topbar 因播报带下移到 44,横幅跟着下移到它下沿(否则压在顶栏上)
+  prWarnBanner.y = (typeof BCAST_CFG !== 'undefined' ? BCAST_CFG.TOPBAR_Y : 44) + 62;
   prWarnBanner.hitArea = new PIXI.Rectangle(0, 0, bw, bh);
   prWarnBanner.visible = true;
 }
@@ -3072,8 +3142,15 @@ function startExam(idx) {
   T.examSession.thinkLine = '进考场了……先看题。';
   T.examSession.thinkUntilH = totalH + 3;
   if (typeof openExamScene === 'function') openExamScene();
+  if (typeof pushBroadcastList === 'function') {
+    pushBroadcastList([
+      '【' + ex.name + '】开考 · 全场 ' + Math.round((ex.durationH || 6) * 60) + ' 秒',
+      '【提示】灵感卡成批冒出、一闪即失 —— 手快能抓两三张,贪心一张都抓不到',
+    ]);
+  }
   if (typeof spawnFloatText === 'function') {
-    spawnFloatText(ex.name + ' 开考(持续 ' + (ex.durationH || 6) + ' 游戏时)', app.screen.width / 2, app.screen.height * 0.32);
+    spawnFloatText(ex.name + ' 开考', app.screen.width / 2, app.screen.height * 0.32,
+      { size: 28, color: '#b0281a', dur: 1.5, rise: 30 });
   }
 }
 
@@ -3347,15 +3424,16 @@ function drawPublishConfirmBox(px, py, pw, ph) {
 //  · 不操作也能拿基础分(属性决定),挂机不会落榜 —— 但高分与额外属性要靠点选;
 //  · 档位越高:提示越密、存活越短、单条收益越高(importance 驱动)。
 const EXAM_HINT_CFG = {
-  // §24b(2026-10-22 星光「弹出的素材不会慢慢消失…也无法点击」):单位是游戏时,1 游戏时 = 60 现实秒。
-  //   旧值 0.45~0.25 = **每 27~15 秒才冒一张**、存活 66~27 秒 = 三分之一场考试都挂在那儿,
-  //   既没有《中国式家长》那种「灵光一闪要赶紧抓」的手速感,也显得卡「不消失」。
-  INTERVAL_H: [0.13, 0.075],  // 生成间隔:importance 0→0.13(≈8 秒) / 1→0.075(≈4.5 秒)
-  TTL_H: [0.22, 0.12],        // 存活时长:0→0.22(≈13 秒) / 1→0.12(≈7 秒),后 40% 淡出
+  // §25(2026-10-25 星光「出现时间太长、出现太少,要一次性出来 3~5 个,并且很快消失,让用户不能全部点到」):
+  //   单位是游戏时,1 游戏时 = 60 现实秒。旧版一张一张冒、每张挂 13~7 秒 ⇒ 又慢又稀、还能一张张点完。
+  //   现在改成**成批爆发**:一批 3~5 张同时冒出来,单张只活 2.5~1.4 秒 ⇒ 手不够快只能抓走其中一两张。
+  BURST: [3, 5],              // 每批同时冒几张(含两端):星光点名 3~5
+  INTERVAL_H: [0.062, 0.034], // 一批的间隔:importance 0→3.7 秒 / 1→2.0 秒
+  TTL_H: [0.042, 0.024],      // 单张存活:0→2.5 秒 / 1→1.4 秒,后 40% 淡出
   SCORE: [2, 6],              // 单条分数收益:按 importance 插值
   ATTR: [0.04, 0.18],         // 单条属性收益(点)
   ATTR_CAP_PER_EXAM: 6.0,     // 每场考试属性总上限(防刷):6 点 ≈ 一次大道具的量级
-  MAX_ALIVE: 4,               // 同屏最多几条
+  MAX_ALIVE: 6,               // 同屏最多几条(必须 >= BURST[1],否则一批挤不全)
 };
 // ===== §17.8 文案池(由 sync_exam_text.py 从《考试文案池.md》生成,勿手改)=====
 // 用户改文档 → 跑 python sync_exam_text.py → 自动替换下面两个标记块之间的内容。
@@ -3553,35 +3631,131 @@ function examHintLerp(pair, importance) {
   return pair[0] + (pair[1] - pair[0]) * k;
 }
 // 用游戏内私有随机(不消耗游戏 Math.random 流,免得污染经济仿真的可比性)
+// ⚠️ 2026-10-26 修:原写法 T._hr = T._hr * 1103515245 + 12345 不做 32 位截断,
+//   _hr 会指数膨胀到 1e275(远超 Number.MAX_SAFE_INTEGER 9e15)⇒ 低位全被浮点吃掉,
+//   实测**第 3 次调用起恒返回 0**。后果:①一批张数永远取 lo(=3 张,星光要的 3~5 变成恒 3)
+//   ②槽位 shuffle 全部失效 ⇒ 每批都落在同样那几个点 ③文案 round-robin 前的洗牌也失效 ⇒ 每批文案顺序固定。
+//   这类"看起来随机其实恒定"的退化不会报错,只能靠分布断言抓(见 verify_price_legs §25e)。
+//   正解:Math.imul 做 32 位乘法截断,再 |0 收成正 int32。
 function examHintRand(T) {
-  T._hr = (T._hr || 12345) * 1103515245 + 12345;
-  return ((T._hr >>> 8) & 0xffffff) / 0x1000000;
+  // xorshift32:每步只有异或与移位,天然 32 位,不会像乘法 LCG 那样溢出到双精度有效位之外。
+  let x = (T._hr | 0) || 12345;     // 首次播种(0 是 xorshift 的死点,顺手重播)
+  x ^= x << 13; x |= 0;
+  x ^= x >>> 17;
+  x ^= x << 5;  x |= 0;
+  T._hr = x;
+  return ((x >>> 8) & 0xffffff) / 0x1000000;
 }
 
+// §25(2026-10-25):一次冒一**批**(BURST 3~5 张),每张位置互不重叠,存活极短。
+//   ⚠️ 一批里的位置用「区域网格 + 抖动」而不是纯随机:纯随机会叠成一张,玩家看见的只有 1 张
+//   (星光要的是「一次性出来 3~5 个」,叠在一起等于没做到)。
+const HINT_SLOTS = [
+  // 采蜜式撒点:4 行 × 4 列共 16 个候选位,一批最多 5 张,相邻批尽量不撞
+  [0.16, 0.20], [0.38, 0.16], [0.62, 0.22], [0.84, 0.18],
+  [0.22, 0.42], [0.46, 0.38], [0.70, 0.44], [0.90, 0.40],
+  [0.14, 0.64], [0.36, 0.58], [0.60, 0.66], [0.82, 0.62],
+  [0.24, 0.86], [0.48, 0.82], [0.72, 0.88], [0.92, 0.84],
+];
 function spawnExamHint(s, ex, totalH, gameHours) {
   const cfg = EXAM_HINT_CFG;
   const imp = ex.importance || 0.2;
   if (!s.hints) s.hints = [];
-  if ((s.hints.length >= cfg.MAX_ALIVE) || !(totalH >= (s.nextHintH || 0))) return;
-  const rnd = examHintRand(state.relay.train);
-  s.nextHintH = totalH + examHintLerp(cfg.INTERVAL_H, imp) * (0.7 + rnd * 0.6);
-  // §17.8:EXAM_HINTS 是「一条卡一个条目」的扁平表(由文本池生成),text 已含前缀语义,
-  //         故不再从 tips 里二次取;prefix 仍按轮转给画面变化。
-  const kind = EXAM_HINTS[Math.floor(rnd * EXAM_HINTS.length) % EXAM_HINTS.length];
-  s.hintSeq = (s.hintSeq || 0) + 1;
-  s.hints.push({
-    id: s.hintSeq,
-    attrKey: kind.key,
-    // 文案:直接用池里那条(如「先证伪再下结论」);label 作为前缀来源之一
-    text: kind.text,
-    prefix: EXAM_HINT_TEXT[s.hintSeq % EXAM_HINT_TEXT.length],
-    untilH: totalH + examHintLerp(cfg.TTL_H, imp),
-    score: Math.round(examHintLerp(cfg.SCORE, imp)),
-    attr: examHintLerp(cfg.ATTR, imp),
-    // 屏幕位置(0~1 归一化,渲染时乘面板尺寸):避免与文字重叠,分四个区
-    ux: 0.12 + rnd * 0.76,
-    uy: 0.18 + ((s.hintSeq * 0.37) % 1) * 0.5,
+  if (!(totalH >= (s.nextHintH || 0))) return;
+  const ttl = examHintLerp(cfg.TTL_H, imp);
+  const rnd0 = examHintRand(state.relay.train);
+  s.nextHintH = totalH + examHintLerp(cfg.INTERVAL_H, imp) * (0.8 + rnd0 * 0.5);
+  // 本批张数:3~5(BURST 顺序即「少→多」,用 importance 顺手掺一点:越重要的场次越密)
+  const lo = Math.min(cfg.BURST[0], cfg.BURST[1]), hi = Math.max(cfg.BURST[0], cfg.BURST[1]);
+  let n = lo + Math.floor(examHintRand(state.relay.train) * (hi - lo + 1));
+  // 同屏上限:已有的 + 这批 <= MAX_ALIVE;一批至少要能给 1 张,否则等下一拍
+  const room = cfg.MAX_ALIVE - s.hints.length;
+  if (room <= 0) return;
+  n = Math.max(1, Math.min(n, room));
+  // §25h(2026-10-26 星光:「要更像是随机出现的位置,而不是像打地鼠一样固定的地方」):
+  //   **不再用固定槽位表**。改成 [0.10,0.92] 区间内连续随机 + **拒绝采样**防重叠:
+  //   每个候选位置都要与「本批已选」和「同屏还活着的旧卡」拉开间距,拉不开就重抽(最多 24 次)。
+  //   这样位置是真随机,但不会叠成一张(叠了玩家只能看见 1 张)。
+  const placed = [];
+  // §25:同一批里既不重复文案、也不连着抽同一类。
+  //   ⚠️ 只把整池打乱还不够:池里 reasoning 类有 4 条、占比最高,乱序取 4 条仍可能 3 张都是「灵感」
+  //   (实测就是这样)。所以按 attrKey 分组 → 类别顺序乱序 → 依次从各类里各取一条,类别先铺开。
+  const byKey = {};
+  for (let i = 0; i < EXAM_HINTS.length; i++) {
+    const k = EXAM_HINTS[i].key || '_';
+    (byKey[k] = byKey[k] || []).push(i);
+  }
+  const keys = Object.keys(byKey);
+  for (let i = keys.length - 1; i > 0; i--) {   // 类别顺序也打乱(否则永远是前三类)
+    const j = Math.floor(examHintRand(state.relay.train) * (i + 1));
+    const t = keys[i]; keys[i] = keys[j]; keys[j] = t;
+  }
+  // 每个类别内部也打乱,然后**交错**(round-robin)拼成抽取顺序。
+  //   ⚠️ 不能「按类别整块拼」再取前 n —— 那还是同一类的前 n 条(上一版就栽在这,4 张全是「素材」)。
+  const bags = keys.map(k => {
+    const arr = byKey[k].slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(examHintRand(state.relay.train) * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
   });
+  const order = [];
+  for (let round = 0; order.length < EXAM_HINTS.length; round++) {
+    let any = false;
+    for (const bag of bags) {
+      if (bag[round] !== undefined) { order.push(bag[round]); any = true; }
+    }
+    if (!any) break;
+  }
+  // 已有的活卡位置也算进「别撞」的集合(跨批不叠)
+  for (const hOld of s.hints) placed.push([hOld.ux, hOld.uy]);
+  for (let k = 0; k < n; k++) {
+    const kind = EXAM_HINTS[order[k] % order.length];
+    s.hintSeq = (s.hintSeq || 0) + 1;
+    // 拒绝采样:在 [0.10,0.92] 里连续取点,和已占位置的**像素**间距够大才收下。
+    //   ⚠️ 必须按像素算,不能按归一化距离:667 宽屏上 0.17 只有 113px,而卡宽已经 123px
+    //      ⇒ 归一化 0.17 仍会横向叠住(实测截图里两张卡直接摞在一起)。
+    //   判据:两张卡的矩形在 x 与 y 上至少各让开一半,才算不重叠。
+    // ⚠️ 判据必须是**归一化差值的比例**,不能写死像素再除固定屏宽:
+    //   上一版 `sepX/667*1000` 在 812 宽屏上等于按 667 算,间距算小了 ⇒ 左上两张卡直接叠住(截图可见)。
+    //   现在:两卡在 x 或 y 上**至少有一轴拉开一张卡的距离**,就算不重叠(允许错位摆放,更像随机撒点)。
+    const sepX = 0.185, sepY = 0.115;   // 归一化间距(x≈卡宽/屏宽,y≈卡高/屏高,留余量)
+    let px = 0.5, py = 0.5, bestScore = -1, bestPt = [0.5, 0.5];
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const cxp = 0.10 + examHintRand(state.relay.train) * 0.82;
+      const cyp = 0.10 + examHintRand(state.relay.train) * 0.82;
+      let okAll = true, worst = 9;
+      for (const q of placed) {
+        const dx = Math.abs(cxp - q[0]) / sepX;
+        const dy = Math.abs(cyp - q[1]) / sepY;
+        const axis = Math.max(dx, dy);      // 任一轴拉开就够(允许错位)
+        worst = Math.min(worst, axis);
+        if (axis < 1) { okAll = false; }
+      }
+      if (worst > bestScore) { bestScore = worst; bestPt = [cxp, cyp]; }
+      if (okAll) { bestPt = [cxp, cyp]; break; }
+    }
+    px = bestPt[0]; py = bestPt[1];
+    placed.push([px, py]);
+    s.hints.push({
+      id: s.hintSeq,
+      attrKey: kind.key,
+      // 文案:直接用池里那条(如「先证伪再下结论」);label 作为前缀来源之一
+      text: kind.text,
+      // §25:前缀跟文案语义走(kind.label 就是「灵感:/素材:/金句:/考点:」),
+      //   原先按序号轮转会出现「考点 先证伪再下结论」这种错配(截图里一眼就看出是 bug)。
+      prefix: (kind.label || EXAM_HINT_TEXT[s.hintSeq % EXAM_HINT_TEXT.length]).replace(/[:：]\s*$/, ''),
+      // 类别也带上:一批里同类连坐时,前缀至少不与文案矛盾(见上:prefix 跟 kind 走)
+      untilH: totalH + ttl,
+      score: Math.round(examHintLerp(cfg.SCORE, imp)),
+      attr: examHintLerp(cfg.ATTR, imp),
+      // 位置:连续随机(已过拒绝采样),钳在 [0.10,0.92] 内不出屏
+      ux: px,
+      uy: py,
+      bornH: totalH,
+    });
+  }
 }
 
 // 点中提示:返回 true = 命中(调用方负责重绘)
@@ -3594,9 +3768,11 @@ function examHintClick(px, py, area) {
     const h = s.hints[i];
     // §24:命中尺寸改走 examHintRect(2× = 104~240 × 52),与场景里画的大卡片一致。
     //   ⚠️ 这里若与绘制不一致,玩家点大卡片会点空(本轮已统一到同一函数)。
-    const cx = area.x + h.ux * area.w;
-    const cy = area.y + h.uy * area.h;
+    // §25:一律用 examHintRect 返回的 r.cx/r.cy 判定 —— 绘制的纵向带(避开吸顶播报条)只在
+    //   examHintRect 里算一次,这里若自己再算一遍 uy*h,卡画在 A 处却按 B 处判定(点不中)。
     const r = examHintRect(h, area.w, area.h);
+    const cx = area.x + r.cx;
+    const cy = area.y + r.cy;
     if (Math.abs(px - cx) <= r.w / 2 && Math.abs(py - cy) <= r.h / 2) {
       // ① 本次考试分数(只在本次结算内有效)
       s.score = Math.min(100, s.score + h.score);
@@ -3612,8 +3788,10 @@ function examHintClick(px, py, area) {
       }
       s.hints.splice(i, 1);
       if (typeof spawnFloatText === 'function') {
+        // §25:考场浮字改成「深墨色 + 大字号 + 慢淡出」——原先沿用生产的 #ffd98a 22px 上飘,
+        //   压在浅色卷面上几乎看不见,而且 0.9 秒就没了,分加了玩家也感受不到。
         spawnFloatText(h.prefix + ' +' + h.score + ' 分' + (add > 0 ? ' · ' + h.attrKey + ' +' + add.toFixed(2) : ''),
-          px, py - 14);
+          px, py - 14, { size: 26, color: '#b0281a', dur: 1.5, rise: 26 });
       }
       return true;
     }
@@ -3671,16 +3849,23 @@ function settleExam() {
   } else {
     T.examRetakes[idx] = retakes + 1;            // 落榜:7 天后再战
   }
+  // §25(2026-10-25 星光「考试结束的通知字样有好几条对吧,做成顶部的滚动播报气泡…消息字样缓慢向左移动
+  //   慢慢被遮挡消失」):结算的几条通知不再当浮字糊在屏幕中间,统一进**吸顶滚动播报条**依次播放。
+  //   浮字只留一条极简的「已结算」提示,避免同一信息两处重复。
+  const bcLines = [
+    '【' + ex.name + '】考试结束 · 得分 ' + Math.round(score) + ' / 100 · 评级 ' + gradeTxt,
+    passed ? ('【录取】' + ex.name + ' 通过 · 奖励 +' + formatNum(tokens) + ' tokens'
+              + (ex.rep ? ' · 信誉 +' + (ex.rep * decay).toFixed(1) : '')
+              + (ex.usersPct ? ' · 用户量 +' + Math.round(ex.usersPct * decay * 100) + '%' : ''))
+           : ('【落榜】' + ex.name + ' 未过线 · 评委说还差些火候 · ' + TRAIN_CFG.RETAKE_DELAY_DAYS + ' 天后再战'),
+    '【奖励】本次到账 +' + formatNum(tokens) + ' tokens' + (passed ? '' : ' · 重考奖励按 ×' + TRAIN_CFG.RETAKE_REWARD_DECAY + '^k 递减'),
+  ];
+  const line = examThinkLine(R, passed);
+  if (line) bcLines.push('【模型自语】「' + line + '」');
+  if (typeof pushBroadcastList === 'function') pushBroadcastList(bcLines);
   if (typeof spawnFloatText === 'function') {
-    spawnFloatText(ex.name + (passed ? ' 通过(' : ' 落榜(') + gradeTxt + ') · ' + Math.round(score) + ' 分'
-      + ' +' + formatNum(tokens) + ' tok' + (passed ? '' : ' —— 评委说还差些火候'),
-      app.screen.width / 2, app.screen.height * 0.3);
-    // §17.8 模型内心戏:按「本次考试最弱的那一维 × 对错」从文本池抽一条(池来自《考试文案池.md》)
-    const line = examThinkLine(R, passed);
-    if (line) {
-      // 不延迟:vm 沙箱里没有 setTimeout(实测 ReferenceError)。两条浮字上下错开即可。
-      spawnFloatText('「' + line + '」', app.screen.width / 2, app.screen.height * 0.38);
-    }
+    spawnFloatText(passed ? '通过 · ' + gradeTxt : '落榜 · ' + gradeTxt,
+      app.screen.width / 2, app.screen.height * 0.3, { size: 30, color: passed ? '#2a7a3a' : '#b0281a', dur: 1.8, rise: 24 });
   }
 }
 
@@ -3958,6 +4143,7 @@ function openScreenPanel() {
   // 面板必须盖在当前场景之上(调教/中转站)、仍在 topbar 之下。
   // tuneScene 是后插到 topbar 前的,不重新锚定会盖住 panel。
   app.stage.addChildAt(layers.panel, app.stage.getChildIndex(layers.topbar));
+  if (typeof placeBroadcast === 'function') placeBroadcast();   // §25 面板重挂 ⇒ 播报层索引要重排
   screenPanelOpen = true;
   screenPanel.visible = true;
   screenGlowHit.eventMode = 'none'; // 打开后禁用屏幕点击,避免重复触发
@@ -3980,6 +4166,7 @@ function closeScreenPanel() {
   boardPickIdx = -1;
   editingKey = null;
   screenPanel.visible = false;
+  if (typeof placeBroadcast === 'function') placeBroadcast();   // §25 同款:关面板后索引可能又变
   screenGlowHit.eventMode = 'static'; // 恢复屏幕点击
   if (typeof ensureLbDom === 'function') {
     const lbDom = ensureLbDom();
@@ -4878,16 +5065,19 @@ function drawTrainPage(x, y, w, h) {
     const totalH = (state.relay.news && state.relay.news.totalH) || 0;
     const area = { x: x, y: y, w: w, h: h };
     for (const hd of es.hints) {
-      const cx = area.x + hd.ux * area.w;
-      const cy = area.y + hd.uy * area.h;
+      // §25:与场景用同一套几何(含纵向避让带),否则「画的位置」和「点的位置」又是两套
+      const rr = examHintRect(hd, area.w, area.h);
+      const cx = area.x + rr.cx;
+      const cy = area.y + rr.cy;
       const cardW = Math.max(52, Math.min(120, area.w * 0.22));
       // 剩余时间:越紧迫越红/越闪(纯视觉,不影响数值)
       const left = Math.max(0, hd.untilH - totalH);
       const ttl0 = Math.max(0.001, examHintLerp(EXAM_HINT_CFG.TTL_H, (TRAIN_CFG.EXAMS[es.idx] || {}).importance || 0.2));
       const urgency = 1 - Math.min(1, left / ttl0);
+      const fade = left / ttl0 < 0.4 ? Math.max(0.12, (left / ttl0) / 0.4) : 1;   // §25 与场景同步淡出
       const bg = new PIXI.Graphics();
-      bg.beginFill(0xfff4d6, 0.94 - urgency * 0.1);
-      bg.lineStyle(1.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95);
+      bg.beginFill(0xfff4d6, (0.94 - urgency * 0.1) * fade);
+      bg.lineStyle(1.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95 * fade);
       bg.drawRoundedRect(cx - cardW / 2, cy - 13, cardW, 26, 7);
       bg.endFill();
       bg.eventMode = 'static';
@@ -6511,7 +6701,7 @@ function layoutRelayHud() {
   const bw = Math.min(420, w * 0.55);
   const bh = 52;
   const x = (w - bw) / 2;
-  const y = 12;
+  const y = BCAST_CFG.TOPBAR_Y;   // §25 与 layoutTopbar 同款下移(否则盖住吸顶播报条)
   const bg = new PIXI.Graphics();
   roundRect(bg, x, y, bw, bh, 14, 0x2a1f16, 0.78);
   relayHud.addChild(bg);
@@ -6534,7 +6724,7 @@ function layoutTuneHud() {
   const bw = Math.min(420, w * 0.55);
   const bh = 52;
   const x = (w - bw) / 2;
-  const y = 12;
+  const y = BCAST_CFG.TOPBAR_Y;   // §25 同上
   const bg = new PIXI.Graphics();
   roundRect(bg, x, y, bw, bh, 14, 0x2a1f16, 0.78);
   tuneHud.addChild(bg);
@@ -6600,7 +6790,10 @@ function createWalkerRig(idleAssetKey, sitAssetKey) {
       bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
     },
     drag: { isDragging: false, offsetX: 0, offsetY: 0 },
-    physics: { vy: 0, gravity: 0.25, isFalling: false, targetY: 0, sitOnChair: false },
+    // §32(2026-11-01 星光「掉落速度还是太慢了」):重力 0.25 → 1.2(约 4.8 倍)。
+    //   实测旧值:200px 落 0.67s / 500px 落 1.05s(飘);新值:200px≈0.30s / 500px≈0.48s。
+    //   单位是「每帧²」,已由 updateWalkerRig 里的 k=dt*60 换算成按时间,与帧率无关。
+    physics: { vy: 0, gravity: 1.2, isFalling: false, targetY: 0, sitOnChair: false },
   };
 }
 
@@ -6784,7 +6977,15 @@ function syncWalkFacing(ai, rig) {
 }
 
 // 共用 AI/落体推进。opts.mode = 'relay' | 'tune'
-function updateWalkerRig(rig, mode) {
+// §30(2026-11-01):原来所有位移都是「每帧」累加(vy += gravity; y += vy / x += dx*speed / timer--),
+//   帧率一变速度就变 —— 星光那边看到的就是「中转站/调教人物下落变慢」(帧率被压低时)。
+//   现在统一乘一个 k = dt*60(60fps 为基准),任何帧率下手感一致。
+function updateWalkerRig(rig, mode, dt) {
+  // §33(2026-11-01 星光「干净生产的速度还是慢了」):动画基准从 60fps 提到 **90fps**(与默认帧率上限一致)。
+  //   历史原因:旧版位移是「每帧」累加,高刷屏(144/165Hz)上跑得比设计值快 2.4~2.7 倍,玩家就记住了那个手感;
+  //   改成按时间后回到 60fps 基准,于是「看起来变慢」。这里把基准抬到 90 ⇒ 比 60 基准快 1.5 倍,更接近记忆里的手感。
+  //   上限 8 仍保留:帧率掉到 10fps 时 k=9 会被截到 8,不会卡成幻灯片。
+  const k = Math.max(0.1, Math.min(8, (typeof dt === 'number' ? dt : 1 / ANIM_BASE_FPS) * ANIM_BASE_FPS));
   const ai = rig.ai;
   const ph = rig.physics;
   const c = rig.container;
@@ -6809,8 +7010,8 @@ function updateWalkerRig(rig, mode) {
   // (原先 mode==='tune' && sitting 会立刻踢回走路,课桌落座做不了)
 
   if (ph.isFalling) {
-    ph.vy += ph.gravity;
-    c.y += ph.vy;
+    ph.vy += ph.gravity * k;
+    c.y += ph.vy * k;
     ai.y = c.y;
     if (c.y >= ph.targetY) {
       c.y = ph.targetY;
@@ -6877,7 +7078,7 @@ function updateWalkerRig(rig, mode) {
     return;
   }
 
-  ai.timer--;
+  ai.timer -= k;
   if (ai.state === 'idle') {
     if (ai.timer <= 0) {
       ai.state = 'walking';
@@ -6888,8 +7089,8 @@ function updateWalkerRig(rig, mode) {
   } else {
     // 已在 walking:每帧校正朝向(覆盖「开场直接 walking 未切贴图」等路径)
     syncWalkFacing(ai, rig);
-    ai.x += ai.dx * ai.speed;
-    ai.y += ai.dy * ai.speed;
+    ai.x += ai.dx * ai.speed * k;
+    ai.y += ai.dy * ai.speed * k;
     const b = ai.bounds;
     if (ai.x < b.minX) { ai.x = b.minX; ai.dx = Math.abs(ai.dx); ai.facing = 'right'; rig.walk.textures = walkFramesRight; rig.walk.play(); }
     if (ai.x > b.maxX) { ai.x = b.maxX; ai.dx = -Math.abs(ai.dx); ai.facing = 'left'; rig.walk.textures = walkFramesLeft; rig.walk.play(); }
@@ -6912,10 +7113,10 @@ function updateWalkerRig(rig, mode) {
   }
 }
 
-function updateWalkerAI() {
+function updateWalkerAI(dt) {
   // 性能:两场景都关时不跑
-  if (relaySceneOpen) updateWalkerRig(relayWalker, 'relay');
-  if (tuneSceneOpen && tuneWalker) { syncTuneTrainingSit(); updateWalkerRig(tuneWalker, 'tune'); }
+  if (relaySceneOpen) updateWalkerRig(relayWalker, 'relay', dt);
+  if (tuneSceneOpen && tuneWalker) { syncTuneTrainingSit(); updateWalkerRig(tuneWalker, 'tune', dt); }
 }
 
 // 闭关训练头顶标签:跟随"当前可见场景"的人物头顶(生产/中转站/调教都显示)
@@ -7063,7 +7264,9 @@ function setBGM(key) {
 function startBGMOnGesture() {
   if (BGM.started) return;
   initBGM();
-  BGM.started = true;
+  BGM.started = true;   // 手势已解锁(此后 setBGM 才允许真播)
+  // §29:停在主菜单时只起**菜单曲**,不进游戏就绝不碰场景曲
+  if (activeSlot < 0) { startMenuBGM(); return; }
   const key = currentBgmKey();
   BGM.cur = key;
   const a = ensureBgmTrack(key); // 懒加载:手势到点才建当前场景那一轨
@@ -7085,12 +7288,63 @@ function setBgmVolume(v) {
     for (const k in BGM.tracks) {
       try { BGM.tracks[k].pause(); } catch (e) {}
     }
-  } else if (BGM.started && BGM.cur && BGM.tracks[BGM.cur]) {
+    stopMenuBGM();
+  } else if (MBGM.audio) {
+    // 菜单曲属于另一套,音量同步但不共用对象
+    bgmStopFade(MBGM.audio);
+    MBGM.audio.volume = musicVolume;
+    if (activeSlot < 0 && MBGM.audio.paused && BGM.started) { try { MBGM.audio.play().catch(() => {}); } catch (e) {} }
+  }
+  if (musicVolume > 0 && BGM.started && BGM.cur && BGM.tracks[BGM.cur]) {
     const a = BGM.tracks[BGM.cur];
     if (a.paused) { try { a.play().catch(() => {}); } catch (e) {} }
   }
   saveSettingsSoon();
 }
+// ==================== §29 主菜单音频(与游戏内 BGM 完全分离) ====================
+// 星光 2026-10-29:「主菜单的背景音乐等和游戏内不互通,不要互相影响,我后续会补主菜单的音效」。
+// 做法:**另一套 Audio 对象、另一套启停**,和 BGM.tracks 零共享 —— 进出菜单只切自己这一套,
+//   绝不会把游戏内的三首场景曲搞乱(反之亦然)。
+// ⚠️ 现在 MENU_AUDIO 是空的(占位):bgm 填地址就会自动播;sfx 填 { 名字: 地址 } 后调 playMenuSfx(名字) 即可。
+const MENU_AUDIO = {
+  bgm: null,        // TODO(星光):主菜单 BGM 地址,例如 'assets/audio/bgm_menu.m4a'
+  sfx: {},          // TODO(星光):主菜单音效表,例如 { hover: 'assets/audio/sfx_menu_hover.wav' }
+};
+const MBGM = { audio: null, started: false };
+function ensureMenuBgmTrack() {
+  if (MBGM.audio || !MENU_AUDIO.bgm) return MBGM.audio;
+  const a = new Audio(MENU_AUDIO.bgm);
+  a.loop = true; a.preload = 'auto'; a.volume = 0;
+  MBGM.audio = a;
+  return a;
+}
+function startMenuBGM() {
+  const a = ensureMenuBgmTrack();
+  if (!a || musicVolume <= 0) return;
+  try { a.play().then(() => bgmFade(a, musicVolume)).catch(() => {}); } catch (e) {}
+}
+function stopMenuBGM() {
+  const a = MBGM.audio;
+  if (!a) return;
+  bgmStopFade(a);
+  a.volume = 0;
+  try { a.pause(); } catch (e) {}
+}
+function stopGameBGM() {
+  for (const k in BGM.tracks) {
+    const a = BGM.tracks[k];
+    bgmStopFade(a);
+    a.volume = 0;
+    try { a.pause(); } catch (e) {}
+  }
+  BGM.cur = null;
+}
+function playMenuSfx(name) {
+  const src = MENU_AUDIO.sfx[name];
+  if (!src || sfxVolume <= 0) return;
+  try { const a = new Audio(src); a.volume = Math.max(0, Math.min(1, sfxVolume)); a.play().catch(() => {}); } catch (e) {}
+}
+
 // ==================== SFX:操作音效(程序化合成,assets/audio/sfx_*;消费设置里的「音效音量」滑条) ====================
 // 触发点:生产点击(clickMask)/ 购买成功(createBuyItem 扣款点)/ 挥鞭(调教选中鞭子时按下)/ 成组消除。
 // 全部由用户手势触发,不受浏览器自动播放策略限制。池化复用、上限 8 并发,超出丢弃(连点不炸内存)。
@@ -7115,7 +7369,7 @@ function playSfx(name) {
 let settingsSaveTimer = 0;
 function saveSettingsSoon() {
   clearTimeout(settingsSaveTimer);
-  settingsSaveTimer = setTimeout(() => { saveGame(); }, 400);
+  settingsSaveTimer = setTimeout(() => { saveGlobalSettings(); saveGame(); }, 400);
 }
 
 function openRelayScene() {
@@ -7160,7 +7414,7 @@ examScene.visible = false;
 //   全部盖在考场上方并继续接收点击(2026-10-22 星光截图:上下 UI 仍在、点卡片没反应)。
 app.stage.addChild(examScene);
 let examSceneOpen = false;
-const examBgSprite = PIXI.Sprite.from(ASSETS.exam_bg);
+const examBgSprite = bgSprite('exam_bg', { maxW: 1280 });
 examScene.addChild(examBgSprite);
 // 卷面压暗一层(让卡片/气泡在亮纸面上可读)
 const examShade = new PIXI.Graphics();
@@ -7189,6 +7443,8 @@ function openExamScene() {
   if (typeof speechBubble !== 'undefined' && speechBubble) speechBubble.visible = false;
   setBGM('bgm_tune');   // 考场沿用调教那首(都是室内安静场景)
   layoutExamScene();
+  layoutBroadcast();             // §25:考场上也吸顶(考试开始/结束的通知都从这里滚)
+  placeBroadcast();              // 考场是 stage 最上层 ⇒ 播报层要再压上去才看得见
 }
 // §24 考试场景布局:背景 cover 铺满 + 进度条(左上) + 灵感卡(2×) + 右下角模型与思考气泡。
 // 与 layoutTuneScene 同套路:全屏容器重建,不做增量布局。
@@ -7225,32 +7481,52 @@ function layoutExamScene() {
 
   // ── 左上角:剩余时间进度条(唯一保留的 HUD)──
   // §24b:barY 从 20 抬到 82 —— 左上角 62px 是设置按钮的活动区,不能压
-  const barW = Math.min(320, w * 0.30), barH = 16, barX = 20, barY = 82;
-  const box = new PIXI.Graphics();
-  box.beginFill(0x1a1208, 0.72);
-  box.drawRoundedRect(barX - 8, barY - 8, barW + 16, barH + 40, 10);
-  box.endFill();
-  examLayer.addChild(box);
+  // §25:再抬到 62 + 播报条高(吸顶播报条要完整露出来,进度条不能压它)
+  // §25:窄屏(手机横屏 375 逻辑高)时进度条盒按屏高一起收 —— 否则 320px 宽的盒子会横占半屏、压住卡片
+  // §25h(星光 2026-10-26「手机版的那几个框可以小一点,包括左上角的」):
+  //   手机横屏(375 逻辑高)时进度条与两行文字都收一档 —— 原来 320×16 + 两行 15/13px
+  //   在 667 宽屏上占了近 1/4 版面,压住卷面。
+  const compact = h < 480;
+  const barW = compact ? Math.min(190, w * 0.26, h * 0.30) : Math.min(320, w * 0.30, h * 0.34);
+  const barH = compact ? 12 : 16, barX = compact ? 14 : 20;
+  const barY = BCAST_CFG.H + 18 + 24;
   const leftH = Math.max(0, es.endH - totalH);
   const totalSpan = Math.max(0.001, es.endH - es.startH);
   const pct = Math.max(0, Math.min(1, leftH / totalSpan));
+  // §25b(星光 2026-10-25:「边框没有包裹到得分那一条」):旧版框高写死 barH+40,
+  //   而三条文字的下沿在 barY+barH+40 之外(得分行 22→39、秒数行 40→57)⇒ 后两行落在框外。
+  //   改成**先建文字、量实际高度、再按内容画框**:字号/行为一改,框自动跟着长,不会再「露半截」。
+  //   框底就取「内容底 + 8」—— 不再拿常量硬撑(撑到常量 = 框比字大一圈,反而更像没包住)。
+  //   灵感卡的纵向带上界另有 EXAM_HUD_BOTTOM(见 examHintBandY),那是「卡片别压 HUD」的下界,两者职责分开。
+  // §25c:三行并两行 —— "剩余 0.6 游戏时" 与 "剩余 35 秒" 说的是同一件事,而玩家只认秒;
+  //   合并后 HUD 矮一行,手机横屏(375 逻辑高)不再被它吃掉四成屏。
+  const fs1 = compact ? 12 : 15, fs2 = compact ? 11 : 13;
+  const t1 = makeText((ex.name || '考试') + '  ·  剩余 ' + Math.ceil(leftH * 60) + ' 秒',
+    { size: fs1, color: '#ffe9c4', weight: 'bold' });
+  const t2 = makeText('得分 ' + Math.round(es.score || 0) + '  ·  已抓 ' + (es.clicks || 0) + ' 张灵感',
+    { size: fs2, color: '#c9b892' });
+  t1.x = barX; t1.y = barY + barH + 6;
+  t2.x = barX; t2.y = t1.y + t1.height + 2;
+  const contentBottom = t2.y + t2.height;
+  const boxTop = barY - (compact ? 6 : 8);
+  // 底边 = 内容底 + 8(真包住),不再额外撑到某个常量 —— 撑高只会让"框比字大一圈"更显眼
+  const boxBottom = contentBottom + 8;
+  // §25d(星光 2026-10-25 手机截图:「剩余 65 秒」顶出右边):框宽也要按内容量 ——
+  //   barW 是进度条的宽度(320 或 w*0.30/h*0.34),而文案长度随考试名/位数变化,
+  //   窄屏上「期末测评 · 剩余 65 秒」正好比 barW 宽。取 max(进度条宽, 最宽一行文字宽) 后画框。
+  const hudW = Math.max(barW, t1.width, t2.width);
+  const box = new PIXI.Graphics();
+  box.beginFill(0x1a1208, 0.72);
+  box.drawRoundedRect(barX - (compact ? 6 : 8), boxTop, hudW + (compact ? 12 : 16), boxBottom - boxTop, compact ? 8 : 10);
+  box.endFill();
   const fill = new PIXI.Graphics();
   fill.beginFill(pct > 0.3 ? 0x6ad08a : 0xd0442a, 0.95);
   fill.drawRoundedRect(barX, barY, Math.max(2, barW * pct), barH, 8);
   fill.endFill();
-  examLayer.addChild(fill);
   const barFrame = new PIXI.Graphics();
   barFrame.lineStyle(1.5, 0xc4b8a8, 0.9);
   barFrame.drawRoundedRect(barX, barY, barW, barH, 8);
-  examLayer.addChild(barFrame);
-  const t1 = makeText((ex.name || '考试') + '  ·  剩余 ' + leftH.toFixed(1) + ' 游戏时',
-    { size: 15, color: '#ffe9c4', weight: 'bold' });
-  t1.x = barX; t1.y = barY + barH + 4;
-  examLayer.addChild(t1);
-  const t2 = makeText('得分 ' + Math.round(es.score || 0) + '  ·  已抓 ' + (es.clicks || 0) + ' 张灵感',
-    { size: 13, color: '#c9b892' });
-  t2.x = barX; t2.y = barY + barH + 22;
-  examLayer.addChild(t2);
+  examLayer.addChild(box, fill, barFrame, t1, t2);
 
   // ── 灵感卡:星光「长方形边框可以大一些,尝试 2 倍」──
   //   原 examHintClick 的命中口径是 52~120 宽 × 26 高,这里 2× ⇒ 104~240 × 52。
@@ -7264,16 +7540,20 @@ function layoutExamScene() {
     // §24b:后 40% 生命线性淡出(alpha 0.95→0.12),命中层同步收缩 ⇒ 视觉上「闪一下就没了」,
     //   而不是像旧版那样一张卡挂满半分钟(旧 TTL 66~27 秒,看着就是「不会消失」)。
     const fade = left / ttl0 < 0.4 ? Math.max(0.12, (left / ttl0) / 0.4) : 1;
+    // §25:一批要同时出现 3~5 张 ⇒ 描边按"还能点多久"变红加粗,余光里也能分辨哪张先消失
     const bg = new PIXI.Graphics();
-    bg.beginFill(0xfff4d6, 0.95 * fade);
-    bg.lineStyle(2.5, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95 * fade);
-    bg.drawRoundedRect(r.x, r.y, r.w, r.h, 12);
+    bg.beginFill(0xfff4d6, 0.96 * fade);
+    bg.lineStyle(urgency > 0.6 ? 3 : 2, urgency > 0.6 ? 0xd0442a : 0xc9a24a, 0.95 * fade);
+    bg.drawRoundedRect(r.x, r.y, r.w, r.h, 10);
     bg.endFill();
     examLayer.addChild(bg);
-    const tx = makeText((hd.prefix || '') + ' ' + (hd.text || ''), { size: 22, color: '#6a4a1a', weight: 'bold' });
+    // §25g:字号随卡宽走 —— 卡片窄(手机 667 只有 ~120px)时**先降字号**,不要靠 scale 把 20px 硬压成 11px
+    //   (压出来的字又糊又细,读不了)。20px 需要 ~200px 内宽,按 r.w 线性给 12~20。
+    const tSize = Math.max(12, Math.min(20, Math.round((r.w - 24) / 9)));
+    const tx = makeText((hd.prefix || '') + ' ' + (hd.text || ''), { size: tSize, color: '#4a2e0a', weight: 'bold' });
     tx.alpha = fade;
-    tx.x = r.x + 14; tx.y = r.y + 14;
-    if (tx.width > r.w - 28) tx.scale.set((r.w - 28) / tx.width);
+    tx.x = r.x + 12; tx.y = r.y + (r.h - tx.height) / 2;   // 垂直居中(卡矮时 12px 固定内边距会顶出去)
+    if (tx.width > r.w - 24) tx.scale.set((r.w - 24) / tx.width);
     examLayer.addChild(tx);
     // 剩余时间细条(2× 高)
     const tb = new PIXI.Graphics();
@@ -7300,7 +7580,9 @@ function layoutExamScene() {
   // ── 右下角:模型 + 思考气泡(星光:「像生产板块一样把模型放在右下角,图2 作为气泡框」)──
   // §24b(星光:「右下角人物太小,可以修改大小,和生产板块的贴齐」):用 layoutCharacters 同一套公式
   //   targetH = min(340, h*0.4)、纹理基准 400 —— 两处各写一份就会「看着不一样大」,这里刻意同源。
-  const charH = Math.min(340, h * 0.4), charScale = charH / 400;
+  // §25g:人物还要受**屏宽**约束 —— 竖屏(375×667)下 h*0.4=267 会占掉七成屏宽,
+  //   灵感卡横向区间被挤到只剩 ~140px。加 w*0.42 这一档,竖屏也不会把版面吃光。
+  const charH = Math.min(340, h * 0.4, w * 0.42), charScale = charH / 400;
   const mw = 400 * charScale, mh = 400 * charScale;
   const mx = w - mw - 10, my = h - mh - 10;
   // 模型占位:用 char1(张口的立绘)示意「正在思考」(真正的人物层可后续接 tuneWalker)
@@ -7312,17 +7594,21 @@ function layoutExamScene() {
   modelSprite.y = my + (mh - (modelSprite.height || mh));
   examLayer.addChild(modelSprite);
   // 思考气泡(挂模型左上;气泡尾巴在下方,所以气泡底边贴着模型头顶)
-  const bubbleW = Math.min(360, mw * 1.5, w * 0.34), bubbleH = bubbleW * 0.92;
-  const bx = mx - bubbleW * 0.72, by = my - bubbleH * 0.62;
+  // §25(2026-10-25 星光「右下角的说话气泡可以小一点」):360→248,占比 0.34→0.24,
+  //   同时把字距预算收小,不然小气泡里塞 18px 粗体会顶边。
+  // §25:再按屏高约束一次 —— 手机横屏只有 375 逻辑高,纯按屏宽算的气泡会占到近 1/4 屏
+  const bubbleW = Math.min(compact ? 186 : 248, mw * 1.05, w * (compact ? 0.20 : 0.24), h * (compact ? 0.28 : 0.34)), bubbleH = bubbleW * 0.92;
+  const bx = mx - bubbleW * 0.60, by = my - bubbleH * 0.52;
   const bub = PIXI.Sprite.from(ASSETS.think_bubble);
   if (bub.texture && bub.texture.width > 1) {
     bub.scale.set(Math.min(bubbleW / bub.texture.width, bubbleH / bub.texture.height));
   }
   bub.x = bx; bub.y = by;
   examLayer.addChild(bub);
-  const think = makeText(es.thinkLine || '', { size: 18, color: '#2a3a5a', weight: 'bold', align: 'center' });
+  const think = makeText(es.thinkLine || '', { size: compact ? 12 : 14, color: '#2a3a5a', weight: 'bold', align: 'center' });
   think.style.wordWrap = true;
-  think.style.wordWrapWidth = Math.max(80, bub.width * 0.68);
+  think.style.wordWrapWidth = Math.max(64, bub.width * 0.66);
+  think.style.lineHeight = compact ? 16 : 19;   // 气泡小 ⇒ 行高也收,避免溢出气泡边界
   think.style.breakWords = true;
   think.anchor.set(0.5, 0.5);
   think.x = bub.x + bub.width / 2;
@@ -7336,13 +7622,62 @@ function layoutExamScene() {
   think.visible = visible;
 }
 
-// 灵感卡的命中矩形(与绘制共用,2× 后尺寸):星光要求放大 2 倍
+// 灵感卡的命中矩形(与绘制共用):§24 星光要求放大 2 倍,§25 起一次冒 3~5 张,
+//   两张卡之间必须有缝,不然「一批」会糊成一坨 ⇒ 收一点宽度,并把 y 压进播报条之下、底栏之上。
 function examHintRect(hd, w, h) {
-  const cw = Math.max(104, Math.min(240, w * 0.22));   // 原 52~120 的 2×
-  const ch = 52;                                        // 原 26 的 2×
-  const cx = hd.ux * w;
-  const cy = hd.uy * h;
+  // §25h(2026-10-26 星光:「要更像是随机出现的位置,而不是像打地鼠一样固定的地方」):
+  //   上一版把 ux/uy **吸附到 2~4 行 × 2~4 列的格心**,于是每张卡都落在同样的几个点上,
+  //   同一批还排成整齐的两行 —— 看着就是打地鼠。现在改成**连续映射**:
+  //   ux/uy 是 [0,1] 的连续值,线性映进「可用区间」,位置不再量化。
+  //   防重叠改由 spawnExamHint 的**拒绝采样**负责(它知道真实矩形),这里只负责几何。
+  //   ⚠️ 人物尺寸必须与 layoutExamScene **同一套公式**(charH=min(340,h*0.4,w*0.42)、
+  //      bubbleW=min(248,mw*1.05,w*0.24,h*0.34)),写死像素换屏就重新撞上。
+  const band = examHintBand(h);
+  // 卡高:按带高自适应(手机带只有 ~190px,46px 的卡太厚 ⇒ 收到 30~40)
+  const ch = Math.max(28, Math.min(h < 480 ? 40 : 46, band.span / 5.2));
+  // 人物/气泡占位(与 layoutExamScene 同源)
+  const side = Math.min(340, h * 0.4, w * 0.42);
+  const modelL = w - side - 10;
+  const bubbleW = Math.min(248, 400 * (side / 400) * 1.05, w * 0.24, h * 0.34);
+  const exclL = Math.min(modelL, modelL - bubbleW * 0.60) - 8;
+  const exclT = h - side - 10 - bubbleW * 0.92 * 0.52 - 8;
+  // 纵向:连续,不吸附行
+  const uyC = band.top + Math.max(0, Math.min(1, hd.uy)) * band.span;
+  const cy = Math.max(band.top + ch / 2, Math.min(h - ch / 2 - 6, uyC));
+  // 横向:落在人物带里的行要收右边界(否则压人物)
+  const hitsChar = (cy + ch / 2) > exclT;
+  const leftEdge = 8;
+  const rightEdge = hitsChar ? Math.max(leftEdge + 110, exclL) : (w - 8);
+  const avail = Math.max(110, rightEdge - leftEdge);
+  // 卡宽:窄屏更小(星光「那几个框可以小一点」),但**内宽不能低于 ~100px** ——
+  //   23 字的最长文案在 12px 下仍需约 170px;卡太窄就只能靠 scale 压字,越压越糊。
+  //   所以宽度下限由「可读性」反推,而不是随手写个 72。
+  const cwBase = h < 480 ? Math.max(112, Math.min(168, w * 0.185)) : Math.max(120, Math.min(200, w * 0.185));
+  const cw = Math.max(108, Math.min(cwBase, avail));
+  const u = Math.max(0, Math.min(1, (hd.ux - 0.10) / 0.82));
+  const cx = leftEdge + cw / 2 + u * Math.max(1, avail - cw);
   return { x: cx - cw / 2, y: cy - ch / 2, w: cw, h: ch, cx, cy };
+}
+// §25b:左上角 HUD 盒的**实测**下沿 = 148。
+//   推导(桌面字号):barY 72 + barH 16 + 6 → 标题行 94,高 20 → 114;得分行 116,高 17 → 133;
+//   框底留白 8 → 141,再留 7px 缝 → 148。手机字号小一档,底边约 136 < 148,同样被盖住。
+//   ⚠️ 这个常量只做「灵感卡别压 HUD」的下界,**不参与** HUD 盒子自身的画法(盒高由内容反推);
+//   两处各写一份才会漂移(§25b 的原始 bug 就是框高写死、内容比框高)。
+const EXAM_HUD_BOTTOM = 148;
+// 卡片纵向可用带:顶部让开吸顶播报条 + 左上角 HUD 盒,底部让开模型与屏幕边。
+// ⚠️ 这里**不引用 BCAST_CFG**:examHintRect 会被经济仿真沙箱抽取(见 sim/startup_loop.js),
+//    多引一个模块常量就得多抽一个,漏抽直接 ReferenceError。写字面量,并让断言钉住一致性。
+// 纵向可用带 [top, bottom](与 examHintBandY 同源,避免两处各算一份)
+function examHintBand(h) {
+  const top = EXAM_HUD_BOTTOM;
+  const bottom = h * 0.90;
+  return { top, bottom, span: Math.max(60, bottom - top) };
+}
+function examHintBandY(uy, h) {
+  // 顶部下界 = 播报条(8+30) 之下再让开左上角 HUD 盒(barY..EXAM_HUD_BOTTOM);
+  // 底部 0.90 —— 再往下会压到右下角模型与气泡。中间均分,一批 3~5 张才排得开。
+  const b = examHintBand(h);
+  return b.top + Math.max(0, Math.min(1, uy)) * b.span;
 }
 
 // §24 考试场景每帧刷新:进度条/卡片倒计时会变,但**不能每帧重建整个场景**(PIXI 对象重建开销大)。
@@ -7369,8 +7704,222 @@ function closeExamScene() {
   for (const tb of TABS) tb.container.visible = true;
   layoutNavTabs();                // 底部标签按当前场景重排(只排 visible 的)
   setBGM('bgm_basement');
+  placeBroadcast();               // §25:出考场把播报层放回 panel 之前(别盖住面板/设置)
 }
-const tuneBgSprite = PIXI.Sprite.from(ASSETS.tune_bg);
+
+// ==================== §25 顶部滚动播报条(2026-10-25 星光)====================
+// 星光原话:「考试结束的通知字样有好几条对吧,做成顶部的滚动播报气泡,并且气泡左边有喇叭的图标,
+//   消息字样缓慢向左移动慢慢被遮挡消失,注意三个板块都要让这个播报气泡吸顶,直到完全播放结束。」
+// 设计:
+//   · 挂在 layers.broadcast(独立层,插在 topbar 之上、panel/settings/nav 之下)⇒ **三个板块(生产/中转站/调教)
+//     + 考场**都吸顶,不被场景切换影响;只有 panel/settings 这类「临时弹窗」才会盖住它(合理:那是用户主动开的)。
+//   · 左侧喇叭图标用 Graphics 程序化画(不引新素材,零体积);右侧文字在**圆角裁剪矩形**内从右往左匀速走,
+//     走到左边被 clip 裁掉 = 「慢慢被遮挡消失」,不是整条淡出。
+//   · 节奏由主 ticker 驱动(与 updateExamScene 同一层),不 setTimeout:暂停/切场景都不会错拍。
+//   · 队列:多条消息依次播放,播完一条接着下一条;播完最后一条整体淡出 → 完全消失。
+const BCAST_CFG = {
+  TOP: 8,             // 距屏顶(真·吸顶)
+  H: 30,              // 播报条高
+  DUR_S: 4.5,         // 单条走完全程的时长(秒)。速度 = 位移 / 这个值 ⇒ 位移随屏宽变,
+                      //   用固定 px/秒 会让宽屏一条播 30 秒(实测:通栏后 46px/s → 36 秒/条)
+  SPEED_MIN: 110,     // 速度下限(px/秒),防超长文案糊成一片
+  GAP_S: 0.55,        // 两条消息之间的空档
+  FADE_S: 0.45,       // 整个播报条进出淡入淡出时长
+  MIN_SHOW_S: 1.6,    // 单条最短停留(短句不至于一闪而过)
+  TOPBAR_Y: 44,       // 顶部药丸(token/HUD)下移到这里,给播报条让出一条顶带
+};
+const bcastLayer = new PIXI.Container();
+bcastLayer.visible = false;
+// 归位:插在 panel 之前(= 浮字/顶栏/场景之上,面板/设置/底栏之下)。
+//   播报条要盖住 token 药丸与场景浮字,但不能盖住用户主动打开的面板/设置。
+//   ⚠️ 不能缓存索引:openScreenPanel 会把 layers.panel **重挂**到 topbar 位置,relay/tune/exam 三个全屏容器
+//   也是 addChildAt 插进 stage 的 ⇒ 索引会整体漂移。实测:按一次性快照插入后 bcast 跑到 panel 之上(盖住面板)。
+//   所以每次需要时按「当前」索引重算,并在开/关面板那一刻重放。
+function placeBroadcast() {
+  if (!bcastLayer || !bcastLayer.parent) return;
+  if (examSceneOpen) {                      // 考场:压到最顶(否则被 stage 最上层的 examScene 盖住)
+    if (app.stage.getChildIndex(bcastLayer) !== app.stage.children.length - 1) app.stage.addChild(bcastLayer);
+    return;
+  }
+  // ⚠️ 必须「先摘到末尾再插到 panel 索引」:直接 addChildAt(bcast, getChildIndex(panel)) 时,
+  //   若 bcast 本来就在 panel 之前,移除会让 panel 索引 -1,于是插到 9 ⇒ bcast 反被 panel 盖住(实测踩过)。
+  if (app.stage.children[app.stage.getChildIndex(layers.panel) - 1] === bcastLayer) return;   // 已经在 panel 之前
+  app.stage.addChild(bcastLayer);                                  // 先摘到末尾(重排后 panel 索引稳定)
+  app.stage.addChildAt(bcastLayer, app.stage.getChildIndex(layers.panel));
+}
+app.stage.addChild(bcastLayer);   // 首次入舞台(位置由 placeBroadcast 决定)
+placeBroadcast();
+// ⚠️ 考场 examScene 是被 addChild 到 stage **最顶**的(§24),会把播报条整个盖住 ⇒
+//   进考场时把播报层提到最顶,出考场再放回归位索引(否则面板/设置又被它盖)。
+
+const bcastRoot = new PIXI.Container();     // 整体淡入淡出用(alpha 挂在它身上)
+bcastLayer.addChild(bcastRoot);
+const bcastBg = new PIXI.Graphics();        // 圆角底 + 左边喇叭座
+const bcastHorn = new PIXI.Graphics();      // 喇叭图标
+const bcastClip = new PIXI.Container();     // 文字裁剪窗(滚动区)
+// ⚠️ 蒙版必须挂在被裁容器的**同级**(挂进 bcastClip 里会连自己一起被裁,效果全无)
+const bcastMask = new PIXI.Graphics();      // 裁剪靠 Graphics 蒙版(圆角内),不用 shader
+bcastRoot.addChild(bcastBg, bcastHorn, bcastClip, bcastMask);
+const bcastText = makeText('', { size: 16, color: '#ffe9c4', weight: 'bold' });
+bcastClip.addChild(bcastText);
+bcastClip.mask = bcastMask;
+// 队列状态(模块级;沙箱抽函数时 typeof 守卫,不会碰)
+const bcastState = {
+  queue: [],        // 待播消息(字符串)
+  cur: '',          // 当前播放的那条
+  phase: 'idle',    // idle | in | run | gap | out
+  t: 0,             // 当前阶段计时
+  scrollX: 0,       // 文字当前 x
+  width: 0,         // 单条走完需要滚动的距离
+  alpha: 0,
+};
+// 几何:吸顶 + 居中,左右留边;高度按屏宽自适应(窄屏缩一点)
+function layoutBroadcast() {
+  const w = app.screen.width;
+  const bh = BCAST_CFG.H, y = BCAST_CFG.TOP;
+  // 左边不压左上角设置按钮(14..62),右边留 12;宽度按屏宽取「接近通栏的气泡」:
+  //   太窄 ⇒ 滚动窗口小、"被遮挡消失"看不出来;太宽 ⇒ 像一条黑带,不像气泡。
+  const x0 = 74, x1 = w - 12;
+  const avail = Math.max(200, x1 - x0);
+  const bw = Math.min(avail, 980);
+  const x = x0 + (avail - bw) / 2;
+  bcastLayer._geo = { x, y, w: bw, h: bh };
+  bcastBg.clear();
+  // 底:深色圆角气泡 + 金色细描边(与 topbar 胶囊同一套语汇)
+  bcastBg.beginFill(0x1a1208, 0.86);
+  bcastBg.lineStyle(1.2, 0xc9a24a, 0.62);
+  bcastBg.drawRoundedRect(x, y, bw, bh, bh / 2);
+  bcastBg.endFill();
+  // 喇叭座:左侧一个略亮的圆,把图标垫起来
+  bcastBg.beginFill(0x3a2a14, 0.95);
+  bcastBg.drawCircle(x + bh / 2 + 2, y + bh / 2, bh / 2 - 5);
+  bcastBg.endFill();
+  drawHorn(bcastHorn, x + bh / 2 + 2, y + bh / 2, 9);
+  // 裁剪窗:喇叭右侧到右边缘(圆角内),文字只在这个窗口里可见
+  const cx = x + bh + 10, cw = bw - bh - 20, cy = y + 3, ch = bh - 6;
+  bcastMask.clear();
+  bcastMask.beginFill(0xffffff, 1);
+  bcastMask.drawRoundedRect(cx, cy, cw, ch, ch / 2);
+  bcastMask.endFill();
+  bcastClip._win = { x: cx, w: cw, cy: cy + ch / 2 };
+  bcastText.y = y + bh / 2;
+  bcastText.anchor.set(0, 0.5);   // 左锚点:用 x 直接表达「文字头在窗口哪里」
+  bcastLayer._geo.textY = y + bh / 2;
+  if (bcastState.phase !== 'idle') refreshBcastScroll();   // 正在播时按新几何重算滚动距离
+}
+// 喇叭图标:小方块 + 梯形喇叭口 + 两道声波(Graphics 手画,任意分辨率都清楚)
+function drawHorn(g, cx, cy, r) {
+  g.clear();
+  const col = 0xffe9c4;
+  g.beginFill(col, 0.95);
+  // 喇叭主体(朝右的梯形)
+  g.moveTo(cx - r * 0.85, cy - r * 0.34);
+  g.lineTo(cx - r * 0.30, cy - r * 0.34);
+  g.lineTo(cx + r * 0.32, cy - r * 0.86);
+  g.lineTo(cx + r * 0.32, cy + r * 0.86);
+  g.lineTo(cx - r * 0.30, cy + r * 0.34);
+  g.lineTo(cx - r * 0.85, cy + r * 0.34);
+  g.closePath();
+  g.endFill();
+  // 声波两道(弧线)
+  g.lineStyle(1.8, col, 0.9);
+  g.arc(cx + r * 0.30, cy, r * 0.52, -0.9, 0.9);
+  g.lineStyle(1.6, col, 0.65);
+  g.arc(cx + r * 0.30, cy, r * 0.86, -0.9, 0.9);
+}
+// 按当前几何重算「这条消息要走多远」:从窗口右边外 → 完全走出左边
+function refreshBcastScroll() {
+  const win = bcastClip._win;
+  if (!win) return;
+  bcastText.text = bcastState.cur;
+  const tw = Math.max(1, bcastText.width);
+  bcastText.x = 0;   // 相对窗口的偏移由 refresh 里设
+  // 总位移 = 文字宽 + 窗口宽(从右外进、到左外),用极小值兜底空串
+  bcastState.width = tw + win.w;
+  bcastState.tw = tw;
+  bcastState.winW = win.w;
+  // 单条时长:目标 DUR_S,但速度不得低于 SPEED_MIN;不低于 MIN_SHOW_S
+  const spd = Math.max(BCAST_CFG.SPEED_MIN, bcastState.width / BCAST_CFG.DUR_S);
+  bcastState.dur = Math.max(BCAST_CFG.MIN_SHOW_S, bcastState.width / spd);
+  applyBcastScroll();
+}
+function applyBcastScroll() {
+  const win = bcastClip._win;
+  if (!win || !bcastState.tw) return;
+  // 进度 0→1:文字头从窗口右边缘外(w-w? )走到窗口左侧完全消失
+  const p = Math.max(0, Math.min(1, bcastState.progress || 0));
+  const startX = win.w;                 // 文字头在窗口右边外(100% 被裁掉)
+  const endX = -bcastState.tw;          // 文字尾也出了窗口左边(100% 被裁掉)
+  const localX = startX + (endX - startX) * p;
+  bcastText.x = win.x + localX;
+}
+// 推一条播报(由上层的「通知」调用;重复内容不重播,避免刷屏)
+function pushBroadcast(msg) {
+  if (typeof PIXI === 'undefined' || typeof app === 'undefined' || !bcastLayer) return;
+  const s = String(msg == null ? '' : msg).trim();
+  if (!s) return;
+  if (bcastState.cur === s) return;                                  // 正在播同一条
+  if (bcastState.queue.length && bcastState.queue[bcastState.queue.length - 1] === s) return;
+  bcastState.queue.push(s);
+  if (bcastState.phase === 'idle') startNextBroadcast();
+}
+// 一次推多条(考试结束那种「好几条」)
+function pushBroadcastList(list) {
+  for (const m of (list || [])) pushBroadcast(m);
+}
+function startNextBroadcast() {
+  if (!bcastState.queue.length) {
+    bcastState.phase = 'out';
+    bcastState.t = 0;
+    return;
+  }
+  bcastState.cur = bcastState.queue.shift();
+  bcastState.phase = 'in';
+  bcastState.t = 0;
+  bcastState.progress = 0;
+  bcastLayer.visible = true;
+  bcastRoot.alpha = 0;
+  layoutBroadcast();
+  refreshBcastScroll();
+}
+function stopBroadcastAll() {
+  bcastState.queue.length = 0;
+  bcastState.cur = '';
+  bcastState.phase = 'idle';
+  bcastState.t = 0;
+  bcastLayer.visible = false;
+  bcastRoot.alpha = 0;
+}
+// 主 ticker 驱动(dt 由调用方给,和 updateTweens 同一口径)
+function updateBroadcast(dt) {
+  if (!bcastLayer || bcastState.phase === 'idle') return;
+  const C = BCAST_CFG;
+  bcastState.t += dt;
+  if (bcastState.phase === 'in') {
+    bcastRoot.alpha = Math.min(1, bcastState.t / C.FADE_S);
+    if (bcastState.t >= C.FADE_S) { bcastState.phase = 'run'; bcastState.t = 0; }
+  } else if (bcastState.phase === 'run') {
+    bcastRoot.alpha = 1;
+    const dur = bcastState.dur || C.MIN_SHOW_S;
+    bcastState.progress = Math.min(1, bcastState.t / dur);
+    applyBcastScroll();
+    if (bcastState.progress >= 1) {   // 已完全滚出左边(被遮住消失)
+      bcastState.phase = 'gap';
+      bcastState.t = 0;
+    }
+  } else if (bcastState.phase === 'gap') {
+    if (bcastState.t >= C.GAP_S) startNextBroadcast();
+  } else if (bcastState.phase === 'out') {
+    bcastRoot.alpha = Math.max(0, 1 - bcastState.t / C.FADE_S);
+    if (bcastState.t >= C.FADE_S) {
+      bcastState.phase = 'idle';
+      bcastLayer.visible = false;
+      bcastRoot.alpha = 0;
+    }
+  }
+}
+
+const tuneBgSprite = bgSprite('tune_bg');
 tuneScene.addChild(tuneBgSprite);
 // 轻压暗,保证人物在亮窗区仍可辨识(不挡人物)
 const tuneShade = new PIXI.Graphics();
@@ -8386,7 +8935,8 @@ function layoutTopbar() {
   const w = Math.min(260, app.screen.width * 0.5);
   const h = 52;
   const x = (app.screen.width - w) / 2;
-  const y = 12;
+  // §25:顶部信息条下移,把最上面一条「吸顶播报带」让出来(播报条 TOP=8 高 30 ⇒ 38 起才安全)
+  const y = BCAST_CFG.TOPBAR_Y;
   roundRect(topbarBg, x, y, w, h, 14, 0x2a1f16, 0.72);
   tokenLabel.x = app.screen.width / 2;
   tokenLabel.y = y + 18;
@@ -8474,9 +9024,14 @@ settingsOverlay.on('pointerdown', () => { closeSettings(); });
 
 function drawSettingsPanel() {
   settingsPanel.removeChildren();
-  const pw = 340, ph = 380;
+  // §27:加「返回菜单」后卡片要长高一档(380 → 452),但**不能超出可视区**——
+  //   小窗口(逻辑高 450)上 452 的面板会被居中成 y=-1,底部按钮被导航栏盖住(实测踩过)。
+  //   所以高度取 min(452, 导航栏顶 - 20, 屏高 - 20),y 再夹一次,保证整块面板在导航栏之上。
+  const pw = 340;
+  const navTop = (typeof TABS !== 'undefined' && TABS[0] && TABS[0].container) ? TABS[0].container.y : app.screen.height;
+  const ph = Math.max(320, Math.min(500, navTop - 20, app.screen.height - 20));
   const px = (app.screen.width - pw) / 2;
-  const py = (app.screen.height - ph) / 2;
+  const py = Math.max(8, Math.min((app.screen.height - ph) / 2, navTop - ph - 8));
   settingsPanel.x = px; settingsPanel.y = py;
   settingsPanel.alpha = 1;
 
@@ -8492,46 +9047,84 @@ function drawSettingsPanel() {
   title.x = pw / 2; title.y = 28;
   settingsPanel.addChild(title);
 
+  // §31:三行(音乐 / 音效 / 帧率上限);短面板时整体压缩,保证不压到底部按钮
+  const tallP = ph >= 400;
+  const rowGap = tallP ? 74 : 60;
+  const yMusic = tallP ? 66 : 52, yMusicSlider = yMusic + (tallP ? 30 : 26);
+  const ySfx = yMusic + rowGap, ySfxSlider = ySfx + (tallP ? 30 : 26);
+  const yFps = ySfx + rowGap, yFpsSlider = yFps + (tallP ? 30 : 26);
   // 音乐音量
   const musicLabel = makeText('音乐音量', { size: 14, color: '#d4c4a8' });
-  musicLabel.x = 30; musicLabel.y = 70;
+  musicLabel.x = 30; musicLabel.y = yMusic;
   settingsPanel.addChild(musicLabel);
   const musicVal = makeText(Math.round(musicVolume * 100) + '%', { size: 14, color: '#ffd98a', anchor: 1 });
-  musicVal.x = pw - 30; musicVal.y = 70;
+  musicVal.x = pw - 30; musicVal.y = yMusic;
   settingsPanel.addChild(musicVal);
-  const musicSlider = createSlider(30, 100, pw - 60, musicVolume, (v) => {
+  const musicSlider = createSlider(30, yMusicSlider, pw - 60, musicVolume, (v) => {
     setBgmVolume(v); musicVal.text = Math.round(v * 100) + '%';
   });
   settingsPanel.addChild(musicSlider);
 
   // 音效音量
   const sfxLabel = makeText('音效音量', { size: 14, color: '#d4c4a8' });
-  sfxLabel.x = 30; sfxLabel.y = 150;
+  sfxLabel.x = 30; sfxLabel.y = ySfx;
   settingsPanel.addChild(sfxLabel);
   const sfxVal = makeText(Math.round(sfxVolume * 100) + '%', { size: 14, color: '#ffd98a', anchor: 1 });
-  sfxVal.x = pw - 30; sfxVal.y = 150;
+  sfxVal.x = pw - 30; sfxVal.y = ySfx;
   settingsPanel.addChild(sfxVal);
-  const sfxSlider = createSlider(30, 180, pw - 60, sfxVolume, (v) => {
+  const sfxSlider = createSlider(30, ySfxSlider, pw - 60, sfxVolume, (v) => {
     sfxVolume = v; sfxVal.text = Math.round(v * 100) + '%'; saveSettingsSoon();
   });
   settingsPanel.addChild(sfxSlider);
 
+  // ── 帧率上限(30~240,默认 90)──
+  const fpsLabel = makeText('帧率上限', { size: 14, color: '#d4c4a8' });
+  fpsLabel.x = 30; fpsLabel.y = yFps;
+  settingsPanel.addChild(fpsLabel);
+  const fpsVal = makeText(fpsCap + ' FPS', { size: 14, color: '#ffd98a', anchor: 1 });
+  fpsVal.x = pw - 30; fpsVal.y = yFps;
+  settingsPanel.addChild(fpsVal);
+  const fpsSlider = createSlider(30, yFpsSlider, pw - 60, (fpsCap - FPS_MIN) / (FPS_MAX - FPS_MIN), (v) => {
+    fpsCap = clampFps(FPS_MIN + v * (FPS_MAX - FPS_MIN));
+    fpsVal.text = fpsCap + ' FPS';
+    applyFpsCap();
+    saveGlobalSettings();
+  });
+  settingsPanel.addChild(fpsSlider);
+  const fpsHint = makeText('调高更顺滑,调低更省电(不影响游戏速度)', { size: 11, color: '#8d7c60' });
+  fpsHint.x = 30; fpsHint.y = yFpsSlider + 24;
+  settingsPanel.addChild(fpsHint);
+
   // 重置存档按钮已移除(避免误触),后续首页会有存档/加载功能
 
-  // 继续游戏按钮
-  const continueBtn = new PIXI.Container();
-  const continueBg = new PIXI.Graphics();
-  const continueText = makeText('继续游戏', { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
-  continueBtn.addChild(continueBg, continueText);
-  roundRect(continueBg, 0, 0, pw - 60, 48, 10, 0xc4853a, 0.9);
-  continueText.x = (pw - 60) / 2; continueText.y = 24;
-  continueBtn.x = 30; continueBtn.y = ph - 70;
-  continueBtn.eventMode = 'static';
-  continueBtn.cursor = 'pointer';
-  continueBtn.hitArea = new PIXI.Rectangle(0, 0, pw - 60, 48);
-  continueBtn.on('pointerdown', () => { closeSettings(); });
-  addPressFeedback(continueBtn);
-  settingsPanel.addChild(continueBtn);
+  // 按钮组(§27):继续游戏 + 返回菜单
+  const mkBtn = (label, y, fill, onClick) => {
+    const c = new PIXI.Container();
+    const bg = new PIXI.Graphics();
+    const tx = makeText(label, { size: 16, color: '#fff5e6', weight: 'bold', anchor: 0.5 });
+    c.addChild(bg, tx);
+    roundRect(bg, 0, 0, pw - 60, btnH, 10, fill, 0.9);
+    tx.x = (pw - 60) / 2; tx.y = btnH / 2;
+    c.x = 30; c.y = y;
+    c.eventMode = 'static';
+    c.cursor = 'pointer';
+    c.hitArea = new PIXI.Rectangle(0, 0, pw - 60, btnH);
+    c.on('pointerdown', onClick);
+    addPressFeedback(c);
+    settingsPanel.addChild(c);
+  };
+  const btnH = 42, btnGap = 8;
+  const yBtn2 = ph - 14 - btnH;        // 返回菜单(贴底,留 14)
+  const yBtn1 = yBtn2 - btnGap - btnH; // 继续游戏(在它上面)
+  mkBtn('继续游戏', yBtn1, 0xc4853a, () => { closeSettings(); });
+  // §27(星光:「进入游戏后的设置按钮也新增一个『返回菜单』」):先落盘再回主菜单,
+  //   否则这一段的进度会因为「回菜单后 ticker 不再累计」而丢在内存里。
+  mkBtn('返回菜单', yBtn2, 0x7a4a22, () => {
+    saveGame();
+    closeSettings();
+    showMainMenu();
+    layoutAll();
+  });
 }
 
 function createSlider(x, y, w, value, onChange) {
@@ -8689,36 +9282,131 @@ function recalcProduction() {
   state.tokensPerSecond = state.machines.rtx3080.count * 5 + state.machines.a100.count * 50;
 }
 
-// ==================== 本地存档 ====================
+// ==================== 本地存档(§27 多存档槽) ====================
+// 存储布局:
+//   dshgame_slots_v1        → 8 个槽位的**元信息**数组(名称/时长/时间),null = 空槽
+//   dshgame_slot_<i>_v1     → 第 i 槽的**存档正文**(与旧单存档同结构)
+//   dshgame_active_slot     → 当前正在玩哪一槽(没有 = 在主菜单)
+//   dshgame_last_slot       → 上次玩过的槽(主菜单「继续游戏」用)
+//   dshgame_save_v1         → 旧版单存档;只作为**迁移源 + 备份镜像**,不再作为唯一真源
+// ⚠️ 迁移只在「槽位表不存在」时做一次,绝不覆盖玩家已有槽位(否则更新一次就清档)。
 const SAVE_KEY = 'dshgame_save_v1';
+const SLOTS_KEY = 'dshgame_slots_v1';
+const SLOT_KEY_PREFIX = 'dshgame_slot_';
+const ACTIVE_SLOT_KEY = 'dshgame_active_slot';
+const LAST_SLOT_KEY = 'dshgame_last_slot';
+const SLOT_COUNT = 8;
+const DEFAULT_SLOT_NAME = '新的世界';
 let saveAccum = 0;
+let activeSlot = -1;          // -1 = 主菜单(没有当前存档)
+let playSeconds = 0;          // 当前存档累计游玩秒数(只在该存档激活且未暂停时增长)
+let slotMetas = [];           // 内存里的槽位元信息(启动时读,改了就写)
 
+function slotPayloadKey(i) { return SLOT_KEY_PREFIX + i + '_v1'; }
+
+function readSlots() {
+  let arr = null;
+  try { arr = JSON.parse(localStorage.getItem(SLOTS_KEY) || 'null'); } catch (e) { arr = null; }
+  if (!Array.isArray(arr)) arr = [];
+  const out = [];
+  for (let i = 0; i < SLOT_COUNT; i++) {
+    const m = arr[i];
+    out.push(m && typeof m === 'object' ? {
+      name: String(m.name || DEFAULT_SLOT_NAME),
+      playSec: Number(m.playSec) || 0,
+      lastPlayedAt: Number(m.lastPlayedAt) || 0,
+      createdAt: Number(m.createdAt) || 0,
+    } : null);
+  }
+  return out;
+}
+function writeSlots(arr) { try { localStorage.setItem(SLOTS_KEY, JSON.stringify(arr)); } catch (e) { /* 隐私模式等 */ } }
+function getSlotPayload(i) {
+  try { const raw = localStorage.getItem(slotPayloadKey(i)); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function setSlotPayload(i, data) { try { localStorage.setItem(slotPayloadKey(i), JSON.stringify(data)); return true; } catch (e) { return false; } }
+function lastPlayedSlot() {
+  let i = -1;
+  try { i = parseInt(localStorage.getItem(LAST_SLOT_KEY), 10); } catch (e) { i = -1; }
+  if (isNaN(i) || i < 0 || i >= SLOT_COUNT) return -1;
+  // ⚠️ 内存里的 slotMetas 可能是陈旧的(比如刚迁移完就调这里)⇒ 长度不对就重读一次,
+  //    否则「继续游戏」会在有档时也不显示(这个坑断言当场抓到过)。
+  const metas = (slotMetas && slotMetas.length === SLOT_COUNT) ? slotMetas : readSlots();
+  return metas[i] ? i : -1;   // 只有槽位真的存在才算
+}
+
+// 旧单存档 → 0 号槽(只做一次;槽位表已存在就完全不动它)
+function migrateLegacySave() {
+  try {
+    if (localStorage.getItem(SLOTS_KEY)) return false;
+    const rawLegacy = localStorage.getItem(SAVE_KEY);
+    if (!rawLegacy) return false;
+    const legacy = JSON.parse(rawLegacy);
+    const arr = readSlots();
+    arr[0] = {
+      name: String((legacy && legacy.slotName) || DEFAULT_SLOT_NAME),
+      playSec: Number(legacy && legacy.playSec) || 0,
+      lastPlayedAt: Number(legacy && legacy.savedAt) || Date.now(),
+      createdAt: Number(legacy && legacy.savedAt) || Date.now(),
+    };
+    writeSlots(arr);
+    slotMetas = arr;   // 迁移完立刻同步内存,后面 lastPlayedSlot 才不会读到空表
+    try { localStorage.setItem(slotPayloadKey(0), JSON.stringify(legacy)); } catch (e) {}
+    try { localStorage.setItem(LAST_SLOT_KEY, '0'); } catch (e) {}
+    return true;
+  } catch (e) { return false; }
+}
+
+function buildSavePayload() {
+  return {
+    tokens: state.tokens,
+    rtx3080: state.machines.rtx3080.count,
+    a100: state.machines.a100.count,
+    extraRack: state.machines.extraRack.count,
+    server: state.machines.server.count,
+    fan: state.cooling.fan.count,
+    waterCooling: state.cooling.waterCooling.count,
+    autoClick: state.scripts.autoClick,
+    miracle: state.scripts.miracle,
+    relay: state.relay,
+    settings: { music: musicVolume, sfx: sfxVolume },
+    playSec: Math.floor(playSeconds),
+    savedAt: Date.now()
+  };
+}
+
+// 存档点(§27):写**当前槽位**。主菜单(activeSlot<0)时是一次 no-op —— 不能凭空造档。
 function saveGame() {
   try {
-    const data = {
-      tokens: state.tokens,
-      rtx3080: state.machines.rtx3080.count,
-      a100: state.machines.a100.count,
-      extraRack: state.machines.extraRack.count,
-      server: state.machines.server.count,
-      fan: state.cooling.fan.count,
-      waterCooling: state.cooling.waterCooling.count,
-      autoClick: state.scripts.autoClick,
-      miracle: state.scripts.miracle,
-      relay: state.relay,
-      settings: { music: musicVolume, sfx: sfxVolume },
-      savedAt: Date.now()
-    };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    if (activeSlot < 0 || activeSlot >= SLOT_COUNT) return false;
+    if (!slotMetas || slotMetas.length !== SLOT_COUNT) slotMetas = readSlots();   // 别对着空表写
+    const data = buildSavePayload();
+    setSlotPayload(activeSlot, data);
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch (e) {}   // 备份镜像(迁移/抢救用)
+    let m = slotMetas[activeSlot];
+    if (!m) {
+      // 兜底:槽位元信息缺失(极端情况:正文还在但表被清)⇒ 存一次就该能列出来
+      m = { name: DEFAULT_SLOT_NAME, playSec: 0, lastPlayedAt: 0, createdAt: Date.now() };
+      slotMetas[activeSlot] = m;
+    }
+    m.playSec = Math.floor(playSeconds);
+    m.lastPlayedAt = Date.now();
+    writeSlots(slotMetas);
+    try { localStorage.setItem(LAST_SLOT_KEY, String(activeSlot)); } catch (e) {}
     return true;
   } catch(e) { return false; }
 }
 
-function loadGame() {
+// 读取指定槽位并**应用**到 state。slotIdx 省略 = 用 activeSlot;再没有就退回旧单存档(兼容)。
+function loadGame(slotIdx) {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
+    const idx = (typeof slotIdx === 'number') ? slotIdx : activeSlot;
+    let data = (idx >= 0 && idx < SLOT_COUNT) ? getSlotPayload(idx) : null;
+    if (!data) {
+      // 兜底:槽位正文缺失但旧单存档还在(比如手动清过 key)⇒ 用旧档救一次
+      try { data = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { data = null; }
+    }
+    if (!data) return false;
     state.tokens = data.tokens || 0;
     state.machines.rtx3080.count = data.rtx3080 || 0;
     state.machines.a100.count = data.a100 || 0;
@@ -8824,12 +9512,20 @@ function loadGame() {
     }
     recalcClickPower();
     recalcCrit();
+    // §27:记录当前槽位与累计时长(时长以**槽位元信息**为准,正文里的 playSec 只作备份)
+    activeSlot = idx;
+    if (activeSlot >= 0) {
+      const m = slotMetas[activeSlot];
+      playSeconds = m ? (Number(m.playSec) || 0) : (Number(data.playSec) || 0);
+      try { localStorage.setItem(ACTIVE_SLOT_KEY, String(activeSlot)); } catch (e) {}
+    }
     return true;
   } catch(e) { return false; }
 }
 
+// ⚠️ §27:这个函数**只重置 state,不碰任何存档**(原第一行 removeItem(SAVE_KEY) 已删)。
+//   新档走 createSlot();删档走 deleteSlot()。任何'重置'都不该顺手清别人家的档。
 function resetGame() {
-  try { localStorage.removeItem(SAVE_KEY); } catch(e) {}
   state.tokens = 0;
   state.machines.rtx3080.count = 0;
   state.machines.a100.count = 0;
@@ -8885,6 +9581,8 @@ function layoutAll() {
   layoutNavTabs();
   layoutRelayHud();
   layoutTuneHud();
+  layoutBroadcast();     // §25 吸顶播报条(几何随屏宽变;正在播时保持进度不重启)
+  layoutFpsLabel();      // §31 左下角帧率
   if (relaySceneOpen) layoutRelayScene();
   if (tuneSceneOpen) layoutTuneScene();
   updateTokenDisplay();
@@ -8942,6 +9640,26 @@ function applyOfflineEarnings(seconds) {
   return gained;
 }
 
+// ==================== §31 左下角实时帧率 ====================
+// 星光 2026-11-01:「左下角显示实时帧率」。挂在 nav 层(最顶,场景切换不丢),每 0.5s 刷新一次。
+const fpsLabel = makeText('', { size: 12, color: '#a8e6b8', weight: 'bold' });
+fpsLabel.anchor.set(0, 1);
+fpsLabel.alpha = 0.9;
+fpsLabel.eventMode = 'none';
+layers.nav.addChild(fpsLabel);
+function layoutFpsLabel() {
+  fpsLabel.x = 10;
+  fpsLabel.y = app.screen.height - 6;
+}
+let fpsAccum = 0;
+function updateFpsLabel(dt) {
+  fpsAccum += dt;
+  if (fpsAccum < 0.5) return;
+  fpsAccum = 0;
+  const f = Math.round(app.ticker.FPS || 0);
+  fpsLabel.text = 'FPS ' + f + (fpsCap > 0 ? ' / ' + fpsCap : '');
+}
+
 // ==================== 主循环 ====================
 let secondAccum = 0;
 let lastFrameTime = performance.now();
@@ -8968,10 +9686,12 @@ app.ticker.add(() => {
   updateTweens(dt);
   updateTallyPulse();   // §19.13 维度数值脉冲(内部自判空,开销可忽略)
   updateExamScene();    // §24 考试场景(进度条/卡片 TTL/气泡),只在 examSceneOpen 时干活
+  updateBroadcast(dt);  // §25 顶部滚动播报条(三个板块 + 考场通用,idle 时立即返回)
+  updateFpsLabel(dt);   // §31 左下角实时帧率(0.5s 刷新)
   // 雷达图轴标签数字滚动(只在雷达开启动画的 0.45s 内有活,平时直接 return)
   radarTicker();
   // 中转站行走人物AI(不受暂停影响)
-  updateWalkerAI();
+  updateWalkerAI(dt);
   // 闭关训练头顶标签:跟随当前可见场景的人物(生产/中转站/调教)
   syncSessionLabel();
   // 电脑屏幕描边呼吸动画(4s周期:0.4s出现+1.2s保持+0.4s消失+2s等待,悬停常驻)
@@ -8998,12 +9718,14 @@ app.ticker.add(() => {
     screenGlow.alpha = 0;
   }
   if (!state.paused) {
+    // §27 游玩时长:只统计「当前存档」的在线游玩(主菜单/暂停/设置面板时不计)
+    if (activeSlot >= 0) playSeconds += dt;
     // ===== 生产场景专属更新(中转站时跳过,减少CPU开销) =====
     if (!relaySceneOpen) {
       updateLight();
       updateCharacters(dt);
       updateAllBuyButtons();
-      updateCasePhysics();
+      updateCasePhysics(dt);
       // 说话气泡：拖动或物理运动时显示，静止时隐藏
       const caseMoving = casePhysics.isDragging || (casePhysics.isActive && (Math.abs(casePhysics.vx) > 0.2 || Math.abs(casePhysics.vy) > 0.2));
       speechBubble.visible = caseMoving;
@@ -9082,9 +9804,508 @@ app.ticker.add(() => {
   }
 });
 
+// ==================== §27 主菜单 / 存档界面(占位实现) ====================
+// 设计说明(2026-10-28 星光):每次进游戏先到主菜单;左上角游戏名、下面是按钮;
+//   「继续游戏」**只有存在存档时才显示**;「新的开始」自动开新档并让玩家命名(默认「新的世界」);
+//   「查看存档」弹出存档页(背景虚化,8 个槽);右键存档可重命名/删除(删除要二次确认);
+//   游戏内设置里加「返回菜单」。所有这些**只是占位**,后续会换成图片/动画。
+// 实现:菜单是**DOM 覆盖层**(不是 PIXI) —— 需要文本输入、右键菜单、虚化背景,用 DOM 最简单可靠。
+
+const GSET_KEY = 'dshgame_settings_v1';
+function loadGlobalSettings() {
+  try {
+    const d = JSON.parse(localStorage.getItem(GSET_KEY) || 'null');
+    if (d && typeof d === 'object') {
+      if (typeof d.music === 'number') musicVolume = Math.max(0, Math.min(1, d.music));
+      if (typeof d.sfx === 'number') sfxVolume = Math.max(0, Math.min(1, d.sfx));
+      if (typeof d.fpsCap === 'number') fpsCap = clampFps(d.fpsCap);
+    }
+  } catch (e) { /* 忽略 */ }
+}
+function saveGlobalSettings() {
+  try { localStorage.setItem(GSET_KEY, JSON.stringify({ music: musicVolume, sfx: sfxVolume, fpsCap: fpsCap })); } catch (e) {}
+}
+
+// §31(2026-11-01 星光):帧率上限 30~240 自由调节,默认 90。
+//   ⚠️ 它只影响「每秒渲染多少帧」,不改变游戏速度 —— 位移/物理都已按时间算(§30)。
+const FPS_MIN = 30, FPS_MAX = 240, FPS_DEFAULT = 90;
+// §33 动画基准帧率:所有「每帧常量」的位移/重力/计时都按这个基准换算成真实时间。
+//   60 = 旧设计值;90 = 当前手感(比 60 快 1.5 倍,贴近玩家在高刷屏上习惯的速度)。
+const ANIM_BASE_FPS = 90;
+let fpsCap = FPS_DEFAULT;
+function clampFps(v) { return Math.max(FPS_MIN, Math.min(FPS_MAX, Math.round(Number(v) || FPS_DEFAULT))); }
+function applyFpsCap() {
+  try { app.ticker.maxFPS = clampFps(fpsCap); } catch (e) {}
+}
+
+let mmEls = null;
+
+function ensureMenuDom() {
+  if (mmEls) return mmEls;
+  const style = document.createElement('style');
+  style.textContent = [
+    '#mmRoot{position:fixed;inset:0;z-index:9000;display:none;font-family:"Microsoft YaHei","PingFang SC","DSHGameCN",sans-serif;color:#5b4526}',
+    '#mmRoot.show{display:block}',
+    '/* §28 配色:浅暖 · 柔和 · 典雅(2026-10-28 星光:色调淡一点、暖一点、柔和一点、典雅一点) */',
+    '#mmMenu{position:absolute;inset:0;overflow:hidden;background:#08090b}',
+    // §29c:清晰主体图(contain,两侧留白由下面的模糊层填)
+    '#mmMenuShot{position:absolute;inset:0;background-position:center center;background-size:cover;background-repeat:no-repeat}',   /* §29f 铺满无黑边 */
+    '#mmMenu.fit-cover #mmMenuShot{background-size:cover}',
+    // §29c: 整图 contain 会留左右空 ⇒ 底下铺一层「同一张图的放大模糊版」,看起来是一整幅连续场景
+    '#mmMenuArt{display:none}   /* §29e 星光:不要阴影/模糊铺底 */',
+    '#mmMenu:after{display:none}   /* §29e 去掉四角阴影 */',
+    '#mmTitle{display:none}',
+    '#mmSub{display:none}',
+    '#mmBtns{position:absolute;left:clamp(18px,2.4vw,64px);bottom:clamp(16px,3vh,60px);top:auto;transform:none;display:flex;flex-direction:column;gap:clamp(8px,1.15vh,18px);width:clamp(190px,17vw,340px)}',
+    '.mmBtn{display:block;padding:clamp(9px,1.45vh,19px) clamp(14px,1.5vw,28px);border:1px solid rgba(160,128,86,.34);border-radius:clamp(8px,.7vw,14px);background:linear-gradient(180deg,rgba(255,252,246,.93),rgba(246,236,219,.93));color:#5b4526;font-size:clamp(14px,1.15vw,22px);letter-spacing:clamp(1px,.22vw,4px);cursor:pointer;text-align:left;box-shadow:0 2px 8px rgba(150,118,74,.10);transition:transform .13s,background .13s,border-color .13s,box-shadow .13s;font-family:inherit}',
+    '.mmBtn:hover{background:linear-gradient(180deg,#fffdf8,#f8eddb);border-color:rgba(192,138,74,.72);color:#4a3618;transform:translateX(5px);box-shadow:0 7px 20px rgba(150,118,74,.20)}',
+    '.mmBtn.hide{display:none}',
+    '#mmFoot{position:absolute;right:20px;bottom:12px;font-size:12px;letter-spacing:1px;color:#b8a68b}',
+    '#mmSaves{position:absolute;inset:0;display:none;z-index:20;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(253,248,240,.34);-webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px)}',
+    '#mmSaves.show{display:flex}',
+    '.svBox{width:min(760px,94vw);max-height:88vh;display:flex;flex-direction:column;border:1px solid rgba(170,138,94,.42);border-radius:16px;background:linear-gradient(180deg,rgba(253,249,242,.985),rgba(246,238,225,.985));box-shadow:0 22px 60px rgba(118,88,48,.26);overflow:hidden}',
+    '.svHead{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;border-bottom:1px solid rgba(170,138,94,.26);flex:0 0 auto}',
+    '.svTitle{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;font-size:19px;font-weight:600;letter-spacing:5px;color:#6b4f2a}',
+    '.svScroll{flex:1 1 auto;overflow-y:auto;padding:14px 18px;box-sizing:border-box}',
+    '.svGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:11px}',
+    '.svCard{border:1px solid rgba(170,138,94,.30);border-radius:12px;padding:11px 12px;min-height:92px;display:flex;align-items:center;gap:10px;background:linear-gradient(180deg,rgba(255,253,248,.95),rgba(248,240,227,.95));box-sizing:border-box}',
+    '.svCard.empty{border-style:dashed;opacity:.62}',
+    '.svInfo{flex:1 1 auto;min-width:0}',
+    '.svName{font-size:15px;font-weight:600;color:#54401f;margin-bottom:4px;word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.svMeta{font-size:11.5px;line-height:1.6;color:#9c8663}',
+    '.svEnter{flex:0 0 auto;padding:7px 16px;border-radius:8px;border:1px solid rgba(192,138,74,.68);background:linear-gradient(180deg,#fdf5e8,#f3e3ca);color:#8a5f28;font-size:13px;cursor:pointer;font-family:inherit;transition:background .13s,border-color .13s}',
+    '.svEnter:hover{background:linear-gradient(180deg,#fffaef,#f8ebd4);border-color:#c08a4a}',
+    '.svEmpty{font-size:13px;color:#ab9776;text-align:center;margin-top:26px}',
+    '#mmCtx{position:fixed;display:none;z-index:9600;min-width:132px;border:1px solid rgba(170,138,94,.45);border-radius:8px;overflow:hidden;background:#fdf9f2;box-shadow:0 12px 30px rgba(118,88,48,.24)}',
+    '#mmCtx.show{display:block}',
+    '#mmCtx button{display:block;width:100%;padding:10px 14px;border:0;background:none;color:#5b4526;font-size:14px;text-align:left;cursor:pointer;font-family:inherit}',
+    '#mmCtx button:hover{background:#f5ead8}',
+    '#mmCtx button.danger{color:#a8503a}',
+    '#mmModal{position:fixed;inset:0;display:none;z-index:9700;align-items:center;justify-content:center;background:rgba(96,74,46,.26)}',
+    '#mmModal.show{display:flex}',
+    '.mmBox{width:min(360px,86vw);border:1px solid rgba(170,138,94,.42);border-radius:14px;background:linear-gradient(180deg,#fdf9f2,#f6eee0);box-shadow:0 18px 50px rgba(118,88,48,.25);padding:20px;box-sizing:border-box}',
+    '.mmBoxTitle{font-family:"Songti SC","STSong","SimSun","Noto Serif SC",serif;font-size:17px;font-weight:600;letter-spacing:2px;color:#6b4f2a;margin-bottom:13px}',
+    '.mmMsg{font-size:14px;line-height:1.75;color:#7d6746;white-space:pre-wrap;margin-bottom:14px}',
+    '.mmInput{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid rgba(170,138,94,.45);border-radius:8px;background:#fffdf8;color:#5b4526;font-size:15px;outline:none;font-family:inherit}',
+    '.mmRow{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}',
+    '.mmBtn2{padding:9px 20px;border-radius:8px;border:1px solid rgba(170,138,94,.45);background:#f7eddd;color:#5b4526;font-size:14px;cursor:pointer;font-family:inherit}',
+    '.mmBtn2.primary{background:linear-gradient(180deg,#e9bb7c,#d5a25e);border-color:#c08a4a;color:#4a3410;font-weight:600}',
+    '.mmBtn2.danger{background:linear-gradient(180deg,#d98f77,#c06a50);border-color:#b25a42;color:#fff8f2}',
+    '.mmSlider{width:100%;margin:6px 0 2px;accent-color:#c08a4a}',
+    '#mmToast{position:fixed;left:50%;bottom:54px;transform:translateX(-50%);z-index:9800;display:none;padding:10px 18px;border:1px solid rgba(170,138,94,.45);border-radius:10px;background:rgba(253,248,240,.97);color:#5b4526;font-size:14px;letter-spacing:1px;box-shadow:0 8px 24px rgba(118,88,48,.20)}',
+    '#mmToast.show{display:block}',
+    '/* §29 鲸鱼光标:整层继承 root 上设置的 url 光标(输入框保留文本光标) */',
+    '#mmRoot *{cursor:inherit !important}',
+    '#mmRoot input{cursor:text !important}',
+    '@media(max-width:560px){.svBox{width:95vw;max-height:90vh}.svCard{min-height:84px;padding:9px 10px;gap:6px}.svName{font-size:13px}.svMeta{font-size:10.5px}.svEnter{padding:6px 10px;font-size:12px}.svScroll{padding:10px 12px}.svGrid{gap:8px}}',
+    '@media(max-height:540px){#mmBtns{top:auto;bottom:14px;left:16px;gap:7px;width:min(210px,42vw)}.mmBtn{padding:8px 13px;font-size:14px;letter-spacing:1.5px}.svBox{max-height:93vh}.svHead{padding:9px 14px}.svTitle{font-size:16px}.svScroll{padding:8px 12px}.svGrid{gap:6px}.svCard{min-height:62px;padding:7px 10px;gap:6px}.svName{font-size:13px}.svMeta{font-size:10.5px}.svEnter{padding:6px 11px;font-size:12px}}',
+  ].join('\n');
+  document.head.appendChild(style);
+
+  const root = document.createElement('div');
+  root.id = 'mmRoot';
+  root.innerHTML = [
+    '<div id="mmMenu">',
+    '  <div id="mmMenuArt"></div>',
+    '  <div id="mmMenuShot"></div>',
+    '  <div id="mmTitle">中转站在逃肥鱼</div>',
+    '  <div id="mmSub">PLACEHOLDER · 主菜单(后续换图/加动画)</div>',
+    '  <div id="mmBtns">',
+    '    <button class="mmBtn" id="mmContinue">继续游戏</button>',
+    '    <button class="mmBtn" id="mmNew">新的开始</button>',
+    '    <button class="mmBtn" id="mmSavesBtn">查看存档</button>',
+    '    <button class="mmBtn" id="mmSettings">设置</button>',
+    '  </div>',
+    '  <div id="mmFoot">v0.1 · 占位界面</div>',
+    '  <div id="mmSaves">',
+    '    <div class="svBox">',
+    '      <div class="svHead"><div class="svTitle">存档</div>',
+    '        <button class="mmBtn2" id="mmSavesBack">关闭</button></div>',
+    '      <div class="svScroll">',
+    '        <div class="svGrid" id="svGrid"></div>',
+    '        <div class="svEmpty" id="svEmptyTip" style="display:none">还没有任何存档 —— 点「新的开始」</div>',
+    '      </div>',
+    '    </div>',
+    '  </div>',
+    '</div>',
+    '<div id="mmCtx"><button id="mmCtxRename">重命名</button><button id="mmCtxDelete" class="danger">删除存档</button></div>',
+    '<div id="mmModal"><div class="mmBox" id="mmBox"></div></div>',
+    '<div id="mmToast"></div>',
+  ].join('');
+  document.body.appendChild(root);
+  // §29 封面背景 + 鲸鱼光标(封面要求跟游戏内同一只鲸鱼光标)
+  try {
+    const menuEl = root.querySelector('#mmMenu');
+    const artEl = root.querySelector('#mmMenuArt');
+    if (menuEl && typeof ASSETS !== 'undefined' && ASSETS.menu_cover) {
+      const u = 'url("' + ASSETS.menu_cover + '")';
+      const shotEl = root.querySelector('#mmMenuShot');
+      if (shotEl) shotEl.style.backgroundImage = u;  // 清晰主体:contain 完整显示
+      if (artEl) artEl.style.backgroundImage = u;    // 铺底:同图模糊,填两侧留白
+    }
+    // ⚠️ CSS cursor **不支持 webp**(Chrome 会静默回落 auto)⇒ 专门用一张 png(assets/compressed/whale_cursor.png)
+    if (typeof ASSETS !== 'undefined' && ASSETS.whale_cursor_png) {
+      root.style.cursor = 'url("' + ASSETS.whale_cursor_png + '") 4 4, auto';
+    } else if (typeof ASSETS !== 'undefined' && ASSETS.whale_cursor) {
+      root.style.cursor = 'url("' + ASSETS.whale_cursor + '") 4 4, auto';   // 兜底(可能不生效)
+    }
+  } catch (e) { /* 素材缺失不该把菜单搞崩 */ }
+
+  mmEls = {
+    root: root,
+    menu: root.querySelector('#mmMenu'),
+    saves: root.querySelector('#mmSaves'),
+    grid: root.querySelector('#svGrid'),
+    emptyTip: root.querySelector('#svEmptyTip'),
+    ctx: root.querySelector('#mmCtx'),
+    modal: root.querySelector('#mmModal'),
+    box: root.querySelector('#mmBox'),
+    toast: root.querySelector('#mmToast'),
+    continueBtn: root.querySelector('#mmContinue'),
+    ctxSlot: -1,
+  };
+
+  mmEls.continueBtn.addEventListener('click', () => {
+    const i = lastPlayedSlot();
+    if (i >= 0) enterSlot(i);
+  });
+  root.querySelector('#mmNew').addEventListener('click', () => { startNewGameFlow(); });
+  root.querySelector('#mmSavesBtn').addEventListener('click', () => { openSaveList(); });
+  root.querySelector('#mmSettings').addEventListener('click', () => { openMenuSettings(); });
+  root.querySelector('#mmSavesBack').addEventListener('click', () => { closeSaveList(); });
+  // 点弹窗外面的虚化背景也能关掉(弹窗不是新页面,所以要有「点空白关」的手感)
+  // 点空白处关右键菜单
+  document.addEventListener('pointerdown', (e) => {
+    if (mmEls && mmEls.ctx.classList.contains('show') && !mmEls.ctx.contains(e.target)) hideCtxMenu();
+  }, true);
+  // 右键菜单动作
+  root.querySelector('#mmCtxRename').addEventListener('click', () => {
+    const i = mmEls.ctxSlot; hideCtxMenu(); if (i >= 0) promptRenameSlot(i);
+  });
+  root.querySelector('#mmCtxDelete').addEventListener('click', () => {
+    const i = mmEls.ctxSlot; hideCtxMenu(); if (i >= 0) promptDeleteSlot(i);
+  });
+  return mmEls;
+}
+
+// §29d 背景适配策略(2026-10-30 星光:要裁剪,但上方下方都要留距离):
+//   素材已裁成「内容上下各留 40px」的 1024×676(比例 1.515)。显示时按窗口比例二选一:
+//   ① 窗口比素材**窄或相等**(如 4:3)⇒ `cover` 只会裁左右,上下留白**原样保留** ⇒ 用它,不留黑边。
+//   ② 窗口比素材**宽**(如 16:9)⇒ `cover` 会裁上下(切到 LOGO/脚) ⇒ 用 `contain`,两侧交给模糊层。
+//   这样任何比例下:上下那 40px 留白都在,主体不丢。
+function applyMenuBgFit() {
+  if (!mmEls) return;
+  const shot = mmEls.root.querySelector('#mmMenuShot');
+  const menu = mmEls.root.querySelector('#mmMenu');
+  if (!shot || !menu) return;
+  // §29f:素材已按 16:9 裁好,直接 cover 铺满(无黑边)。
+  menu.classList.add('fit-cover');
+}
+window.addEventListener('resize', () => { if (mmEls && mmEls.root.classList.contains('show')) applyMenuBgFit(); });
+
+function mmToast(msg) {
+  ensureMenuDom();
+  mmEls.toast.textContent = msg;
+  mmEls.toast.classList.add('show');
+  clearTimeout(mmEls._toastT);
+  mmEls._toastT = setTimeout(() => { mmEls.toast.classList.remove('show'); }, 2200);
+}
+
+function fmtPlayTime(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return h + ' 小时 ' + m + ' 分';
+  if (m > 0) return m + ' 分钟';
+  return sec + ' 秒';
+}
+function fmtDateTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return '—';
+  const pz = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pz(d.getMonth() + 1) + '-' + pz(d.getDate()) + ' ' + pz(d.getHours()) + ':' + pz(d.getMinutes());
+}
+
+function showMainMenu() {
+  ensureMenuDom();
+  slotMetas = readSlots();
+  activeSlot = -1;
+  try { localStorage.removeItem(ACTIVE_SLOT_KEY); } catch (e) {}
+  state.paused = true;
+  // §29 音频隔离:回菜单 = 停掉**游戏内**所有场景曲,起**菜单**自己那套(没配就静音)
+  stopGameBGM();
+  if (BGM.started) startMenuBGM();
+  mmEls.saves.classList.remove('show');
+  hideCtxMenu();
+  closeModal();
+  // 「继续游戏」只在真的有存档时出现(星光要求)
+  const last = lastPlayedSlot();
+  mmEls.continueBtn.classList.toggle('hide', last < 0);
+  mmEls.root.classList.add('show');
+  mmEls.menu.style.display = 'block';
+  applyMenuBgFit();   // §29d 按当前窗口比例决定 cover / contain
+}
+function hideMainMenu() {
+  if (!mmEls) return;
+  mmEls.root.classList.remove('show');
+  mmEls.saves.classList.remove('show');
+  hideCtxMenu();
+  closeModal();
+}
+
+function openSaveList() {
+  ensureMenuDom();
+  renderSaveList();
+  mmEls.saves.classList.add('show');
+}
+function closeSaveList() {
+  if (!mmEls) return;
+  mmEls.saves.classList.remove('show');
+  hideCtxMenu();
+}
+
+function renderSaveList() {
+  ensureMenuDom();
+  slotMetas = readSlots();
+  const grid = mmEls.grid;
+  grid.innerHTML = '';
+  let any = false;
+  for (let i = 0; i < SLOT_COUNT; i++) {
+    const m = slotMetas[i];
+    const card = document.createElement('div');
+    card.className = 'svCard' + (m ? '' : ' empty');
+    card.setAttribute('data-slot', String(i));
+    if (m) {
+      any = true;
+      const info = document.createElement('div'); info.className = 'svInfo';
+      const nm = document.createElement('div'); nm.className = 'svName'; nm.textContent = m.name;
+      const meta = document.createElement('div'); meta.className = 'svMeta';
+      meta.textContent = '时长 ' + fmtPlayTime(m.playSec) + '\n上次 ' + fmtDateTime(m.lastPlayedAt);
+      meta.style.whiteSpace = 'pre-line';
+      info.appendChild(nm); info.appendChild(meta);
+      const btn = document.createElement('button'); btn.className = 'svEnter'; btn.textContent = '进入';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); enterSlot(i); });
+      card.appendChild(info); card.appendChild(btn);
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        mmEls.ctxSlot = i;
+        showCtxMenu(e.clientX, e.clientY);
+      });
+    } else {
+      const nm = document.createElement('div'); nm.className = 'svName'; nm.textContent = '空';
+      const meta = document.createElement('div'); meta.className = 'svMeta'; meta.textContent = '槽位 ' + (i + 1);
+      card.appendChild(nm); card.appendChild(meta);
+    }
+    grid.appendChild(card);
+  }
+  mmEls.emptyTip.style.display = any ? 'none' : 'block';
+}
+
+function showCtxMenu(x, y) {
+  ensureMenuDom();
+  const c = mmEls.ctx;
+  c.classList.add('show');
+  const w = 140, h = 84;
+  c.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  c.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+}
+function hideCtxMenu() { if (mmEls) mmEls.ctx.classList.remove('show'); }
+
+function closeModal() { if (mmEls) { mmEls.modal.classList.remove('show'); mmEls.box.innerHTML = ''; } }
+
+// 通用弹窗:title + 内容节点数组 + 按钮数组 [{label, cls, onClick}]
+function showModal(title, bodyNodes, buttons) {
+  ensureMenuDom();
+  mmEls.box.innerHTML = '';
+  const t = document.createElement('div'); t.className = 'mmBoxTitle'; t.textContent = title;
+  mmEls.box.appendChild(t);
+  (bodyNodes || []).forEach((n) => mmEls.box.appendChild(n));
+  const row = document.createElement('div'); row.className = 'mmRow';
+  (buttons || []).forEach((b) => {
+    const btn = document.createElement('button');
+    btn.className = 'mmBtn2' + (b.cls ? ' ' + b.cls : '');
+    btn.textContent = b.label;
+    btn.addEventListener('click', () => { if (b.onClick) b.onClick(); });
+    row.appendChild(btn);
+  });
+  mmEls.box.appendChild(row);
+  mmEls.modal.classList.add('show');
+}
+
+function promptText(title, defaultValue, onOk) {
+  const input = document.createElement('input');
+  input.className = 'mmInput';
+  input.maxLength = 20;
+  input.value = defaultValue || '';
+  showModal(title, [input], [
+    { label: '取消', onClick: () => closeModal() },
+    { label: '确定', cls: 'primary', onClick: () => {
+        const v = (input.value || '').trim();
+        if (!v) { mmToast('名字不能为空'); return; }
+        closeModal(); onOk(v.slice(0, 20));
+      } },
+  ]);
+  setTimeout(() => { try { input.focus(); input.select(); } catch (e) {} }, 30);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { const v = (input.value || '').trim(); if (v) { closeModal(); onOk(v.slice(0, 20)); } }
+    if (e.key === 'Escape') closeModal();
+  });
+}
+
+function firstEmptySlot() {
+  slotMetas = readSlots();
+  for (let i = 0; i < SLOT_COUNT; i++) if (!slotMetas[i]) return i;
+  return -1;
+}
+
+function startNewGameFlow() {
+  const idx = firstEmptySlot();
+  if (idx < 0) { mmToast('存档已满(8/8),先在「查看存档」里删掉一个'); return; }
+  promptText('给这个存档起个名字', DEFAULT_SLOT_NAME, (name) => {
+    slotMetas = readSlots();
+    slotMetas[idx] = { name: name || DEFAULT_SLOT_NAME, playSec: 0, lastPlayedAt: Date.now(), createdAt: Date.now() };
+    writeSlots(slotMetas);
+    try { localStorage.removeItem(slotPayloadKey(idx)); } catch (e) {}
+    enterSlot(idx, true);
+  });
+}
+
+function promptRenameSlot(i) {
+  slotMetas = readSlots();
+  const m = slotMetas[i];
+  if (!m) return;
+  promptText('重命名存档', m.name, (name) => {
+    slotMetas = readSlots();
+    if (!slotMetas[i]) return;
+    slotMetas[i].name = name;
+    writeSlots(slotMetas);
+    renderSaveList();
+    mmToast('已重命名为「' + name + '」');
+  });
+}
+
+function promptDeleteSlot(i) {
+  slotMetas = readSlots();
+  const m = slotMetas[i];
+  if (!m) return;
+  const msg = document.createElement('div');
+  msg.className = 'mmMsg';
+  msg.textContent = '确定要删除存档「' + m.name + '」吗?\n\n存档和数据会一起清除,此操作不可撤销。';
+  showModal('删除存档', [msg], [
+    { label: '取消', onClick: () => closeModal() },
+    { label: '确认删除', cls: 'danger', onClick: () => {
+        closeModal();
+        deleteSlot(i);
+      } },
+  ]);
+}
+
+function deleteSlot(i) {
+  slotMetas = readSlots();
+  if (!slotMetas[i]) return;
+  const nm = slotMetas[i].name;
+  slotMetas[i] = null;
+  writeSlots(slotMetas);
+  try { localStorage.removeItem(slotPayloadKey(i)); } catch (e) {}
+  let last = -1;
+  try { last = parseInt(localStorage.getItem(LAST_SLOT_KEY), 10); } catch (e) { last = -1; }
+  if (last === i) { try { localStorage.removeItem(LAST_SLOT_KEY); } catch (e) {} }
+  if (activeSlot === i) { activeSlot = -1; try { localStorage.removeItem(ACTIVE_SLOT_KEY); } catch (e) {} }
+  renderSaveList();
+  mmToast('已删除「' + nm + '」');
+}
+
+// 读档后需要恢复的场景状态(考试未考完 ⇒ 拉回考场;§24c)
+function restoreSceneAfterLoad() {
+  if (state.relay.train && state.relay.train.examSession) {
+    const es0 = state.relay.train.examSession;
+    const totalH0 = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
+    if (es0.endH > totalH0) {
+      openExamScene();
+      if (typeof spawnFloatText === 'function') {
+        const ex0 = TRAIN_CFG.EXAMS[es0.idx] || {};
+        spawnFloatText('回到考场 · ' + (ex0.name || '考试') + ' 进行中', app.screen.width / 2, app.screen.height * 0.30);
+      }
+    }
+  }
+}
+
+function enterSlot(idx, isNew) {
+  if (idx < 0 || idx >= SLOT_COUNT) return;
+  slotMetas = readSlots();
+  const hasData = !!getSlotPayload(idx);
+  if (isNew || !hasData) {
+    resetGame();            // 只归零 state,不碰任何存档
+    playSeconds = 0;
+    activeSlot = idx;
+    try { localStorage.setItem(ACTIVE_SLOT_KEY, String(idx)); } catch (e) {}
+    saveGame();             // 立刻落一次盘,槽里就有内容了
+  } else {
+    if (!loadGame(idx)) { mmToast('存档读取失败'); return; }
+    saveGame();             // 进档即存一次(把 lastPlayedAt 刷新)
+  }
+  hideMainMenu();
+  // §29:进游戏就停菜单曲,按当前场景起游戏曲(两套互不干扰)
+  stopMenuBGM();
+  if (BGM.started) setBGM(currentBgmKey());
+  restoreSceneAfterLoad();
+  layoutAll();
+  updateTokenDisplay();
+  state.paused = false;
+}
+
+function openMenuSettings() {
+  ensureMenuDom();
+  const wrap = document.createElement('div');
+  // 通用滑条行(min..max 整数,显示文案由 fmt 决定)
+  const mkRange = (label, min, max, value, fmt, onChange) => {
+    const box = document.createElement('div');
+    box.style.margin = '6px 0 14px';
+    const lab = document.createElement('div');
+    lab.className = 'mmMsg';
+    lab.style.margin = '0 0 4px';
+    lab.textContent = label + ' · ' + fmt(value);
+    const r = document.createElement('input');
+    r.type = 'range'; r.min = String(min); r.max = String(max); r.step = '1'; r.value = String(value);
+    r.className = 'mmSlider';
+    r.addEventListener('input', () => {
+      const v = Number(r.value);
+      lab.textContent = label + ' · ' + fmt(v);
+      onChange(v);
+    });
+    box.appendChild(lab); box.appendChild(r);
+    return box;
+  };
+  wrap.appendChild(mkRange('音乐音量', 0, 100, Math.round(musicVolume * 100), (v) => v + '%', (v) => {
+    musicVolume = v / 100; setBgmVolume(musicVolume); saveGlobalSettings();
+  }));
+  wrap.appendChild(mkRange('音效音量', 0, 100, Math.round(sfxVolume * 100), (v) => v + '%', (v) => {
+    sfxVolume = v / 100; playSfx('click'); saveGlobalSettings();
+  }));
+  // §34(2026-11-01 星光:主页设置也可以修改帧率上限)
+  wrap.appendChild(mkRange('帧率上限', FPS_MIN, FPS_MAX, fpsCap, (v) => v + ' FPS', (v) => {
+    fpsCap = clampFps(v); applyFpsCap(); saveGlobalSettings();
+  }));
+  const hint = document.createElement('div');
+  hint.className = 'mmMsg';
+  hint.style.margin = '-8px 0 4px';
+  hint.style.fontSize = '11px';
+  hint.style.color = '#8d7c60';
+  hint.textContent = '30~240,默认 90;调高更顺滑,调低更省电(不影响游戏速度)';
+  wrap.appendChild(hint);
+  showModal('设置', [wrap], [{ label: '关闭', cls: 'primary', onClick: () => closeModal() }]);
+}
+
 // ==================== 启动（多重布局保险） ====================
-// 加载本地存档
-const hasSave = loadGame();
+// §27(2026-10-28 星光:每次进游戏都要有一个所有游戏都有的初始界面):
+//   启动**不再自动读档**,而是:①先把旧版单存档迁进 0 号槽(只做一次) ②读槽位表 ③停在主菜单。
+//   ⚠️ 迁移只在槽位表不存在时执行 —— 更新一次绝不会把玩家已有档洗掉。
+loadGlobalSettings();
+applyFpsCap();          // §31 应用帧率上限(默认 90)
+migrateLegacySave();
+slotMetas = readSlots();
+activeSlot = -1;
+state.paused = true;
 // 离开页面 / 切后台前补一次存档:让 savedAt 尽量贴近真实离开时间(离线收益的计时基准;
 // 平时每 30s 自动存档,最坏情况也只差 30s)
 window.addEventListener('pagehide', () => { saveGame(); });
@@ -9120,28 +10341,11 @@ ensureWhipAssets();
 if (whaleCursor) whaleCursor.visible = false;
 if (whipCursor) whipCursor.visible = false;
 app.view.classList.add('custom-cursor');
-if (hasSave) {
-  updateTokenDisplay();
-  layoutCase();
-  updateRelayTabVisibility();
-}
+// 主菜单:进游戏前先不显示任何存档内容(菜单是 DOM 覆盖层,画布只当背景)
+showMainMenu();
 
-// §24c(2026-10-24 星光:上次考试没结束就退出游戏,再进来是别的画面,考试还在继续却不拉回考场,
-//     打开面板还会出现词条/素材 = bug):examSession 是**持久化**的,但 examSceneOpen 只活在内存里,
-//   重载后恒为 false ⇒ 场景不拉回,只剩面板兜底渲染(词条/素材)零星提示。修法:启动时发现「进行中的考试」
-//   (endH > 当前 totalH,即还没到结算点)就自动拉回考场;若已过期则不动,交给 examTick 正常结算。
-if (hasSave && state.relay.train.examSession) {
-  const es0 = state.relay.train.examSession;
-  const totalH0 = (state.relay.news && typeof state.relay.news.totalH === 'number') ? state.relay.news.totalH : 0;
-  if (es0.endH > totalH0) {
-    openExamScene();
-    // 提示玩家「你回到了没考完的试场」,而不是无声切换
-    if (typeof spawnFloatText === 'function') {
-      const ex0 = TRAIN_CFG.EXAMS[es0.idx] || {};
-      spawnFloatText('回到考场 · ' + (ex0.name || '考试') + ' 进行中', app.screen.width / 2, app.screen.height * 0.30);
-    }
-  }
-}
+// §24c 的「拉回考场」逻辑已挪进 restoreSceneAfterLoad(),由 enterSlot() 在读档后调用
+//   (启动现在是主菜单,没有'当前存档',不能在这里拉场景)。
 
 // 背景音乐:只预载当前场景那一轨(其余懒加载);浏览器自动播放策略要求首次用户手势后才起
 initBGM();

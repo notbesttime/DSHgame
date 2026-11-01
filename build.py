@@ -35,6 +35,10 @@ ASSET_FILES = {
     "think_bubble": ("assets/compressed_webp/think_bubble.webp", "image/webp"),
     "pc_case_upgraded": ("assets/compressed_webp/pc_case_upgraded.webp", "image/webp"),
     "transfer_bg": ("assets/compressed_webp/transfer_bg.webp", "image/webp"),
+    # §29 主菜单封面(2026-10-29 星光给的《中转站在逃肥鱼》)
+    "menu_cover": ("assets/compressed_webp/menu_cover.webp", "image/webp"),
+    # §29 主菜单鲸鱼光标:CSS cursor 不支持 webp,转一张 png 专供 cursor 用
+    "whale_cursor_png": ("assets/compressed/whale_cursor.png", "image/png"),
     "chair": ("assets/compressed_webp/chair_hi.webp", "image/webp"),
     "walk_left": ("assets/compressed_webp/walk_left.webp", "image/webp"),
     "walk_right": ("assets/compressed_webp/walk_right.webp", "image/webp"),

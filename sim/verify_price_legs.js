@@ -543,20 +543,39 @@ console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重�
   // §24b(2026-10-22 星光把 durationH 从 4~48 压到 1.0~3.2):原来硬编码跑 60 tick(=1 游戏时),
   //   时长一变就「刚跑完就结算」⇒ ⑤⑨ 双双误报。改为**从会话自身反推**并只跑到一半,结算留给 ⑨。
   const halfTicks = Math.max(8, Math.ceil((s6.endH - s6.startH) * 60 * 0.5));
-  for (let i = 0; i < halfTicks; i++) { R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60); if (!T6.examSession) break; }
+  // §25e(2026-10-26):提示断言**不能只看单帧快照**。存活 TTL(2.5~1.4 秒)本就短于批间隔(3.7~2.0 秒),
+  //   两者之间天然有「一张都没有」的空档 —— 正好抽在空档上就会误报「没生成」。改累计口径。
+  const batchSizes = [];
+  let prevSeq = (T6.examSession && T6.examSession.hintSeq) || 0, maxAlive = 0, everSpawned = 0;
+  for (let i = 0; i < halfTicks; i++) {
+    R6.news.totalH += 1/60; sb6.examTick(R6.news.totalH, 1/60);
+    if (!T6.examSession) break;
+    const cs = T6.examSession;
+    const seqNow = cs.hintSeq || 0;
+    if (seqNow > prevSeq) { batchSizes.push(seqNow - prevSeq); everSpawned += seqNow - prevSeq; }
+    prevSeq = seqNow;
+    maxAlive = Math.max(maxAlive, (cs.hints || []).length);
+  }
   ok('考试期间分数随时间上涨(过程化,不是瞬间出结果)',
     !T6.examSession ? true : T6.examSession.score > sc0, sc0.toFixed(2) + ' → ' + (T6.examSession ? T6.examSession.score.toFixed(2) : 'settled'));
-  // ⑤ 提示:考试中能生成限时提示
+  // ⑤ 提示:考试中能生成限时提示(累计口径,见上)
   const s7 = T6.examSession;
-  ok('考试中生成限时提示', !!s7 && (s7.hints || []).length > 0,
-    s7 ? String((s7.hints || []).length) : '会话已提前结算(halfTicks=' + halfTicks + ')');
+  ok('考试中生成限时提示(累计生成,不是单帧快照)', !!s7 && everSpawned > 0,
+    s7 ? ('共 ' + batchSizes.length + ' 批 / ' + everSpawned + ' 张 / 同屏峰值 ' + maxAlive) : '会话已提前结算(halfTicks=' + halfTicks + ')');
+  ok('每批张数落在 BURST 3~5(私有随机源没退化成恒 3,§25e)',
+    batchSizes.length > 0 && batchSizes.every(n => n >= 3 && n <= 5), JSON.stringify(batchSizes));
+  // 下面的点选断言需要一个**活着的**卡片:累计统计时可能刚好落在批间空档 ⇒ 主动补一批(确定性构造)
+  if (s7) { s7.nextHintH = 0; sb6.spawnExamHint(s7, TCFG6.EXAMS[s7.idx], R6.news.totalH, 1); }
   if (s7 && s7.hints && s7.hints.length) {
     const h = s7.hints[0];
     const area = { x: 0, y: 0, w: 1000, h: 600 };
     const beforeScore = s7.score, beforeGain = s7.attrGain || 0;
     const attrKey = h.attrKey, attrBefore = R6.ability[attrKey] || 0;
     // ⑥ 点中:分数 +N(只进本次考试) + 属性 +δ(唯一带出局外的收益)
-    const hit = sb6.examHintClick(area.x + h.ux * area.w, area.y + h.uy * area.h, area);
+    // §25:卡片纵向位置由 examHintRect 的避让带决定(要避开吸顶播报条),断言必须用同一套几何定位,
+    //   自己按 uy*h 点会在带了避让之后点空(那是断言过时,不是游戏坏了)。
+    const hr0 = sb6.examHintRect(h, area.w, area.h);
+    const hit = sb6.examHintClick(area.x + hr0.cx, area.y + hr0.cy, area);
     ok('点中提示判定命中', hit === true);
     ok('点中后本次分数上涨(分数只进本次考试)', s7.score > beforeScore, beforeScore.toFixed(1) + ' → ' + s7.score.toFixed(1));
     ok('点中后属性小幅上涨(唯一带出局外的收益)',
@@ -576,7 +595,8 @@ console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重�
       if (!s7.hints || !s7.hints.length) break;
       const hh = s7.hints[0];
       const g0 = s7.attrGain || 0;
-      sb6.examHintClick(area.x + hh.ux * area.w, area.y + hh.uy * area.h, area);
+      const hhr = sb6.examHintRect(hh, area.w, area.h);
+      sb6.examHintClick(area.x + hhr.cx, area.y + hhr.cy, area);
       gainedSum += (s7.attrGain || 0) - g0;
       clicks++;
     }
@@ -591,13 +611,60 @@ console.log('\n[12] 考试体系:阶梯 / 隐藏阈值 / 会话式过程 / 重�
       sb6.spawnExamHint(s7, TCFG6.EXAMS[s7.idx], R6.news.totalH, 1);
       if (s7.hints && s7.hints.length) {
         const hx = s7.hints[0];
-        sb6.examHintClick(area.x + hx.ux * area.w, area.y + hx.uy * area.h, area);
+        const hxr = sb6.examHintRect(hx, area.w, area.h);
+        sb6.examHintClick(area.x + hxr.cx, area.y + hxr.cy, area);
         const a1 = R6.ability[atk] || 0;
         capOk = (a1 - a0) < 0.02;            // 已到上限 ⇒ 几乎不再加
         capDetail = atk + ' ' + a0.toFixed(2) + '→' + a1.toFixed(2) + ' (attrGain 5.98 起)';
       }
     }
     ok('每场属性总增长有上限(顶到 5.98 后再点不再增长)', capOk, capDetail);
+  // §25f 实测审计锚:16 个槽位 × 桌面/手机两档,卡片必须 ①不出屏 ②不压右下角模型与思考气泡。
+  //   这里用真函数跑(不是正则),把两套坐标(归一化槽位 vs 固定像素人物)的矛盾钉死在断言里。
+  const slotAudit = (() => {
+    const out = [];
+    for (const [w, h] of [[1280, 720], [667, 375]]) {
+      const side = Math.min(340, h * 0.4);
+      const mx = w - side - 10, my = h - side - 10;
+      const bubbleW = Math.min(248, 400 * (side / 400) * 1.05, w * 0.24, h * 0.34);
+      for (const sl of [[0.16,0.20],[0.38,0.16],[0.62,0.22],[0.84,0.18],[0.22,0.42],[0.46,0.38],
+                        [0.70,0.44],[0.90,0.40],[0.14,0.64],[0.36,0.58],[0.60,0.66],[0.82,0.62],
+                        [0.24,0.86],[0.48,0.82],[0.72,0.88],[0.92,0.84]]) {
+        const r = sb6.examHintRect({ ux: sl[0], uy: sl[1] }, w, h);
+        const offscreen = r.x < 0 || r.x + r.w > w || r.y < 0 || r.y + r.h > h;
+        const ox = Math.min(r.x + r.w, mx + side) - Math.max(r.x, mx);
+        const oy = Math.min(r.y + r.h, my + side) - Math.max(r.y, my);
+        const onModel = ox > 4 && oy > 4;
+        if (offscreen || onModel) out.push({ size: w + 'x' + h, slot: sl, x: Math.round(r.x), y: Math.round(r.y), offscreen, onModel });
+      }
+    }
+    return out;
+  })();
+  ok('16 槽位在两档屏上都不出屏、不压人物(§25f 实测审计锚)',
+    slotAudit.length === 0, slotAudit.length ? JSON.stringify(slotAudit.slice(0, 4)) : '32 组检查全过');
+  // §25g:光「不出屏、不压人物」还不够 —— 手机档曾经每张卡只有 94px 宽(卡内可用 70px),
+  //   20px 粗体的标题会被压到 ~11px,等于看不见。判据改成**按池里最长那条真实文案**算:
+  //   ①卡内可用宽 ≥ 96px ②字号自适应(12~20)后再 scale 的比例 ≥ 0.55(实际 ≥ 11px 才读得下去)。
+  const legibilityAudit = (() => {
+    // 从源码里取文案池最长那条(EXAM_HINTS 不在沙箱导出里,直接解析生成块)
+    const srcTxt = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+    const pool = [...srcTxt.matchAll(/label: '([^']*)', text: '([^']*)'/g)]
+      .map(m => (m[1].replace(/[:：]\s*$/, '') + ' ' + m[2]));
+    const worstChars = pool.reduce((a, b) => Math.max(a, b.length), 0);
+    const bad = [];
+    for (const [w, h] of [[1280, 720], [812, 375], [667, 375], [375, 667]]) {
+      const r = sb6.examHintRect({ ux: 0.5, uy: 0.5 }, w, h);
+      const innerW = r.w - 24;                                   // 与绘制的 x+12 内边距一致
+      const tSize = Math.max(12, Math.min(20, Math.round(innerW / 9)));   // 与绘制同源公式
+      const needW = worstChars * tSize * 0.62;                   // 中英混排:1 字 ≈ 0.62em
+      const scale = Math.min(1, innerW / needW);
+      if (innerW < 96 || scale < 0.55) bad.push({ size: w + 'x' + h, cw: Math.round(r.w), innerW: Math.round(innerW), tSize, scale: +scale.toFixed(2) });
+    }
+    return { bad, worstChars };
+  })();
+  ok('窄屏卡内文字不被压扁(按最长真实文案:可用宽 ≥96 且最终缩放 ≥0.55;§25g)',
+    legibilityAudit.bad.length === 0,
+    legibilityAudit.bad.length ? JSON.stringify(legibilityAudit.bad) : ('最长 ' + legibilityAudit.worstChars + ' 字 · 四档屏全过'));
   }
   // ⑨ 结算后会话清空、examStage 推进或重考计数(二者必居其一)
   const st0 = T6.examStage, rt0 = T6.examRetakes[0] || 0;
@@ -960,7 +1027,7 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
 
   // ── §24/§24b/§24c 考试独立场景(2026-10-21~24;上一轮提交漏带断言,本轮补齐)──
   ok('考试独立场景已建(背景+压暗+UI层)',
-    srcJ.includes('const examScene = new PIXI.Container();') && srcJ.includes('ASSETS.exam_bg'));
+    srcJ.includes('const examScene = new PIXI.Container();') && srcJ.includes("bgSprite('exam_bg'"));
   ok('开考进场景 / 结算退场景(挂 startExam 与 settleExam)',
     srcJ.includes('openExamScene()') && srcJ.includes('closeExamScene()'));
   ok('考场层级 = stage 最上层(否则 topbar/标签/面板盖在考场上)',
@@ -969,30 +1036,104 @@ console.log('\n[19] 鞭打坐姿保护 / BGM 1s 淡变 / 弹层自适应 / 后�
     srcJ.includes('layers.topbar.visible = false;') && srcJ.includes('for (const tb of TABS) tb.container.visible = false;'));
   ok('背景与压暗层吃掉点击(全屏 hitArea)',
     srcJ.includes('examBgSprite.hitArea = new PIXI.Rectangle(0, 0, w, h);') && srcJ.includes('examShade.hitArea'));
-  ok('进度条避让左上角设置按钮区(barY=82)',
-    srcJ.includes('barX = 20, barY = 82'));
-  ok('灵感卡放大 2倍(104~240 x 52)',
-    srcJ.includes('Math.max(104, Math.min(240') && srcJ.includes('const ch = 52;'));
+  ok('进度条避让设置按钮 + 吸顶播报条(barY 不再是 82,改按播报条高算)',
+    srcJ.includes('const barY = BCAST_CFG.H + 18 + 24;') && !srcJ.includes('barX = 20, barY = 82')
+    && !srcJ.includes('box.drawRoundedRect(barX - 8, barY - 8, barW + 16, barH + 40, 10);'));
+  // §25b(星光 2026-10-25「边框没有包裹到得分那一条」):框高必须由内容反推,不能再写死
+  ok('左上角 HUD 框按内容高度自适应(得分行不再露在框外)',
+    srcJ.includes('const boxBottom = contentBottom + 8;') && srcJ.includes('const hudW = Math.max(barW, t1.width, t2.width);'));
+  ok('手机档 HUD 整体收一档(进度条/字号/内边距;§25h)',
+    srcJ.includes('const compact = h < 480;') && /barW = compact \? Math\.min\(190/.test(srcJ)
+    && srcJ.includes('const fs1 = compact ? 12 : 15'));
+  ok('HUD 框宽也按内容量(窄屏「剩余 65 秒」不再顶出右边)',
+    srcJ.includes('const hudW = Math.max(barW, t1.width, t2.width);'));
+  ok('考场 HUD 由三行并两行(「剩余 X 秒」并进标题行,手机横屏不被吃掉四成屏)',
+    /const t1 = makeText\(\(ex\.name \|\| '考试'\) \+ '  ·  剩余 ' \+ Math\.ceil\(leftH \* 60\) \+ ' 秒'/.test(srcJ)
+    && !/const t3 = makeText\('剩余 '/.test(srcJ));
+  ok('HUD 底边与灵感卡纵向带共用同一常量(两处各写必然漂移)',
+    srcJ.includes('const EXAM_HUD_BOTTOM = 148;') && srcJ.includes('const top = EXAM_HUD_BOTTOM;'));
+  // §25f/§25g:卡不再写死尺寸,也不再用固定 4×4 网格 —— 手机 375 逻辑高只有 189px 带,
+  //   4 行×46px 卡会把行距挤到 4px、卡宽压到 94px(卡内文字只剩 70px,20px 粗体全糊)。
+  //   改成「行数按带高、列数按可用宽」自适应。断言钉住这条自适应链路。
+  ok('灵感卡高度按带高自适应(窄屏 28~40 / 桌面 ≤46;§25h)',
+    /const ch = Math\.max\(28, Math\.min\(h < 480 \? 40 : 46, band\.span \/ 5\.2\)\)/.test(srcJ));
+  ok('位置是**连续**映射,不吸附固定网格(否则像打地鼠;§25h)',
+    /const cx = leftEdge \+ cw \/ 2 \+ u \* Math\.max\(1, avail - cw\);/.test(srcJ)
+    && !srcJ.includes('const col = Math.max(0, Math.min(cols - 1'));
+  ok('卡的横向位置按「可用区间」重映射(压不到模型/气泡,也出不了屏;§25f)',
+    srcJ.includes('const hitsChar = (cy + ch / 2) > exclT;')
+    && srcJ.includes('const cx = leftEdge + cw / 2 + u * Math.max(1, avail - cw);'));
   ok('命中与绘制同源 examHintRect(点大卡不点空)',
     srcJ.includes('function examHintRect(') && srcJ.includes('examHintRect(h, area.w, area.h)'));
   ok('右下角模型与生产板块同尺寸公式(不再两处各写一份)',
-    srcJ.includes('const charH = Math.min(340, h * 0.4), charScale = charH / 400;'));
+    srcJ.includes('const charH = Math.min(340, h * 0.4, w * 0.42), charScale = charH / 400;'));
   ok('思考气泡(think_bubble + 内心戏文本)',
     srcJ.includes('ASSETS.think_bubble') && srcJ.includes('examThinkBubble'));
   ok('思考句以省略号收尾(不是句号)',
     srcJ.includes("+ '……'"));
   ok('场景跟随有 4Hz 节流(不每帧重建)',
     srcJ.includes('function updateExamScene()') && srcJ.includes('if (examSceneAccum < 0.25) return;'));
-  ok('考试时长压到 1.0~3.2 游戏时(60~192 现实秒)',
-    (srcJ.match(/durationH: (?:1[.]0|1[.]2|1[.]5|1[.]8|2[.]0|2[.]4|2[.]7|3[.]2)[ },]/g) || []).length === 8);
-  ok('灵感卡节奏:间隔 8~4.5 秒 / 存活 13~7 秒(后 40% 淡出)',
-    srcJ.includes('INTERVAL_H: [0.13, 0.075],') && srcJ.includes('TTL_H: [0.22, 0.12],'));
+  ok('考试时长压到 0.6~2.0 游戏时(36~120 现实秒;§25 星光「时间再短一点」)',
+    (srcJ.match(/durationH: (?:0[.]60|0[.]75|0[.]90|1[.]10|1[.]30|1[.]50|1[.]70|2[.]00)[ },]/g) || []).length === 8);
+  ok('灵感卡节奏:每批 3~5 张 / 间隔 3.7~2.0 秒 / 存活 2.5~1.4 秒(后 40% 淡出)',
+    srcJ.includes('INTERVAL_H: [0.062, 0.034],') && srcJ.includes('TTL_H: [0.042, 0.024],'));
+  ok('一批同时冒 3~5 张(BURST 配置 + 同屏上限够放)',
+    srcJ.includes('BURST: [3, 5],') && /MAX_ALIVE: 6,/.test(srcJ));
+  ok('位置随机但**拒绝采样**防重叠(不是固定槽位表;§25h)',
+    srcJ.includes('const sepX = 0.185, sepY = 0.115;') && srcJ.includes('for (let attempt = 0; attempt < 40; attempt++)')
+    && !srcJ.includes('const slots = HINT_SLOTS.slice();'));
+  // §25e(2026-10-26):**私有随机源不许退化**。原 LCG 写法 T._hr = T._hr * 1103515245 + 12345 不做 32 位截断,
+  //   _hr 指数膨胀到 1e275 ⇒ 浮点有效位吃光低位 ⇒ **第 3 次调用起恒返回 0**。
+  //   后果全是「静默失效」:一批恒 3 张、槽位 shuffle 恒等、文案洗牌恒等 —— 不报错不变慢,只能靠分布断言抓。
+  const rngProbe = (() => {
+    const m = srcJ.match(/function examHintRand\(T\) \{[\s\S]*?\n\}/);
+    if (!m) return null;
+    const fn = new Function('return (' + m[0] + ')')();
+    const T = { _hr: 12345 };
+    const vals = [];
+    for (let i = 0; i < 2000; i++) vals.push(fn(T));
+    const uniq = new Set(vals.map(v => v.toFixed(9))).size;
+    const zeros = vals.filter(v => v === 0).length;
+    const buckets = new Array(10).fill(0);
+    for (const v of vals) buckets[Math.min(9, Math.floor(v * 10))]++;
+    const spread = (Math.max(...buckets) - Math.min(...buckets)) / vals.length;
+    return { uniq, zeros, spread };
+  })();
+  ok('私有随机源 examHintRand 不退化(2000 次几乎无重复 / 无恒 0 / 分桶均匀)',
+    !!rngProbe && rngProbe.uniq >= 1900 && rngProbe.zeros === 0 && rngProbe.spread < 0.02,
+    rngProbe ? ('唯一值 ' + rngProbe.uniq + '/2000 · 零值 ' + rngProbe.zeros + ' · 桶极差占比 ' + rngProbe.spread.toFixed(4)) : '(抽取失败)');
+  ok('随机源是 32 位安全写法(裸乘法 LCG 会退化成恒 0)',
+    /\^= *x *<< *13|xorshift/.test(srcJ) && !/T\._hr = \(T\._hr \|\| 12345\) \* 1103515245/.test(srcJ));
+  ok('命中判定与绘制同源(都用 examHintRect 的 cx/cy)',
+    /const r = examHintRect\(h, area\.w, area\.h\);\n    const cx = area\.x \+ r\.cx;/.test(srcJ));
+  ok('右下角说话气泡缩小(桌面 248 / 手机 186,三重夹,字号随档;§25h)',
+    /Math\.min\(compact \? 186 : 248, mw \* 1\.05/.test(srcJ) && srcJ.includes("compact ? 12 : 14, color: '#2a3a5a'"));
+  ok('考场浮字不再沿用生产配色与上飘(深墨色 + 慢淡出 + rise 26)',
+    srcJ.includes("size: 26, color: '#b0281a', dur: 1.5, rise: 26"));
+  // §25 顶部滚动播报条(喇叭图标 + 左移被裁切 + 三板块吸顶 + 队列播完才消失)
+  ok('播报条独立层:盖住顶栏/浮字,但不盖用户主动打开的面板与设置(三板块 + 考场通用)',
+    srcJ.includes('function placeBroadcast()')
+    && srcJ.includes('if (app.stage.children[app.stage.getChildIndex(layers.panel) - 1] === bcastLayer) return;')
+    && (srcJ.match(/placeBroadcast\(\);/g) || []).length >= 4);
+  ok('进考场把播报层提到最顶(否则被 stage 最上层的 examScene 盖住)',
+    srcJ.includes('if (examSceneOpen) {') && srcJ.includes('app.stage.addChild(bcastLayer);')
+    && (srcJ.match(/placeBroadcast\(\);/g) || []).length >= 4);
+  ok('喇叭图标是 Graphics 手画(不额外引素材)',
+    srcJ.includes('function drawHorn(g, cx, cy, r)') && srcJ.includes('bcastRoot.addChild(bcastBg, bcastHorn'));
+  ok('文字在圆角蒙版里左移 ⇒ 左边被遮挡消失(不是整条淡出)',
+    srcJ.includes('bcastClip.mask = bcastMask;') && srcJ.includes('const endX = -bcastState.tw;'));
+  ok('多条队列依次播放 + 播完才整体淡出',
+    srcJ.includes('bcastState.queue.push(s);') && srcJ.includes("bcastState.phase = 'out';"));
+  ok('播报节奏由主 ticker 驱动(不 setTimeout,暂停/切场景不错拍)',
+    /updateBroadcast\(dt\);/.test(srcJ));
   ok('首张卡 4 秒(原 18 秒)',
     srcJ.includes('nextHintH: totalH + 0.07'));
-  ok('§24c 启动时发现进行中的考试自动拉回考场(判 endH 未到才拉)',
-    srcJ.includes('if (hasSave && state.relay.train.examSession) {')
+  // §27:读档后的「拉回考场」已挪进 restoreSceneAfterLoad(),由 enterSlot() 调用
+  ok('§24c 读档时发现进行中的考试自动拉回考场(判 endH 未到才拉)',
+    srcJ.includes('function restoreSceneAfterLoad()')
     && srcJ.includes('if (es0.endH > totalH0) {')
-    && srcJ.includes('回到考场 · '));
+    && srcJ.includes('回到考场 · ')
+    && srcJ.includes('restoreSceneAfterLoad();'));
       RF.ability.fit = 75; sbF.fitPullTowardOpt(0.35); const a75 = RF.ability.fit; return a80 > a75 && Math.abs(a80 - 76.5) < 0.01; })());
   ok('训练页 HUD 显示拟合度概览(数值+状态+配色)',
     srcJ.includes("'拟合 ' + fitV.toFixed(0) + ' ' + fitStateText(fitV)") && srcJ.includes('return \'过拟合\''));
@@ -1056,6 +1197,176 @@ console.log('\n[20] 相似度判定:最近邻档位相称 / 有效相似不饱�
   // ④ 低 cap 只能标廉价/轻量,高 cap 必须能标到旗舰(旧版 cap100 也可能停在低档)
   ok('cap≈20 停在低档(廉价/轻量)', pr[0].tier <= 1, pr[0].n + '/' + pr[0].t);
   ok('cap≈100 能标到旗舰', pr[pr.length - 1].tier === 3, pr[pr.length - 1].n + '/' + pr[pr.length - 1].t);
+}
+
+// ── [21] §27 多存档槽:存储层 / 迁移 / 存档点 / 界面锚点 ──────────────────
+console.log('\n[21] 多存档槽:8 槽 / 旧档迁移 / 存档点 / 主菜单与返回菜单');
+{
+  const srcJ = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  // ① 把存储层整段抽出来,配一个假 localStorage 真跑一遍(不碰真存档)
+  const i0 = srcJ.indexOf('// ==================== 本地存档(§27 多存档槽) ====================');
+  const i1 = srcJ.indexOf('function loadGame(', i0);
+  if (i0 < 0 || i1 < 0) throw new Error('取不到 §27 存储层代码段');
+  const storeCode = srcJ.slice(i0, i1);
+  const mkLS = () => {
+    const m = Object.create(null);
+    return {
+      getItem: (k) => (k in m ? m[k] : null),
+      setItem: (k, v) => { m[k] = String(v); },
+      removeItem: (k) => { delete m[k]; },
+      clear: () => { for (const k in m) delete m[k]; },
+      _dump: () => m,
+    };
+  };
+  const mkState = () => ({
+    tokens: 123456, machines: { rtx3080: { count: 2 }, a100: { count: 0 }, extraRack: { count: 0 }, server: { count: 0 } },
+    cooling: { fan: { count: 1 }, waterCooling: { count: 0 } },
+    scripts: { autoClick: false, miracle: false }, relay: { reputation: 7.5 },
+  });
+  const buildStore = (ls, st) => new Function('localStorage', 'state', 'musicVolume', 'sfxVolume',
+    storeCode + '\nreturn { readSlots, writeSlots, getSlotPayload, setSlotPayload, lastPlayedSlot,'
+      + ' migrateLegacySave, saveGame, buildSavePayload, SLOT_COUNT, DEFAULT_SLOT_NAME,'
+      + ' getActive: () => activeSlot, setActive: (v) => { activeSlot = v; },'
+      + ' setPlay: (v) => { playSeconds = v; } };')(ls, st, 0.7, 0.8);
+
+  const lsA = mkLS();
+  const stA = mkState();
+  const S = buildStore(lsA, stA);
+  ok('槽位数量 = 8,默认名 = 新的世界', S.SLOT_COUNT === 8 && S.DEFAULT_SLOT_NAME === '新的世界');
+  ok('全新用户:8 个槽全是空(null)', S.readSlots().length === 8 && S.readSlots().every(x => x === null));
+
+  // ② 旧单存档迁移:必须原样搬进 0 号槽
+  lsA.setItem('dshgame_save_v1', JSON.stringify({ tokens: 999888, rtx3080: 3, relay: { reputation: 4.2 }, savedAt: 1700000000000 }));
+  const migrated = S.migrateLegacySave();
+  const sl0 = S.readSlots()[0];
+  ok('旧版单存档能迁进 0 号槽', migrated === true && !!sl0 && sl0.name === '新的世界', JSON.stringify(sl0));
+  ok('迁移后 0 号槽正文与旧档一致(token 数不变)',
+    (S.getSlotPayload(0) || {}).tokens === 999888, String((S.getSlotPayload(0) || {}).tokens));
+  ok('迁移幂等:再跑一次返回 false,不覆盖已有槽',
+    S.migrateLegacySave() === false && S.readSlots()[0].name === '新的世界');
+  ok('迁移后 last_slot 指向 0(主菜单才能显示「继续游戏」)', S.lastPlayedSlot() === 0);
+
+  // ③ 存档点:主菜单(无当前槽)绝不写盘;有槽才写,且写进**那一个槽**
+  const lsB = mkLS();
+  const stB = mkState();
+  const S2 = buildStore(lsB, stB);
+  ok('主菜单状态(activeSlot=-1)调 saveGame ⇒ 不落盘(false)',
+    S2.saveGame() === false && lsB.getItem('dshgame_slot_0_v1') === null);
+  S2.setActive(1);
+  S2.setPlay(123);
+  stB.tokens = 4242;
+  const saved = S2.saveGame();
+  ok('有当前槽时 saveGame 写进该槽(不串到别的槽)',
+    saved === true && (S2.getSlotPayload(1) || {}).tokens === 4242 && lsB.getItem('dshgame_slot_0_v1') === null);
+  ok('存档时同步写入累计游玩时长(playSec)', (S2.getSlotPayload(1) || {}).playSec === 123);
+  ok('存档后 last_slot 记录当前槽', S2.lastPlayedSlot() === 1);
+  S2.setActive(2);
+  stB.tokens = 777;
+  S2.saveGame();
+  ok('两个槽互不影响(各自 tokens 独立)',
+    (S2.getSlotPayload(1) || {}).tokens === 4242 && (S2.getSlotPayload(2) || {}).tokens === 777);
+
+  // ④ 界面/流程锚点
+  ok('主菜单有四个按钮(继续/新开始/查看存档/设置)',
+    srcJ.includes('mmContinue') && srcJ.includes('mmNew') && srcJ.includes('mmSavesBtn') && srcJ.includes('mmSettings'));
+  ok('「继续游戏」只在有存档时显示',
+    srcJ.includes("mmEls.continueBtn.classList.toggle('hide', last < 0)"));
+  ok('新的开始默认名是「新的世界」并先命名再进游戏',
+    srcJ.includes('promptText(\'给这个存档起个名字\', DEFAULT_SLOT_NAME') && srcJ.includes('enterSlot(idx, true)'));
+  ok('存档页是**弹窗**(不是整页)+ 虚化背景 + 8 个槽 + 2 列 4 行',
+    srcJ.includes('backdrop-filter:blur(9px)') && srcJ.includes('.svBox{width:min(760px,94vw)')
+    && srcJ.includes('for (let i = 0; i < SLOT_COUNT; i++)')
+    && srcJ.includes('grid-template-columns:repeat(2,1fr)'));
+  ok('存档弹窗在手机/矮屏可滚动(svScroll 溢出滚动)', srcJ.includes('.svScroll{flex:1 1 auto;overflow-y:auto'));
+  ok('右键存档弹出「重命名 / 删除存档」',
+    srcJ.includes("'contextmenu'") && srcJ.includes('mmCtxRename') && srcJ.includes('mmCtxDelete'));
+  ok('删除要二次确认(确认删除按钮)',
+    srcJ.includes('promptDeleteSlot') && srcJ.includes("'确认删除'") && srcJ.includes('deleteSlot(i)'));
+  ok('游玩时长只在该存档激活时累加', srcJ.includes('if (activeSlot >= 0) playSeconds += dt;'));
+  ok('设置面板新增「返回菜单」且返回前先落盘',
+    srcJ.includes("mkBtn('返回菜单'") && /saveGame\(\);\s*\n\s*closeSettings\(\);\s*\n\s*showMainMenu\(\);/.test(srcJ));
+  ok('存档点:自动存档(30s)+ pagehide + 切后台 + 返回菜单 + 进档即存',
+    srcJ.includes('if (saveAccum >= 30)') && srcJ.includes("window.addEventListener('pagehide'")
+    && srcJ.includes("document.addEventListener('visibilitychange'") && srcJ.includes('saveGame();             // 进档即存一次'));
+}
+
+// ── [22] §30 窗口尺寸 / 帧率相关回归(机箱跑出屏幕、人物速度随帧率变) ──────
+console.log('\n[22] 窗口尺寸与帧率:机箱夹回可视区 / 人物位移按时间而非按帧');
+{
+  const srcW = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  // ① 机箱:窗口变小(F11 退出全屏)后,地面重算但 pcCase.y 停在旧位置 ⇒ 落到屏幕外。
+  //    必须每次 layout 都夹一次(只夹越界,不动玩家正常摆放)。
+  ok('机箱在窗口变小后被夹回可视区(不再掉到屏幕外看不见)',
+    srcW.includes('if (pcCase.y > defaultY) { pcCase.y = defaultY; casePhysics.vy = 0; }')
+    && srcW.includes('pcCase.x = Math.max(0, Math.min(Math.max(0, app.screen.width - cwNow), pcCase.x));'));
+  // ② 人物下落/行走原来是「每帧」累加 ⇒ 帧率一低就变慢。现在乘 k = dt*60。
+  ok('人物位移按时间缩放(k = dt*60),不再随帧率变快变慢',
+    srcW.includes('Math.min(8, (typeof dt === \'number\' ? dt : 1 / ANIM_BASE_FPS) * ANIM_BASE_FPS)')
+    && srcW.includes('ph.vy += ph.gravity * k;') && srcW.includes('c.y += ph.vy * k;')
+    && srcW.includes('ai.x += ai.dx * ai.speed * k;') && srcW.includes('ai.y += ai.dy * ai.speed * k;'));
+  ok('行走状态计时也按 k 走(否则帧率低时走/停时长会变)', srcW.includes('ai.timer -= k;'));
+  ok('updateWalkerAI 接收并透传 dt(两个场景都传)',
+    srcW.includes('function updateWalkerAI(dt)')
+    && srcW.includes("updateWalkerRig(relayWalker, 'relay', dt)")
+    && srcW.includes("updateWalkerRig(tuneWalker, 'tune', dt)")
+    && srcW.includes('updateWalkerAI(dt);'));
+}
+
+// ── [23] §31 帧率上限 / 实时帧率 / 升级机箱贴图防御 ──────────────────────
+console.log('\n[23] 帧率上限(30~240 默认 90)/ 左下角 FPS / 升级机箱 scale 防御');
+{
+  const srcF = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('帧率上限常量 30~240、默认 90',
+    srcF.includes('const FPS_MIN = 30, FPS_MAX = 240, FPS_DEFAULT = 90;')
+    && srcF.includes('let fpsCap = FPS_DEFAULT;'));
+  ok('上限值写入 ticker.maxFPS 并持久化到全局设置',
+    srcF.includes('app.ticker.maxFPS = clampFps(fpsCap)')
+    && srcF.includes('fpsCap: fpsCap') && srcF.includes('if (typeof d.fpsCap === \'number\') fpsCap = clampFps(d.fpsCap);'));
+  ok('设置面板有「帧率上限」滑条(30~240)',
+    srcF.includes("makeText('帧率上限'") && srcF.includes('clampFps(FPS_MIN + v * (FPS_MAX - FPS_MIN))'));
+  ok('左下角实时帧率每 0.5s 刷新',
+    srcF.includes("fpsLabel.text = 'FPS ' + f") && srcF.includes('if (fpsAccum < 0.5) return;'));
+  // 升级机箱:换贴图瞬间 width=1 会算出 scale=134.4(机箱飞出屏幕)。必须挡住。
+  ok('升级机箱贴图未就绪时不改 scale,并就绪后自动重排',
+    srcF.includes('if (!newTexture || !newTexture.width || newTexture.width <= 1 || newTexture.height <= 1) {')
+    && srcF.includes("newTexture.on('update', () => { try { layoutCase(); } catch (e) {} });"));
+  ok('机箱抛掷物理也按时间(k),不再随帧率变',
+    srcF.includes('casePhysics.vy += casePhysics.gravity * k;') && srcF.includes('updateCasePhysics(dt);'));
+  ok('人物位移 k 上限放宽到 8(低帧率不再被截断成变慢)',
+    srcF.includes('Math.min(8, (typeof dt === \'number\' ? dt : 1 / ANIM_BASE_FPS) * ANIM_BASE_FPS)'));
+}
+
+// ── [24] §32 人物下落重力(手感) ────────────────────────────────────────
+console.log('\n[24] 人物下落重力:1.2(旧 0.25 太飘)');
+{
+  const srcG = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('行走人物重力 = 1.2(500px 落约 0.48s;旧 0.25 要 1.05s)',
+    srcG.includes('physics: { vy: 0, gravity: 1.2, isFalling: false, targetY: 0, sitOnChair: false }'));
+  ok('重力仍走 k=dt*60 换算(与帧率无关)',
+    srcG.includes('ph.vy += ph.gravity * k;') && srcG.includes('c.y += ph.vy * k;'));
+}
+
+// ── [25] §33 动画基准帧率 90(手感) ─────────────────────────────────────
+console.log('\n[25] 动画基准 ANIM_BASE_FPS = 90(位移/重力/计时统一换算)');
+{
+  const srcA = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('动画基准常量 = 90(与默认帧率上限一致)', srcA.includes('const ANIM_BASE_FPS = 90;'));
+  ok('人物与机箱的 k 都用 ANIM_BASE_FPS 换算(不再各写 60)',
+    (srcA.match(/Math\.min\(8, \(typeof dt === 'number' \? dt : 1 \/ ANIM_BASE_FPS\) \* ANIM_BASE_FPS\)/g) || []).length >= 2);
+  ok('重力 1.2 + 90 基准 ⇒ 500px 约 0.32s(旧 60 基准 0.48s)',
+    srcA.includes('physics: { vy: 0, gravity: 1.2, isFalling: false, targetY: 0, sitOnChair: false }'));
+}
+
+// ── [26] §34 主页设置也能改帧率上限 ────────────────────────────────────
+console.log('\n[26] 主菜单设置:帧率上限滑条(与游戏内一致)');
+{
+  const srcM = fs.readFileSync(require('path').join(__dirname, '..', 'index_template.html'), 'utf8');
+  ok('主菜单设置弹窗含「帧率上限」并写回 fpsCap + 持久化',
+    srcM.includes("mkRange('帧率上限', FPS_MIN, FPS_MAX, fpsCap")
+    && srcM.includes('fpsCap = clampFps(v); applyFpsCap(); saveGlobalSettings();'));
+  ok('主菜单与游戏内设置共用同一套 30~240 常量(不会两处不一致)',
+    srcM.includes('clampFps(FPS_MIN + v * (FPS_MAX - FPS_MIN))')
+    && srcM.includes("mkRange('帧率上限', FPS_MIN, FPS_MAX, fpsCap"));
 }
 
 console.log('\n' + '─'.repeat(60));

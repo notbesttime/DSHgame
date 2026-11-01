@@ -309,6 +309,9 @@ const CODE = [
   exF('prChance'), exF('prSubsidyCost'), exF('prResolve'), exF('prWarnTick'),   // §8 P2-2 公关
   exF('prWarnBannerState'),   // §8.3 预警横幅纯函数(只依赖 R/P/Math/RELAY_BIZ,无 PIXI ⇒ 可沙箱直测)
   exF('examHintRect'),        // §24 灵感卡命中矩形(纯函数:只算几何,无 PIXI)⇒ examHintClick 依赖它
+  exF('examHintBandY'),       // §25 examHintRect 的纵向避让带(漏抽 examHintClick ReferenceError)
+  exF('examHintBand'),        // §25f examHintRect 的纵向可用带(卡高自适应;漏抽 examHintRect ReferenceError)
+  exC('EXAM_HUD_BOTTOM'),     // §25b examHintBandY 的上界(= 左上角 HUD 盒下沿)
   exF('p2CategoryOf'), exF('p2HeatTick'), exF('p2HeatMul'),   // §20.16:P2-3 热点已落模板
   exC('NEWS_LIFE_H'), exC('NEWS_MAX_ACTIVE'), // p2CrashNews 的日报条目用到
   exC('HEAT_CATS'),                           // P2-3 热点类别表(p2HeatTick 用)
@@ -333,6 +336,7 @@ const CODE = [
   exF('examHintLerp'), exF('examHintRand'), exF('spawnExamHint'), exF('examHintClick'),
   exF('examThinkLine'),   // §17.8 内心戏(池来自《考试文案池.md》)
   exC('EXAM_HINT_CFG'), exC('EXAM_HINTS'), exC('EXAM_HINT_TEXT'), exC('EXAM_THINK'),
+  exC('HINT_SLOTS'),   // §25 一批 3~5 张的候选槽位(spawnExamHint 直接引用,漏抽 ReferenceError)
   // —— stubs ——
   'var MODEL_ATTR_OVERRIDE = {};',
   'function officialPriceOf(m){ return blendPriceNum(m); }',
