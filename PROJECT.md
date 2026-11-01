@@ -685,6 +685,37 @@ D60 比值正中设计目标(1.0~1.2);四窗口残差达标(1.4e-4 ~ 2.6e-2)。
 8. 发布成功后回传 CLI 输出的作品链接。
 
 
+## 已发布:VibeHub(2026-11-02)
+
+| 项 | 值 |
+|---|---|
+| 作品名 | 中转站在逃肥鱼 |
+| 项目 slug | `zhongzhuanzhan-zai-tao-feiyu` |
+| 试玩地址 | https://gamesvibe.app/play/MHNCXj0KDGtOMxGuSrwFg |
+| 作品页 | https://gamesvibe.app/works/MHNCXj0KDGtOMxGuSrwFg |
+| GitHub | https://github.com/notbesttime/DSHgame(已设 **public**) |
+| 分类 / 标签 | cat-game;genre-casual, genre-simulation, 2D, DeepseekHarness, model-deepseek |
+| 共创 | **已开启**(collaborationEnabled=true;规则集 `VibeHub collaboration protection` #26317654,Copilot Review enabled) |
+| GitHub 自动部署 | **已配置**:`.github/workflows/vibehub-deploy.yml` 已合并(PR #1),secret `VIBEHUB_PROJECT_TOKEN` 已建,首跑成功 |
+| 封面 | `dist/assets/menu_cover.a53a47e6.webp` |
+| 截图 | **暂缺**(本次未传,后补) |
+
+**日常操作**
+
+```bash
+# 更新线上版本(改了代码 → 构建 → 更新)
+python build.py --dist --release
+vibehub update --slug zhongzhuanzhan-zai-tao-feiyu --dir dist \
+  --description-file .workbuddy/publish/desc.txt \
+  --note-file .workbuddy/publish/note.txt
+# 补截图(≤6 张,路径相对 dist):加 --screenshots a.png,b.png,...
+```
+
+- 推送到 `main` 会触发 CI 自动构建 + 发布(`python build.py --dist --release` → `dist`)
+- 简介/版本说明源文件在 `.workbuddy/publish/desc.txt`(745 字)与 `note.txt`(上限 2000 字)
+- ⚠️ 公开前已做敏感信息扫描:API key / token / 私钥 / 密码 / `.env` / 个人邮箱 / 本地绝对路径 **全部 0 处**(含 88 个提交历史)
+
+
 ## 仓库状态与提交
 
 > 更早提交史见下方各分节;`index.html` / `dist/` 按 `.gitignore` 不入库,`.workbuddy/`(会话记忆)也不入库。
